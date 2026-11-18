@@ -33,63 +33,64 @@ export function TitleScreen({
   const setDifficulty = (difficulty: BotDifficulty) => onChangeConfig({ ...config, difficulty });
 
   return (
-    <div className="h-full w-full overflow-y-auto flex items-center justify-center p-4 sm:p-6 bg-[#0B1120]">
-      <div className="w-full max-w-4xl rounded-2xl border border-slate-800 bg-[#111A2C] p-6 sm:p-8 shadow-2xl">
-        <div className="flex flex-col lg:flex-row lg:items-start gap-8">
-          {/* Left column: Title & Arena Legend */}
-          <div className="flex-1 min-w-0">
-            <h1 className="font-display text-3xl sm:text-4xl font-extrabold tracking-tight text-slate-50 text-balance">
-              Trickshot Tussle
-            </h1>
-            <p className="mt-2.5 text-sm sm:text-base text-slate-300 leading-relaxed max-w-xl">
-              Move with <span className="font-semibold text-slate-100">WASD</span> (hold <span className="font-semibold text-slate-100">Shift</span> to creep), aim 360° with your cursor, and press <span className="font-semibold text-slate-100">Spacebar</span> to fire on PC—or drag &amp; release on touchscreens.
-            </p>
+    <div className="h-dvh w-full overflow-y-auto overscroll-contain bg-[#0B1120]">
+      <div className="min-h-full w-full flex flex-col items-center justify-center p-3 sm:p-5">
+        <div className="my-auto w-full max-w-4xl rounded-2xl border border-slate-800 bg-[#111A2C] p-4 sm:p-6 md:p-7 shadow-2xl">
+          <div className="flex flex-col md:flex-row md:items-start gap-6 md:gap-7">
+            {/* Left column: Title & Arena Legend */}
+            <div className="flex-1 min-w-0">
+              <h1 className="font-display text-2xl sm:text-3xl md:text-4xl font-extrabold tracking-tight text-slate-50 text-balance">
+                Trickshot Tussle
+              </h1>
+              <p className="mt-2 text-xs sm:text-sm md:text-base text-slate-300 leading-relaxed max-w-xl">
+                Move with <span className="font-semibold text-slate-100">WASD</span> (hold <span className="font-semibold text-slate-100">Shift</span> to creep), aim 360° with your cursor, and press <span className="font-semibold text-slate-100">Spacebar</span> to fire on PC—or drag &amp; release on touchscreens.
+              </p>
 
-            <div className="mt-6 grid grid-cols-2 gap-3">
-              <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
-                <div className="flex items-center gap-2.5">
-                  <span className="h-3.5 w-3.5 rounded-full bg-yellow-400 border border-yellow-200 shrink-0" />
-                  <span className="text-sm font-semibold text-slate-100">Ricochet Shots</span>
+              <div className="mt-4 sm:mt-5 grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
+                <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
+                  <div className="flex items-center gap-2.5">
+                    <span className="h-3.5 w-3.5 rounded-full bg-yellow-400 border border-yellow-200 shrink-0" />
+                    <span className="text-xs sm:text-sm font-semibold text-slate-100">Ricochet Shots</span>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-400 leading-snug">
+                    Pick up bullets on the floor. Knockouts drop held bullets; stunned foes are briefly protected.
+                  </p>
                 </div>
-                <p className="mt-1 text-xs text-slate-400 leading-snug">
-                  Pick up bullets on the floor. Knockouts drop held bullets; stunned foes are briefly protected.
-                </p>
-              </div>
 
-              <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
-                <div className="flex items-center gap-2.5">
-                  <span className="h-3.5 w-3.5 rounded-sm bg-amber-600 border border-amber-200 shrink-0" />
-                  <span className="text-sm font-semibold text-slate-100">Cardboard Cover</span>
+                <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
+                  <div className="flex items-center gap-2.5">
+                    <span className="h-3.5 w-3.5 rounded-sm bg-amber-600 border border-amber-200 shrink-0" />
+                    <span className="text-xs sm:text-sm font-semibold text-slate-100">Cardboard Cover</span>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-400 leading-snug">
+                    Pushable crates spawn randomly and absorb 1 bullet before puncturing away.
+                  </p>
                 </div>
-                <p className="mt-1 text-xs text-slate-400 leading-snug">
-                  Pushable crates spawn randomly and absorb 1 bullet before puncturing away.
-                </p>
-              </div>
 
-              <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
-                <div className="flex items-center gap-2.5">
-                  <span className="h-3.5 w-3.5 rounded-sm bg-red-600 border border-red-200 shrink-0" />
-                  <span className="text-sm font-semibold text-slate-100">Nitro &amp; Shootable TNT</span>
+                <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
+                  <div className="flex items-center gap-2.5">
+                    <span className="h-3.5 w-3.5 rounded-sm bg-red-600 border border-red-200 shrink-0" />
+                    <span className="text-xs sm:text-sm font-semibold text-slate-100">Nitro &amp; Shootable TNT</span>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-400 leading-snug">
+                    Shoot Nitro or 3s TNT crates to blast them early and catch rivals off guard.
+                  </p>
                 </div>
-                <p className="mt-1 text-xs text-slate-400 leading-snug">
-                  Shoot Nitro or 3s TNT crates to blast them early and catch rivals off guard.
-                </p>
-              </div>
 
-              <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
-                <div className="flex items-center gap-2.5">
-                  <span className="h-3.5 w-3.5 rounded-sm bg-emerald-500 border border-emerald-200 shrink-0" />
-                  <span className="text-sm font-semibold text-slate-100">Medkit &amp; Stun</span>
+                <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
+                  <div className="flex items-center gap-2.5">
+                    <span className="h-3.5 w-3.5 rounded-sm bg-emerald-500 border border-emerald-200 shrink-0" />
+                    <span className="text-xs sm:text-sm font-semibold text-slate-100">Medkit &amp; Stun</span>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-400 leading-snug">
+                    Medkits restore +35 HP. Taking damage stuns you briefly with immunity until recovery.
+                  </p>
                 </div>
-                <p className="mt-1 text-xs text-slate-400 leading-snug">
-                  Medkits restore +35 HP. Taking damage stuns you briefly with immunity until recovery.
-                </p>
               </div>
             </div>
-          </div>
 
-          {/* Right column: Play Mode Tabs (Solo vs Online Multiplayer) */}
-          <div className="w-full lg:w-84 shrink-0 flex flex-col gap-5 border-t lg:border-t-0 lg:border-l border-slate-800 pt-6 lg:pt-0 lg:pl-7">
+            {/* Right column: Play Mode Tabs (Solo vs Online Multiplayer) */}
+            <div className="w-full md:w-80 lg:w-84 shrink-0 flex flex-col gap-4 border-t md:border-t-0 md:border-l border-slate-800 pt-5 md:pt-0 md:pl-6">
             <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-slate-900 border border-slate-800">
               <button
                 type="button"
@@ -258,6 +259,7 @@ export function TitleScreen({
             )}
           </div>
         </div>
+      </div>
       </div>
     </div>
   );

@@ -181,15 +181,20 @@ export default function App() {
     roomStateRef.current = roomState;
   }, [roomState]);
 
-  useEffect(() => {
-    controlSchemeRef.current = controlScheme;
-    engineRef.current.setControlScheme(controlScheme);
+  const switchControlScheme = useCallback((next: ControlScheme) => {
+    setControlScheme(next);
+    controlSchemeRef.current = next;
+    engineRef.current.setControlScheme(next);
     cursorScreenRef.current = null;
     pressedKeysRef.current.clear();
     onlineJoystickRef.current.active = false;
     if (isOnlineRef.current) {
       clientRef.current?.sendJoystickInput(false, 0, 0);
     }
+  }, []);
+
+  useEffect(() => {
+    controlSchemeRef.current = controlScheme;
   }, [controlScheme]);
 
   // Setup persistent PeerJS client instance
@@ -609,11 +614,13 @@ export default function App() {
     if (gameState !== 'PLAYING') return;
     sound.unlock();
 
-    // Auto-switch to Drag Stick if player taps with a touchscreen
+    // Auto-switch to Drag Stick if player taps with a touchscreen without wiping this drag
     if (e.pointerType === 'touch' && controlSchemeRef.current !== 'DRAG_STICK') {
-      setControlScheme('DRAG_STICK');
       controlSchemeRef.current = 'DRAG_STICK';
       engineRef.current.setControlScheme('DRAG_STICK');
+      cursorScreenRef.current = null;
+      pressedKeysRef.current.clear();
+      setControlScheme('DRAG_STICK');
     }
 
     if (controlSchemeRef.current === 'CURSOR_SPACE') {
@@ -627,9 +634,11 @@ export default function App() {
     e.currentTarget.setPointerCapture(e.pointerId);
     const pt = getCanvasPoint(e);
     if (!hasUsedJoystick) setHasUsedJoystick(true);
+    const stickRadius = e.pointerType === 'touch' ? 46 : 64;
 
     if (isOnline) {
       const j = onlineJoystickRef.current;
+      j.maxRadius = stickRadius;
       j.active = true;
       j.pointerId = e.pointerId;
       j.originX = pt.x;
@@ -639,6 +648,7 @@ export default function App() {
       j.magnitude = 0;
       clientRef.current?.sendJoystickInput(true, j.angle, 0);
     } else {
+      engineRef.current.joystick.maxRadius = stickRadius;
       engineRef.current.startJoystick(e.pointerId, pt.x, pt.y);
     }
   };
@@ -735,10 +745,10 @@ export default function App() {
   const p3 = snapshot.players.find((p) => p.id === 3);
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-[#0B1120] overflow-hidden">
+    <div className="h-dvh w-screen flex flex-col bg-[#0B1120] overflow-hidden">
       {/* Top Bar */}
-      <header className="h-14 shrink-0 border-b border-slate-800/90 bg-[#0F172A] px-4 sm:px-6 flex items-center justify-between gap-4">
-        <span className="font-display text-lg font-extrabold tracking-tight text-slate-50 whitespace-nowrap shrink-0">
+      <header className="h-12 sm:h-14 shrink-0 border-b border-slate-800/90 bg-[#0F172A] px-3 sm:px-6 flex items-center justify-between gap-3">
+        <span className="font-display text-base sm:text-lg font-extrabold tracking-tight text-slate-50 whitespace-nowrap shrink-0">
           Trickshot Tussle
         </span>
 
@@ -768,7 +778,7 @@ export default function App() {
           <div className="hidden md:flex items-center rounded-lg border border-slate-800 bg-slate-900 p-0.5">
             <button
               type="button"
-              onClick={() => setControlScheme('CURSOR_SPACE')}
+              onClick={() => switchControlScheme('CURSOR_SPACE')}
               className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
                 controlScheme === 'CURSOR_SPACE'
                   ? 'bg-sky-500 text-slate-950'
@@ -779,7 +789,7 @@ export default function App() {
             </button>
             <button
               type="button"
-              onClick={() => setControlScheme('DRAG_STICK')}
+              onClick={() => switchControlScheme('DRAG_STICK')}
               className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
                 controlScheme === 'DRAG_STICK'
                   ? 'bg-sky-500 text-slate-950'

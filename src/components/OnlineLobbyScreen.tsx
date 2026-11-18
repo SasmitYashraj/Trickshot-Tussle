@@ -53,55 +53,56 @@ export function OnlineLobbyScreen({
   const availableMaps = room.config.immersive ? IMMERSIVE_MAP_LIST : SOLO_MAP_LIST;
 
   return (
-    <div className="h-full w-full overflow-y-auto flex items-center justify-center p-4 sm:p-6 bg-[#0B1120]">
-      <div className="w-full max-w-4xl rounded-2xl border border-slate-800 bg-[#111A2C] p-6 sm:p-8 shadow-2xl">
-        {/* Header Row */}
-        <div className="flex flex-wrap items-center justify-between gap-4 pb-5 border-b border-slate-800">
-          <div>
-            <div className="flex items-center gap-2.5 text-xs text-sky-400 font-semibold">
-              <Users className="w-4 h-4" />
-              <span>
-                Trickshot Tussle Online ·{' '}
-                {room.config.immersive ? 'Immersive Camera & Vignette' : 'Normal Full Arena'}
-              </span>
+    <div className="h-dvh w-full overflow-y-auto overscroll-contain bg-[#0B1120]">
+      <div className="min-h-full w-full flex flex-col items-center justify-center p-3 sm:p-5">
+        <div className="my-auto w-full max-w-4xl rounded-2xl border border-slate-800 bg-[#111A2C] p-4 sm:p-6 md:p-7 shadow-2xl">
+          {/* Header Row */}
+          <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-800">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-xs text-sky-400 font-semibold">
+                <Users className="w-4 h-4 shrink-0" />
+                <span className="truncate">
+                  Trickshot Tussle Online ·{' '}
+                  {room.config.immersive ? 'Immersive Camera & Vignette' : 'Normal Full Arena'}
+                </span>
+              </div>
+              <div className="mt-1 flex items-baseline gap-2.5">
+                <h1 className="font-display text-xl sm:text-2xl md:text-3xl font-extrabold text-slate-50">
+                  Room Code:{' '}
+                  <span className="font-mono-tabular tracking-widest text-sky-400">{room.code}</span>
+                </h1>
+              </div>
             </div>
-            <div className="mt-1 flex items-baseline gap-3">
-              <h1 className="font-display text-2xl sm:text-3xl font-extrabold text-slate-50">
-                Room Code:{' '}
-                <span className="font-mono-tabular tracking-widest text-sky-400">{room.code}</span>
-              </h1>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={copyInviteLink}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 px-3 py-2 text-xs font-semibold text-slate-100 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                {copied ? 'Invite Link Copied' : 'Copy Invite Link'}
+              </button>
+              <button
+                type="button"
+                onClick={onLeave}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900 hover:bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-300 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                Leave
+              </button>
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5">
-            <button
-              type="button"
-              onClick={copyInviteLink}
-              className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 px-3.5 py-2 text-xs font-semibold text-slate-100 transition-colors cursor-pointer whitespace-nowrap"
-            >
-              {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-              {copied ? 'Invite Link Copied' : 'Copy Invite Link'}
-            </button>
-            <button
-              type="button"
-              onClick={onLeave}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900 hover:bg-slate-800 px-3.5 py-2 text-xs font-semibold text-slate-300 transition-colors cursor-pointer whitespace-nowrap"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              Leave
-            </button>
-          </div>
-        </div>
+          {errorMessage && (
+            <div className="mt-4 rounded-xl border border-rose-500/40 bg-rose-950/40 px-4 py-2.5 text-xs text-rose-200">
+              {errorMessage}
+            </div>
+          )}
 
-        {errorMessage && (
-          <div className="mt-4 rounded-xl border border-rose-500/40 bg-rose-950/40 px-4 py-2.5 text-xs text-rose-200">
-            {errorMessage}
-          </div>
-        )}
-
-        <div className="mt-6 flex flex-col lg:flex-row gap-7">
-          {/* Player Slots */}
-          <div className="flex-1 min-w-0">
+          <div className="mt-5 flex flex-col md:flex-row gap-5 md:gap-6">
+            {/* Player Slots */}
+            <div className="flex-1 min-w-0">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-semibold text-slate-200">
                 Players ({occupiedCount}/4 Joined)
@@ -157,7 +158,7 @@ export function OnlineLobbyScreen({
           </div>
 
           {/* Match Configuration */}
-          <div className="w-full lg:w-80 shrink-0 flex flex-col gap-4 border-t lg:border-t-0 lg:border-l border-slate-800 pt-6 lg:pt-0 lg:pl-7">
+          <div className="w-full md:w-76 lg:w-80 shrink-0 flex flex-col gap-3.5 border-t md:border-t-0 md:border-l border-slate-800 pt-5 md:pt-0 md:pl-6">
             <div>
               <div className="text-xs font-semibold text-slate-400 mb-2">Arena View</div>
               <div className="grid grid-cols-2 gap-1.5 p-1 rounded-lg bg-slate-900 border border-slate-800">
@@ -165,7 +166,7 @@ export function OnlineLobbyScreen({
                   type="button"
                   disabled={!isHost}
                   onClick={() => setArenaView(false)}
-                  className={`px-3 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                  className={`px-2 py-2 text-[11px] sm:text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
                     !room.config.immersive
                       ? 'bg-sky-500 text-slate-950'
                       : 'text-slate-300 hover:text-white'
@@ -177,7 +178,7 @@ export function OnlineLobbyScreen({
                   type="button"
                   disabled={!isHost}
                   onClick={() => setArenaView(true)}
-                  className={`px-3 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                  className={`px-2 py-2 text-[11px] sm:text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
                     room.config.immersive
                       ? 'bg-sky-500 text-slate-950'
                       : 'text-slate-300 hover:text-white'
@@ -220,7 +221,7 @@ export function OnlineLobbyScreen({
                     type="button"
                     disabled={!isHost}
                     onClick={() => onUpdateConfig({ ...room.config, extraDark: false })}
-                    className={`px-3 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                    className={`px-2 py-2 text-[11px] sm:text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
                       !room.config.extraDark
                         ? 'bg-sky-500 text-slate-950'
                         : 'text-slate-300 hover:text-white'
@@ -232,7 +233,7 @@ export function OnlineLobbyScreen({
                     type="button"
                     disabled={!isHost}
                     onClick={() => onUpdateConfig({ ...room.config, extraDark: true })}
-                    className={`px-3 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                    className={`px-2 py-2 text-[11px] sm:text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
                       room.config.extraDark
                         ? 'bg-amber-400 text-slate-950'
                         : 'text-slate-300 hover:text-white'
@@ -251,7 +252,7 @@ export function OnlineLobbyScreen({
                   type="button"
                   disabled={!isHost}
                   onClick={() => setMode('BRAWL')}
-                  className={`px-3 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                  className={`px-2 py-2 text-[11px] sm:text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
                     room.config.mode === 'BRAWL'
                       ? 'bg-sky-500 text-slate-950'
                       : 'text-slate-300 hover:text-white'
@@ -263,7 +264,7 @@ export function OnlineLobbyScreen({
                   type="button"
                   disabled={!isHost}
                   onClick={() => setMode('ELIMINATION')}
-                  className={`px-3 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                  className={`px-2 py-2 text-[11px] sm:text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
                     room.config.mode === 'ELIMINATION'
                       ? 'bg-sky-500 text-slate-950'
                       : 'text-slate-300 hover:text-white'
@@ -329,6 +330,7 @@ export function OnlineLobbyScreen({
               </div>
             )}
           </div>
+        </div>
         </div>
       </div>
     </div>

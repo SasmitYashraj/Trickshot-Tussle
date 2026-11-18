@@ -28,8 +28,9 @@ export function GameOverModal({
   const humanWon = winner?.isHuman;
 
   return (
-    <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-950/75 backdrop-blur-sm p-4">
-      <div className="w-full max-w-lg rounded-2xl border border-slate-700/80 bg-[#111A2C] p-6 shadow-2xl">
+    <div className="fixed inset-0 z-30 overflow-y-auto overscroll-contain bg-slate-950/75 backdrop-blur-sm">
+      <div className="min-h-full w-full flex flex-col items-center justify-center p-3 sm:p-4">
+        <div className="my-auto w-full max-w-lg rounded-2xl border border-slate-700/80 bg-[#111A2C] p-5 sm:p-6 shadow-2xl">
         <div className="flex items-center gap-3">
           <div
             className="h-11 w-11 rounded-xl flex items-center justify-center border border-slate-700"
@@ -142,6 +143,7 @@ export function GameOverModal({
               </button>
             </>
           )}
+        </div>
         </div>
       </div>
     </div>
