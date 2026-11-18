@@ -1,7 +1,14 @@
 import { Globe, Play, User, Users } from 'lucide-react';
 import { useState } from 'react';
 import { SOLO_MAP_LIST } from '../game/maps';
-import type { BotDifficulty, MapId, MatchConfig, MatchMode } from '../game/types';
+import {
+  type BotDifficulty,
+  type MapId,
+  type MatchConfig,
+  type MatchMode,
+  PLAYER_COLOR_PALETTE,
+  type TeamMode,
+} from '../game/types';
 import { PWAInstallButton } from './PWAInstallButton';
 
 interface TitleScreenProps {
@@ -30,8 +37,12 @@ export function TitleScreen({
   const [joinCode, setJoinCode] = useState(initialRoomCode);
 
   const setMode = (mode: MatchMode) => onChangeConfig({ ...config, mode });
+  const setTeamMode = (teamMode: TeamMode) => onChangeConfig({ ...config, teamMode });
+  const setColor = (playerColorId: string) => onChangeConfig({ ...config, playerColorId });
   const setMap = (mapId: MapId) => onChangeConfig({ ...config, mapId, immersive: false });
   const setDifficulty = (difficulty: BotDifficulty) => onChangeConfig({ ...config, difficulty });
+  const activeColorId = config.playerColorId ?? 'cobalt';
+  const activeTeamMode: TeamMode = config.teamMode ?? 'FFA';
 
   return (
     <div className="h-dvh w-full overflow-y-auto overscroll-contain bg-[#0B1120]">
@@ -74,10 +85,10 @@ export function TitleScreen({
                 <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
                   <div className="flex items-center gap-2.5">
                     <span className="h-3.5 w-3.5 rounded-sm bg-red-600 border border-red-200 shrink-0" />
-                    <span className="text-xs sm:text-sm font-semibold text-slate-100">Nitro &amp; Shootable TNT</span>
+                    <span className="text-xs sm:text-sm font-semibold text-slate-100">Nitro &amp; Pushable TNT</span>
                   </div>
                   <p className="mt-1 text-xs text-slate-400 leading-snug">
-                    Shoot Nitro or 3s TNT crates to blast them early and catch rivals off guard.
+                    Push TNT like crates; shoot to start its 3s fuse &amp; shove it. Shoot Nitro to blast instantly.
                   </p>
                 </div>
 
@@ -120,37 +131,90 @@ export function TitleScreen({
 
             {tab === 'SOLO' ? (
               <>
-                <div>
-                  <div className="text-xs font-semibold text-slate-400 mb-2">Match Mode</div>
-                  <div className="grid grid-cols-2 gap-1.5 p-1 rounded-lg bg-slate-900 border border-slate-800">
-                    <button
-                      type="button"
-                      onClick={() => setMode('BRAWL')}
-                      className={`px-3 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-                        config.mode === 'BRAWL'
-                          ? 'bg-slate-700 text-white'
-                          : 'text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      Brawl (8 KOs)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setMode('ELIMINATION')}
-                      className={`px-3 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-                        config.mode === 'ELIMINATION'
-                          ? 'bg-slate-700 text-white'
-                          : 'text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      Last Standing
-                    </button>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <div className="text-xs font-semibold text-slate-400 mb-1.5">Format</div>
+                    <div className="grid grid-cols-2 gap-1 p-1 rounded-lg bg-slate-900 border border-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => setTeamMode('FFA')}
+                        className={`px-2 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                          activeTeamMode === 'FFA'
+                            ? 'bg-slate-700 text-white'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        FFA
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTeamMode('2V2')}
+                        className={`px-2 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                          activeTeamMode === '2V2'
+                            ? 'bg-sky-500 text-slate-950'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        2v2
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold text-slate-400 mb-1.5">Match Rule</div>
+                    <div className="grid grid-cols-2 gap-1 p-1 rounded-lg bg-slate-900 border border-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => setMode('BRAWL')}
+                        className={`px-1.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                          config.mode === 'BRAWL'
+                            ? 'bg-slate-700 text-white'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        8 KOs
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMode('ELIMINATION')}
+                        className={`px-1.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                          config.mode === 'ELIMINATION'
+                            ? 'bg-slate-700 text-white'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Last Up
+                      </button>
+                    </div>
                   </div>
                 </div>
 
                 <div>
-                  <div className="text-xs font-semibold text-slate-400 mb-2">Arena Layout (Large)</div>
-                  <div className="flex flex-col gap-1.5">
+                  <div className="text-xs font-semibold text-slate-400 mb-1.5">Your Color</div>
+                  <div className="flex items-center gap-1.5">
+                    {PLAYER_COLOR_PALETTE.map((opt) => {
+                      const selected = activeColorId === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          title={opt.name}
+                          aria-label={`Select ${opt.name} color`}
+                          onClick={() => setColor(opt.id)}
+                          className={`h-7 flex-1 rounded-md border-2 transition-transform cursor-pointer ${
+                            selected
+                              ? 'border-white scale-105 shadow-[0_0_0_2px_rgba(14,165,233,0.45)]'
+                              : 'border-slate-950/70 opacity-75 hover:opacity-100'
+                          }`}
+                          style={{ backgroundColor: opt.color }}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div>
+                  <div className="text-xs font-semibold text-slate-400 mb-1.5">Arena Layout</div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                     {SOLO_MAP_LIST.map((m) => (
                       <button
                         key={m.id}
@@ -170,7 +234,7 @@ export function TitleScreen({
                 </div>
 
                 <div>
-                  <div className="text-xs font-semibold text-slate-400 mb-2">Rival Skill</div>
+                  <div className="text-xs font-semibold text-slate-400 mb-1.5">Rival Skill</div>
                   <div className="grid grid-cols-3 gap-1.5 p-1 rounded-lg bg-slate-900 border border-slate-800">
                     {(['CHILL', 'TACTICAL', 'RUTHLESS'] as BotDifficulty[]).map((level) => (
                       <button
@@ -195,7 +259,7 @@ export function TitleScreen({
                   className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-sky-400 hover:bg-sky-300 active:scale-[0.99] px-5 py-3 text-sm font-bold text-slate-950 transition-all cursor-pointer whitespace-nowrap"
                 >
                   <Play className="w-4 h-4 fill-current" />
-                  Start Solo Match
+                  {activeTeamMode === '2V2' ? 'Start 2v2 Match' : 'Start Solo Match'}
                 </button>
               </>
             ) : (
@@ -223,6 +287,30 @@ export function TitleScreen({
                     placeholder="Enter your name"
                     className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-sky-400 focus:outline-none"
                   />
+                </div>
+
+                <div>
+                  <div className="text-xs font-semibold text-slate-400 mb-1.5">Fighter Color</div>
+                  <div className="flex items-center gap-1.5">
+                    {PLAYER_COLOR_PALETTE.map((opt) => {
+                      const selected = activeColorId === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          title={opt.name}
+                          aria-label={`Select ${opt.name} color`}
+                          onClick={() => setColor(opt.id)}
+                          className={`h-7 flex-1 rounded-md border-2 transition-transform cursor-pointer ${
+                            selected
+                              ? 'border-white scale-105 shadow-[0_0_0_2px_rgba(14,165,233,0.45)]'
+                              : 'border-slate-950/70 opacity-75 hover:opacity-100'
+                          }`}
+                          style={{ backgroundColor: opt.color }}
+                        />
+                      );
+                    })}
+                  </div>
                 </div>
 
                 <button

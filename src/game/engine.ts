@@ -20,6 +20,7 @@ import {
   type Explosion,
   type FloatingText,
   type GameSnapshot,
+  type IcePit,
   type JoystickState,
   MEDKIT_HEAL,
   MEDKIT_RADIUS,
@@ -33,6 +34,9 @@ import {
   PLAYER_MAX_HP,
   PLAYER_MAX_SPEED,
   PLAYER_RADIUS,
+  PLAYER_TURN_SPEED,
+  PLAYER_COLOR_PALETTE,
+  type PlayerColorOption,
   type Particle,
   type Pickup,
   type PickupKind,
@@ -49,11 +53,13 @@ import {
   type WorldSyncState,
 } from './types.ts';
 
+const TNT_HALF_SIZE = 29;
+
 export const PLAYER_PRESETS = [
-  { id: 0, defaultName: 'Cobalt', color: '#0EA5E9', accentColor: '#7DD3FC' },
-  { id: 1, defaultName: 'Viper', color: '#EF4444', accentColor: '#FCA5A5' },
-  { id: 2, defaultName: 'Volt', color: '#FACC15', accentColor: '#FEF08A' },
-  { id: 3, defaultName: 'Jade', color: '#22C55E', accentColor: '#86EFAC' },
+  { id: 0, defaultName: 'Cobalt', colorId: 'cobalt', color: '#0EA5E9', accentColor: '#7DD3FC' },
+  { id: 1, defaultName: 'Viper', colorId: 'crimson', color: '#EF4444', accentColor: '#FCA5A5' },
+  { id: 2, defaultName: 'Volt', colorId: 'volt', color: '#FACC15', accentColor: '#FEF08A' },
+  { id: 3, defaultName: 'Jade', colorId: 'jade', color: '#22C55E', accentColor: '#86EFAC' },
 ];
 
 export interface SlotSetup {
@@ -61,6 +67,33 @@ export interface SlotSetup {
   name: string;
   isHuman: boolean;
   enabled: boolean;
+  colorId?: string;
+  team?: number;
+}
+
+export function pickDistinctColorOption(
+  preferredId: string | undefined,
+  usedIds: Set<string>,
+  fallbackIdx = 0
+): PlayerColorOption {
+  if (preferredId) {
+    const match = PLAYER_COLOR_PALETTE.find((c) => c.id === preferredId);
+    if (match && !usedIds.has(match.id)) {
+      usedIds.add(match.id);
+      return match;
+    }
+  }
+  const ordered = [
+    PLAYER_COLOR_PALETTE[fallbackIdx % PLAYER_COLOR_PALETTE.length],
+    ...PLAYER_COLOR_PALETTE,
+  ];
+  for (const opt of ordered) {
+    if (!usedIds.has(opt.id)) {
+      usedIds.add(opt.id);
+      return opt;
+    }
+  }
+  return PLAYER_COLOR_PALETTE[fallbackIdx % PLAYER_COLOR_PALETTE.length];
 }
 
 function clamp(v: number, min: number, max: number): number {
@@ -98,6 +131,45 @@ function segmentIntersectsRect(x1: number, y1: number, x2: number, y2: number, r
   return false;
 }
 
+function isPointInEllipse(px: number, py: number, ex: number, ey: number, rx: number, ry: number): boolean {
+  if (rx <= 0 || ry <= 0) return false;
+  const nx = (px - ex) / rx;
+  const ny = (py - ey) / ry;
+  return nx * nx + ny * ny < 1;
+}
+
+function isPointInIcePit(px: number, py: number, pit: IcePit, margin = 0): boolean {
+  if (!pit.points || pit.points.length < 3) {
+    return isPointInEllipse(px, py, pit.x, pit.y, Math.max(16, pit.rx + margin), Math.max(16, pit.ry + margin));
+  }
+  const scaleX = Math.max(0.22, (pit.rx + margin) / Math.max(1, pit.rx));
+  const scaleY = Math.max(0.22, (pit.ry + margin) / Math.max(1, pit.ry));
+  const lx = (px - pit.x) / scaleX;
+  const ly = (py - pit.y) / scaleY;
+  let inside = false;
+  const pts = pit.points;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const xi = pts[i].x;
+    const yi = pts[i].y;
+    const xj = pts[j].x;
+    const yj = pts[j].y;
+    const intersect =
+      yi > ly !== yj > ly && lx < ((xj - xi) * (ly - yi)) / (yj - yi + 1e-9) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function circleOverlapsIcePit(cx: number, cy: number, cr: number, pit: IcePit): boolean {
+  if (isPointInIcePit(cx, cy, pit, cr * 0.8)) return true;
+  if (pit.points && pit.points.length >= 3) {
+    for (const pt of pit.points) {
+      if (dist(cx, cy, pit.x + pt.x, pit.y + pt.y) <= cr) return true;
+    }
+  }
+  return false;
+}
+
 export class ArenaEngine {
   public config: MatchConfig;
   public map: ArenaMap;
@@ -105,6 +177,7 @@ export class ArenaEngine {
   public bullets: Bullet[] = [];
   public pickups: Pickup[] = [];
   public boxes: CardboardBox[] = [];
+  public icePits: IcePit[] = [];
   public explosions: Explosion[] = [];
   public particles: Particle[] = [];
   public floatingTexts: FloatingText[] = [];
@@ -136,6 +209,7 @@ export class ArenaEngine {
   public elapsedTime = 0;
   public screenShake = 0;
   public winnerId: number | null = null;
+  public winnerTeam: number | null = null;
   public winnerReason = '';
 
   private nextId = 1;
@@ -157,6 +231,15 @@ export class ArenaEngine {
     this.bullets = [];
     this.pickups = [];
     this.boxes = [];
+    this.icePits = (this.map.icePits ?? []).map((pit, idx) => ({
+      id: idx + 1,
+      x: pit.x,
+      y: pit.y,
+      rx: pit.rx,
+      ry: pit.ry,
+      points: pit.points,
+      broken: false,
+    }));
     this.explosions = [];
     this.particles = [];
     this.floatingTexts = [];
@@ -164,14 +247,15 @@ export class ArenaEngine {
     this.elapsedTime = 0;
     this.screenShake = 0;
     this.winnerId = null;
+    this.winnerTeam = null;
     this.winnerReason = '';
 
     const isImmersive = this.map.immersive;
     this.bulletSpawnTimer = isImmersive ? 1.5 : 2.0;
-    this.nitroSpawnTimer = isImmersive ? 5.0 : 6.0;
+    this.nitroSpawnTimer = isImmersive ? 11.5 : 6.0;
     this.tntSpawnTimer = isImmersive ? 7.5 : 9.0;
     this.medkitSpawnTimer = isImmersive ? 9.0 : 11.0;
-    this.boxSpawnTimer = isImmersive ? 4.5 : 5.5;
+    this.boxSpawnTimer = isImmersive ? 2.5 : 2.4;
 
     this.joystick.active = false;
     this.joystick.pointerId = null;
@@ -190,58 +274,75 @@ export class ArenaEngine {
         name: idx === 0 ? 'You' : p.defaultName,
         isHuman: idx === 0,
         enabled: true,
+        colorId: idx === 0 ? config.playerColorId : undefined,
+        team: idx === 0 || idx === 2 ? 0 : 1,
       }));
 
-    this.players = effectiveSlots
-      .filter((s) => s.enabled)
-      .map((s) => {
-        const preset = PLAYER_PRESETS[s.slot];
-        const spawn = this.map.spawns[s.slot];
-        const aimCenterAngle = Math.atan2(this.map.height / 2 - spawn.y, this.map.width / 2 - spawn.x);
-        return {
-          id: s.slot,
-          name: s.name,
-          isHuman: s.isHuman,
-          isRemote: Boolean(slots),
-          color: preset.color,
-          accentColor: preset.accentColor,
-          x: spawn.x,
-          y: spawn.y,
-          vx: 0,
-          vy: 0,
-          angle: aimCenterAngle,
-          hp: PLAYER_MAX_HP,
-          maxHp: PLAYER_MAX_HP,
-          ammo: 0,
-          maxAmmo: PLAYER_MAX_AMMO,
-          stunTimer: 0,
-          hurtFlashTimer: 0,
-          respawnTimer: 0,
-          spawnInvulnTimer: SPAWN_INVULN_DURATION,
-          alive: true,
-          kills: 0,
-          deaths: 0,
-          damageDealt: 0,
-          shotsFired: 0,
-          shotsHit: 0,
-          lastHitBy: null,
-          remoteActive: false,
-          remoteAngle: aimCenterAngle,
-          remoteMoveAngle: aimCenterAngle,
-          remoteAimActive: false,
-          remoteMagnitude: 0,
-          aiStrafeDir: s.slot % 2 === 0 ? 1 : -1,
-          aiThinkTimer: 0.15 + s.slot * 0.1,
-          aiTargetAngle: aimCenterAngle,
-          aiMoveRatio: 0.72,
-          aiHoldShotTimer: 0.7,
-        };
-      });
+    // Assign strictly unique colors (humans pick first, then bots fill remaining non-similar colors)
+    const activeSlots = effectiveSlots.filter((s) => s.enabled);
+    const usedColorIds = new Set<string>();
+    const assignedColors = new Map<number, PlayerColorOption>();
+
+    for (const s of activeSlots.filter((sl) => sl.isHuman)) {
+      const chosen = pickDistinctColorOption(s.colorId, usedColorIds, s.slot);
+      assignedColors.set(s.slot, chosen);
+    }
+    for (const s of activeSlots.filter((sl) => !sl.isHuman)) {
+      const fallbackColor = PLAYER_PRESETS[s.slot]?.colorId;
+      const chosen = pickDistinctColorOption(s.colorId ?? fallbackColor, usedColorIds, s.slot);
+      assignedColors.set(s.slot, chosen);
+    }
+
+    this.players = activeSlots.map((s) => {
+      const palette = assignedColors.get(s.slot) ?? PLAYER_COLOR_PALETTE[s.slot % PLAYER_COLOR_PALETTE.length];
+      const spawn = this.map.spawns[s.slot];
+      const aimCenterAngle = Math.atan2(this.map.height / 2 - spawn.y, this.map.width / 2 - spawn.x);
+      const team = s.team !== undefined ? s.team : s.slot === 0 || s.slot === 2 ? 0 : 1;
+      return {
+        id: s.slot,
+        name: s.name,
+        team: this.config.teamMode === '2V2' ? team : undefined,
+        isHuman: s.isHuman,
+        isRemote: Boolean(slots),
+        color: palette.color,
+        accentColor: palette.accentColor,
+        x: spawn.x,
+        y: spawn.y,
+        vx: 0,
+        vy: 0,
+        angle: aimCenterAngle,
+        hp: PLAYER_MAX_HP,
+        maxHp: PLAYER_MAX_HP,
+        ammo: 0,
+        maxAmmo: PLAYER_MAX_AMMO,
+        stunTimer: 0,
+        hurtFlashTimer: 0,
+        respawnTimer: 0,
+        spawnInvulnTimer: SPAWN_INVULN_DURATION,
+        alive: true,
+        kills: 0,
+        deaths: 0,
+        damageDealt: 0,
+        shotsFired: 0,
+        shotsHit: 0,
+        lastHitBy: null,
+        remoteActive: false,
+        remoteAngle: aimCenterAngle,
+        remoteMoveAngle: aimCenterAngle,
+        remoteAimActive: false,
+        remoteMagnitude: 0,
+        aiStrafeDir: s.slot % 2 === 0 ? 1 : -1,
+        aiThinkTimer: 0.15 + s.slot * 0.1,
+        aiTargetAngle: aimCenterAngle,
+        aiMoveRatio: 0.72,
+        aiHoldShotTimer: 0.7,
+      };
+    });
 
     // Calm initial pickups & movable cardboard cover boxes spread across the arena
     const initBullets = isImmersive ? 5 : 3;
-    const initNitros = isImmersive ? 2 : 1;
-    const initBoxes = isImmersive ? 5 : 2;
+    const initNitros = isImmersive ? 1 : 1;
+    const initBoxes = isImmersive ? 10 : 6;
     for (let i = 0; i < initBullets; i++) this.spawnPickup('bullet');
     for (let i = 0; i < initNitros; i++) this.spawnPickup('nitro');
     for (let i = 0; i < initBoxes; i++) this.spawnCardboardBox();
@@ -385,9 +486,9 @@ export class ArenaEngine {
     this.screenShake = Math.max(0, this.screenShake - dt * 28);
 
     this.updateSpawners(dt);
-    this.updatePickups(dt);
     this.updatePlayers(dt);
     this.updateBoxes(dt);
+    this.updatePickups(dt);
     this.updateBullets(dt);
     this.updateParticlesAndTexts(dt);
     this.checkWinConditions();
@@ -396,16 +497,16 @@ export class ArenaEngine {
   private updateSpawners(dt: number) {
     const isImmersive = this.map.immersive;
     const bulletCap = isImmersive ? 9 : 5;
-    const nitroCap = isImmersive ? 4 : 2;
+    const nitroCap = isImmersive ? 2 : 2;
     const tntCap = isImmersive ? 2 : 1;
     const medkitCap = isImmersive ? 2 : 1;
-    const boxCap = isImmersive ? 7 : 3;
+    const boxCap = isImmersive ? 15 : 9;
 
     const bulletInterval = isImmersive ? 2.1 : 2.6;
-    const nitroInterval = isImmersive ? 6.8 : 8.0;
+    const nitroInterval = isImmersive ? 13.5 : 8.0;
     const tntInterval = isImmersive ? 9.5 : 11.5;
     const medkitInterval = isImmersive ? 11.5 : 13.5;
-    const boxInterval = isImmersive ? 6.5 : 8.5;
+    const boxInterval = isImmersive ? 3.6 : 3.2;
 
     const bulletCount = this.pickups.filter((p) => p.kind === 'bullet').length;
     const nitroCount = this.pickups.filter((p) => p.kind === 'nitro').length;
@@ -446,7 +547,7 @@ export class ArenaEngine {
 
   private findFreeSpot(radius: number): Vec2 | null {
     const pad = ARENA_WALL_THICKNESS + radius + 24;
-    for (let attempt = 0; attempt < 50; attempt++) {
+    for (let attempt = 0; attempt < 64; attempt++) {
       const x = pad + Math.random() * (this.map.width - pad * 2);
       const y = pad + Math.random() * (this.map.height - pad * 2);
 
@@ -460,7 +561,7 @@ export class ArenaEngine {
       if (blocked) continue;
 
       for (const p of this.players) {
-        if (p.alive && dist(x, y, p.x, p.y) < radius + PLAYER_RADIUS + 55) {
+        if (p.alive && dist(x, y, p.x, p.y) < radius + PLAYER_RADIUS + 48) {
           blocked = true;
           break;
         }
@@ -468,7 +569,7 @@ export class ArenaEngine {
       if (blocked) continue;
 
       for (const item of this.pickups) {
-        if (dist(x, y, item.x, item.y) < radius + item.radius + 52) {
+        if (dist(x, y, item.x, item.y) < radius + item.radius + 44) {
           blocked = true;
           break;
         }
@@ -476,7 +577,15 @@ export class ArenaEngine {
       if (blocked) continue;
 
       for (const box of this.boxes) {
-        if (dist(x, y, box.x, box.y) < radius + box.w * 0.65 + 24) {
+        if (dist(x, y, box.x, box.y) < radius + box.w * 0.62 + 16) {
+          blocked = true;
+          break;
+        }
+      }
+      if (blocked) continue;
+
+      for (const pit of this.icePits) {
+        if (pit.broken && isPointInIcePit(x, y, pit, radius + 16)) {
           blocked = true;
           break;
         }
@@ -499,6 +608,7 @@ export class ArenaEngine {
       vx: 0,
       vy: 0,
       age: 0,
+      lastPusherId: null,
       state: 'spawning',
       stateTimer: CARDBOARD_FADE_IN,
     });
@@ -577,6 +687,19 @@ export class ArenaEngine {
           }
         }
       }
+
+      // Boxes pushed deep into broken winter water sink with a splash
+      if (box.state === 'active') {
+        for (const pit of this.icePits) {
+          if (pit.broken && isPointInIcePit(box.x, box.y, pit, -12)) {
+            box.state = 'fading';
+            box.stateTimer = 0.16;
+            this.emitEvent('splash', box.x, box.y);
+            this.spawnParticles(box.x, box.y, '#7DD3FC', 12, 130);
+            break;
+          }
+        }
+      }
     }
 
     // Separate active boxes from one another
@@ -626,35 +749,181 @@ export class ArenaEngine {
     };
 
     if (kind === 'tnt') {
+      pickup.vx = 0;
+      pickup.vy = 0;
+      pickup.armed = false;
+      pickup.ownerId = null;
       pickup.countdown = TNT_COUNTDOWN;
       pickup.maxCountdown = TNT_COUNTDOWN;
       pickup.lastTickSecond = 3;
-      this.emitEvent('tnt_tick', spot.x, spot.y, 3);
     }
 
     this.pickups.push(pickup);
   }
 
+  private resolveRectAgainstWalls(item: { x: number; y: number; vx: number; vy: number }, halfW: number, halfH: number) {
+    for (const wall of this.map.walls) {
+      const overlapX = Math.min(item.x + halfW, wall.x + wall.w) - Math.max(item.x - halfW, wall.x);
+      const overlapY = Math.min(item.y + halfH, wall.y + wall.h) - Math.max(item.y - halfH, wall.y);
+      if (overlapX > 0 && overlapY > 0) {
+        if (overlapX < overlapY) {
+          const sign = item.x < wall.x + wall.w * 0.5 ? -1 : 1;
+          item.x += sign * overlapX;
+          if ((sign < 0 && item.vx > 0) || (sign > 0 && item.vx < 0)) item.vx = 0;
+        } else {
+          const sign = item.y < wall.y + wall.h * 0.5 ? -1 : 1;
+          item.y += sign * overlapY;
+          if ((sign < 0 && item.vy > 0) || (sign > 0 && item.vy < 0)) item.vy = 0;
+        }
+      }
+    }
+  }
+
   private updatePickups(dt: number) {
-    const tntToExplode: Pickup[] = [];
+    const tntToExplode: Array<{ item: Pickup; attacker: number | null }> = [];
+    const tntItems: Pickup[] = [];
 
     for (const item of this.pickups) {
       item.age += dt;
-      if (item.kind === 'tnt' && item.countdown !== undefined) {
-        item.countdown -= dt;
-        const secCeil = Math.ceil(item.countdown);
-        if (secCeil >= 1 && item.lastTickSecond !== secCeil) {
-          item.lastTickSecond = secCeil;
-          this.emitEvent('tnt_tick', item.x, item.y, secCeil);
+      if (item.kind === 'tnt') {
+        tntItems.push(item);
+
+        const vx = item.vx ?? 0;
+        const vy = item.vy ?? 0;
+        if (Math.abs(vx) > 0.5 || Math.abs(vy) > 0.5) {
+          item.x += vx * dt;
+          item.y += vy * dt;
+          const friction = Math.exp(-8.5 * dt);
+          const nextVx = vx * friction;
+          const nextVy = vy * friction;
+          if (Math.hypot(nextVx, nextVy) < 4) {
+            item.vx = 0;
+            item.vy = 0;
+          } else {
+            item.vx = nextVx;
+            item.vy = nextVy;
+          }
         }
-        if (item.countdown <= 0) {
-          tntToExplode.push(item);
+
+        const tntState = { x: item.x, y: item.y, vx: item.vx ?? 0, vy: item.vy ?? 0 };
+        this.resolveRectAgainstWalls(tntState, TNT_HALF_SIZE, TNT_HALF_SIZE);
+        item.x = tntState.x;
+        item.y = tntState.y;
+        item.vx = tntState.vx;
+        item.vy = tntState.vy;
+
+        if (item.armed && item.countdown !== undefined) {
+          item.countdown -= dt;
+          const secCeil = Math.ceil(item.countdown);
+          if (secCeil >= 1 && item.lastTickSecond !== secCeil) {
+            item.lastTickSecond = secCeil;
+            this.emitEvent('tnt_tick', item.x, item.y, secCeil);
+          }
+          if (item.countdown <= 0) {
+            tntToExplode.push({ item, attacker: item.ownerId ?? null });
+          }
         }
       }
     }
 
-    for (const tnt of tntToExplode) {
-      this.detonatePickup(tnt, null);
+    for (const tnt of tntItems) {
+      for (const box of this.boxes) {
+        if (box.state !== 'active') continue;
+        const overlapX = TNT_HALF_SIZE + box.w * 0.5 - Math.abs(box.x - tnt.x);
+        const overlapY = TNT_HALF_SIZE + box.h * 0.5 - Math.abs(box.y - tnt.y);
+        if (overlapX > 0 && overlapY > 0) {
+          if (overlapX < overlapY) {
+            const sign = tnt.x <= box.x ? 1 : -1;
+            tnt.x -= sign * overlapX * 0.5;
+            box.x += sign * overlapX * 0.5;
+          } else {
+            const sign = tnt.y <= box.y ? 1 : -1;
+            tnt.y -= sign * overlapY * 0.5;
+            box.y += sign * overlapY * 0.5;
+          }
+        }
+      }
+    }
+    for (let i = 0; i < tntItems.length; i++) {
+      for (let j = i + 1; j < tntItems.length; j++) {
+        const a = tntItems[i];
+        const b = tntItems[j];
+        const overlapX = TNT_HALF_SIZE * 2 - Math.abs(b.x - a.x);
+        const overlapY = TNT_HALF_SIZE * 2 - Math.abs(b.y - a.y);
+        if (overlapX > 0 && overlapY > 0) {
+          if (overlapX < overlapY) {
+            const sign = a.x <= b.x ? 1 : -1;
+            a.x -= sign * overlapX * 0.5;
+            b.x += sign * overlapX * 0.5;
+          } else {
+            const sign = a.y <= b.y ? 1 : -1;
+            a.y -= sign * overlapY * 0.5;
+            b.y += sign * overlapY * 0.5;
+          }
+        }
+      }
+    }
+
+    // Nitros detonate immediately on contact with Cardboard Boxes or TNT crates
+    const nitrosToDetonate: Array<{ item: Pickup; attacker: number | null }> = [];
+    for (const item of this.pickups) {
+      if (item.kind !== 'nitro') continue;
+      let triggered = false;
+
+      for (const box of this.boxes) {
+        if (box.state !== 'active') continue;
+        const boxRect: WallRect = {
+          x: box.x - box.w * 0.5,
+          y: box.y - box.h * 0.5,
+          w: box.w,
+          h: box.h,
+        };
+        if (circleIntersectsRect(item.x, item.y, NITRO_RADIUS - 2, boxRect)) {
+          nitrosToDetonate.push({ item, attacker: box.lastPusherId ?? null });
+          triggered = true;
+          break;
+        }
+      }
+      if (triggered) continue;
+
+      for (const tnt of tntItems) {
+        const tntRect: WallRect = {
+          x: tnt.x - TNT_HALF_SIZE,
+          y: tnt.y - TNT_HALF_SIZE,
+          w: TNT_HALF_SIZE * 2,
+          h: TNT_HALF_SIZE * 2,
+        };
+        if (circleIntersectsRect(item.x, item.y, NITRO_RADIUS - 2, tntRect)) {
+          nitrosToDetonate.push({ item, attacker: tnt.ownerId ?? null });
+          break;
+        }
+      }
+    }
+
+    // Unlit/moving TNT crates pushed into broken water pits sink with a splash
+    for (let i = this.pickups.length - 1; i >= 0; i--) {
+      const item = this.pickups[i];
+      if (!item || item.kind !== 'tnt') continue;
+      for (const pit of this.icePits) {
+        if (pit.broken && isPointInIcePit(item.x, item.y, pit, -12)) {
+          this.pickups.splice(i, 1);
+          this.emitEvent('splash', item.x, item.y);
+          this.spawnParticles(item.x, item.y, '#7DD3FC', 14, 145);
+          break;
+        }
+      }
+    }
+
+    for (const entry of nitrosToDetonate) {
+      if (this.pickups.some((p) => p.id === entry.item.id)) {
+        this.detonatePickup(entry.item, entry.attacker);
+      }
+    }
+
+    for (const entry of tntToExplode) {
+      if (this.pickups.some((p) => p.id === entry.item.id)) {
+        this.detonatePickup(entry.item, entry.attacker);
+      }
     }
   }
 
@@ -715,43 +984,28 @@ export class ArenaEngine {
       player.x += player.vx * dt;
       player.y += player.vy * dt;
 
-      // Push movable active cardboard boxes & resolve wall collisions
+      // Push movable active cardboard boxes & movable TNT crates (including smooth corner-unstick slide!)
       for (const box of this.boxes) {
         if (box.state !== 'active') continue;
-        const bx = box.x - box.w * 0.5;
-        const by = box.y - box.h * 0.5;
-        const closestX = clamp(player.x, bx, bx + box.w);
-        const closestY = clamp(player.y, by, by + box.h);
-        const dx = player.x - closestX;
-        const dy = player.y - closestY;
-        const d2 = dx * dx + dy * dy;
-        if (d2 < PLAYER_RADIUS * PLAYER_RADIUS) {
-          const d = Math.sqrt(d2);
-          let nx = 0;
-          let ny = 0;
-          let overlap = 0;
-          if (d > 0.0001) {
-            nx = dx / d;
-            ny = dy / d;
-            overlap = PLAYER_RADIUS - d;
-          } else {
-            const leftPen = player.x - bx;
-            const rightPen = bx + box.w - player.x;
-            const topPen = player.y - by;
-            const bottomPen = by + box.h - player.y;
-            const m = Math.min(leftPen, rightPen, topPen, bottomPen);
-            if (m === leftPen) nx = -1;
-            else if (m === rightPen) nx = 1;
-            else if (m === topPen) ny = -1;
-            else ny = 1;
-            overlap = PLAYER_RADIUS + m;
-          }
-          player.x += nx * overlap * 0.42;
-          player.y += ny * overlap * 0.42;
-          box.x -= nx * overlap * 0.58;
-          box.y -= ny * overlap * 0.58;
-          box.vx -= nx * 135;
-          box.vy -= ny * 135;
+        if (this.pushMovableCrate(player, box, box.w * 0.5, box.h * 0.5)) {
+          box.lastPusherId = player.id;
+        }
+      }
+
+      for (const item of this.pickups) {
+        if (item.kind !== 'tnt') continue;
+        const tntCrate = {
+          x: item.x,
+          y: item.y,
+          vx: item.vx ?? 0,
+          vy: item.vy ?? 0,
+        };
+        if (this.pushMovableCrate(player, tntCrate, TNT_HALF_SIZE, TNT_HALF_SIZE)) {
+          item.x = tntCrate.x;
+          item.y = tntCrate.y;
+          item.vx = tntCrate.vx;
+          item.vy = tntCrate.vy;
+          if (!item.armed) item.ownerId = player.id;
         }
       }
 
@@ -837,6 +1091,136 @@ export class ArenaEngine {
         }
       }
     }
+
+    // Broken winter ice pits expose deep water -> instant knockout on falling in!
+    if (this.icePits.length > 0) {
+      for (const player of this.players) {
+        if (!player.alive) continue;
+        for (const pit of this.icePits) {
+          if (!pit.broken) continue;
+          if (isPointInIcePit(player.x, player.y, pit, -14)) {
+            this.drownPlayer(player, player.lastHitBy);
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  private detectWallPins(cx: number, cy: number, halfW: number, halfH: number): { pinX: -1 | 0 | 1; pinY: -1 | 0 | 1 } {
+    let pinX: -1 | 0 | 1 = 0;
+    let pinY: -1 | 0 | 1 = 0;
+    const tol = 4;
+
+    for (const wall of this.map.walls) {
+      const overlapY = Math.min(cy + halfH, wall.y + wall.h) - Math.max(cy - halfH, wall.y);
+      if (overlapY > 4) {
+        if (Math.abs(cx - halfW - (wall.x + wall.w)) <= tol) pinX = -1;
+        else if (Math.abs(cx + halfW - wall.x) <= tol) pinX = 1;
+      }
+      const overlapX = Math.min(cx + halfW, wall.x + wall.w) - Math.max(cx - halfW, wall.x);
+      if (overlapX > 4) {
+        if (Math.abs(cy - halfH - (wall.y + wall.h)) <= tol) pinY = -1;
+        else if (Math.abs(cy + halfH - wall.y) <= tol) pinY = 1;
+      }
+    }
+    return { pinX, pinY };
+  }
+
+  private pushMovableCrate(
+    player: Player,
+    crate: { x: number; y: number; vx: number; vy: number },
+    halfW: number,
+    halfH: number
+  ): boolean {
+    const bx = crate.x - halfW;
+    const by = crate.y - halfH;
+    const bw = halfW * 2;
+    const bh = halfH * 2;
+    const closestX = clamp(player.x, bx, bx + bw);
+    const closestY = clamp(player.y, by, by + bh);
+    const dx = player.x - closestX;
+    const dy = player.y - closestY;
+    const d2 = dx * dx + dy * dy;
+    if (d2 >= PLAYER_RADIUS * PLAYER_RADIUS) return false;
+
+    const d = Math.sqrt(d2);
+    let nx = 0;
+    let ny = 0;
+    let overlap = 0;
+    if (d > 0.0001) {
+      nx = dx / d;
+      ny = dy / d;
+      overlap = PLAYER_RADIUS - d;
+    } else {
+      const leftPen = player.x - bx;
+      const rightPen = bx + bw - player.x;
+      const topPen = player.y - by;
+      const bottomPen = by + bh - player.y;
+      const m = Math.min(leftPen, rightPen, topPen, bottomPen);
+      if (m === leftPen) nx = -1;
+      else if (m === rightPen) nx = 1;
+      else if (m === topPen) ny = -1;
+      else ny = 1;
+      overlap = PLAYER_RADIUS + m;
+    }
+
+    const pins = this.detectWallPins(crate.x, crate.y, halfW, halfH);
+
+    if (pins.pinX !== 0 && pins.pinY !== 0) {
+      // Corner-pinned crate: slide smoothly out along the unblocked wall edge away from the player's body
+      const escX = -pins.pinX;
+      const escY = -pins.pinY;
+      const relX = player.x - crate.x;
+      const relY = player.y - crate.y;
+
+      const xScore =
+        Math.abs(relY) -
+        Math.abs(relX) +
+        (player.vx * escX > 35 ? 48 : player.vx * escX < -35 ? -20 : 0);
+      const yScore =
+        Math.abs(relX) -
+        Math.abs(relY) +
+        (player.vy * escY > 35 ? 48 : player.vy * escY < -35 ? -20 : 0);
+
+      player.x += nx * overlap * 0.35;
+      player.y += ny * overlap * 0.35;
+
+      if (xScore >= yScore) {
+        crate.x += escX * Math.max(overlap * 0.9, 6);
+        crate.vx = escX * 225;
+        crate.vy = 0;
+      } else {
+        crate.y += escY * Math.max(overlap * 0.9, 6);
+        crate.vy = escY * 225;
+        crate.vx = 0;
+      }
+      return true;
+    }
+
+    player.x += nx * overlap * 0.42;
+    player.y += ny * overlap * 0.42;
+    crate.x -= nx * overlap * 0.58;
+    crate.y -= ny * overlap * 0.58;
+
+    let pushVx = crate.vx - nx * 135 + player.vx * 0.35;
+    let pushVy = crate.vy - ny * 135 + player.vy * 0.35;
+
+    // If flush against a single wall, redirect inward push into lateral glide so crates slide smoothly along walls
+    if (pins.pinX !== 0 && pushVx * pins.pinX > 0) {
+      const lateralDir = Math.abs(player.vy) > 20 ? Math.sign(player.vy) : Math.sign(crate.y - player.y || 1);
+      pushVy += lateralDir * Math.min(180, Math.abs(pushVx) * 0.85);
+      pushVx = 0;
+    }
+    if (pins.pinY !== 0 && pushVy * pins.pinY > 0) {
+      const lateralDir = Math.abs(player.vx) > 20 ? Math.sign(player.vx) : Math.sign(crate.x - player.x || 1);
+      pushVx += lateralDir * Math.min(180, Math.abs(pushVy) * 0.85);
+      pushVy = 0;
+    }
+
+    crate.vx = clamp(pushVx, -280, 280);
+    crate.vy = clamp(pushVy, -280, 280);
+    return true;
   }
 
   private applyAnalogInput(
@@ -850,7 +1234,9 @@ export class ArenaEngine {
   ) {
     if (allowIdleAim || (active && magnitude > 0.03)) {
       if (Number.isFinite(aimAngle)) {
-        player.angle = aimAngle;
+        const diff = normalizeAngle(aimAngle - player.angle);
+        const maxTurn = PLAYER_TURN_SPEED * dt;
+        player.angle = normalizeAngle(player.angle + clamp(diff, -maxTurn, maxTurn));
       }
     }
 
@@ -917,7 +1303,7 @@ export class ArenaEngine {
     }
 
     for (const p of this.pickups) {
-      if (p.kind === 'tnt') {
+      if (p.kind === 'tnt' && p.armed) {
         const d = dist(bot.x, bot.y, p.x, p.y);
         if (d < TNT_BLAST_RADIUS + 42) {
           const away = Math.atan2(bot.y - p.y, bot.x - p.x);
@@ -932,6 +1318,14 @@ export class ArenaEngine {
           evadeX += Math.cos(away) * 2.0;
           evadeY += Math.sin(away) * 2.0;
         }
+      }
+    }
+
+    for (const pit of this.icePits) {
+      if (pit.broken && isPointInIcePit(bot.x, bot.y, pit, PLAYER_RADIUS + 42)) {
+        const away = Math.atan2(bot.y - pit.y, bot.x - pit.x);
+        evadeX += Math.cos(away) * 3.0;
+        evadeY += Math.sin(away) * 3.0;
       }
     }
 
@@ -980,7 +1374,9 @@ export class ArenaEngine {
           moveRatio = 0.92;
         }
       } else {
-        const enemies = this.players.filter((p) => p.id !== bot.id && p.alive);
+        const enemies = this.players.filter(
+          (p) => p.id !== bot.id && p.alive && !this.isTeammate(bot.id, p.id)
+        );
         if (enemies.length > 0) {
           let target = enemies[0];
           let bestScore = -Infinity;
@@ -1001,24 +1397,25 @@ export class ArenaEngine {
           const targetDist = dist(bot.x, bot.y, target.x, target.y);
           const inRange = !this.map.immersive || targetDist < 680;
 
-          let nitroShotAngle: number | null = null;
+          let explosiveShotAngle: number | null = null;
           if (inRange) {
             for (const n of this.pickups) {
-              if (n.kind !== 'nitro') continue;
+              if (n.kind !== 'nitro' && !(n.kind === 'tnt' && !n.armed)) continue;
+              const blastR = n.kind === 'tnt' ? TNT_BLAST_RADIUS : NITRO_BLAST_RADIUS;
               if (
-                dist(n.x, n.y, target.x, target.y) < NITRO_BLAST_RADIUS - 10 &&
-                dist(n.x, n.y, bot.x, bot.y) > NITRO_BLAST_RADIUS + 20 &&
+                dist(n.x, n.y, target.x, target.y) < blastR - 10 &&
+                dist(n.x, n.y, bot.x, bot.y) > blastR + 20 &&
                 this.hasLineOfSight(bot.x, bot.y, n.x, n.y)
               ) {
-                nitroShotAngle = Math.atan2(n.y - bot.y, n.x - bot.x);
+                explosiveShotAngle = Math.atan2(n.y - bot.y, n.x - bot.x);
                 break;
               }
             }
           }
 
-          if (nitroShotAngle !== null && bot.aiHoldShotTimer <= 0) {
+          if (explosiveShotAngle !== null && bot.aiHoldShotTimer <= 0) {
             wantsToShoot = true;
-            shootAngle = nitroShotAngle + (Math.random() - 0.5) * aimSpread * 0.6;
+            shootAngle = explosiveShotAngle + (Math.random() - 0.5) * aimSpread * 0.6;
           } else if (inRange && this.hasLineOfSight(bot.x, bot.y, target.x, target.y) && bot.aiHoldShotTimer <= 0) {
             const travelT = targetDist / BULLET_SPEED;
             const predX = target.x + target.vx * travelT * 0.78;
@@ -1250,14 +1647,41 @@ export class ArenaEngine {
 
         for (let pIdx = this.pickups.length - 1; pIdx >= 0; pIdx--) {
           const p = this.pickups[pIdx];
-          if (
-            p &&
-            (p.kind === 'nitro' || p.kind === 'tnt') &&
-            dist(b.x, b.y, p.x, p.y) <= b.radius + p.radius
-          ) {
+          if (!p) continue;
+          if (p.kind === 'nitro' && dist(b.x, b.y, p.x, p.y) <= b.radius + p.radius) {
             this.detonatePickup(p, b.ownerId);
             destroyed = true;
             break;
+          }
+          if (p.kind === 'tnt') {
+            const tntRect: WallRect = {
+              x: p.x - TNT_HALF_SIZE,
+              y: p.y - TNT_HALF_SIZE,
+              w: TNT_HALF_SIZE * 2,
+              h: TNT_HALF_SIZE * 2,
+            };
+            if (circleIntersectsRect(b.x, b.y, b.radius, tntRect)) {
+              const bSpeed = Math.hypot(b.vx, b.vy) || 1;
+              const pushImpulse = 300;
+              p.vx = (p.vx ?? 0) + (b.vx / bSpeed) * pushImpulse;
+              p.vy = (p.vy ?? 0) + (b.vy / bSpeed) * pushImpulse;
+              p.ownerId = b.ownerId;
+
+              if (!p.armed) {
+                p.armed = true;
+                p.countdown = TNT_COUNTDOWN;
+                p.maxCountdown = TNT_COUNTDOWN;
+                p.lastTickSecond = 3;
+                this.emitEvent('tnt_tick', p.x, p.y, 3);
+                this.addFloatingText(p.x, p.y - (TNT_HALF_SIZE + 12), '3s FUSE!', '#FEF08A');
+              }
+
+              this.emitEvent('hit', p.x, p.y);
+              this.spawnParticles(b.x, b.y, '#EF4444', 9, 140);
+              this.spawnParticles(b.x, b.y, '#FEF08A', 5, 110);
+              destroyed = true;
+              break;
+            }
           }
         }
         if (destroyed) break;
@@ -1265,6 +1689,7 @@ export class ArenaEngine {
         for (const player of this.players) {
           if (!player.alive || player.stunTimer > 0) continue;
           if (player.id === b.ownerId && b.age < BULLET_SELF_GRACE) continue;
+          if (player.id !== b.ownerId && this.isTeammate(b.ownerId, player.id)) continue;
           if (dist(b.x, b.y, player.x, player.y) <= b.radius + PLAYER_RADIUS) {
             const speed = Math.hypot(b.vx, b.vy) || 1;
             const knockX = (b.vx / speed) * 220;
@@ -1326,6 +1751,13 @@ export class ArenaEngine {
 
       for (const player of this.players) {
         if (!player.alive) continue;
+        if (
+          current.attacker !== null &&
+          current.attacker !== player.id &&
+          this.isTeammate(current.attacker, player.id)
+        ) {
+          continue;
+        }
         const d = dist(current.item.x, current.item.y, player.x, player.y);
         if (d <= blastRadius + PLAYER_RADIUS * 0.6) {
           const angle = Math.atan2(player.y - current.item.y, player.x - current.item.x);
@@ -1355,7 +1787,54 @@ export class ArenaEngine {
           }
         }
       }
+
+      // Break fragile winter ice pits touched by Nitro or TNT blasts -> exposes deep water!
+      for (const pit of this.icePits) {
+        if (!pit.broken && circleOverlapsIcePit(current.item.x, current.item.y, blastRadius, pit)) {
+          pit.broken = true;
+          this.emitEvent('splash', pit.x, pit.y);
+          this.spawnParticles(pit.x, pit.y, '#BAE6FD', 22, 220);
+          this.spawnParticles(pit.x, pit.y, '#38BDF8', 14, 165);
+          this.addFloatingText(pit.x, pit.y - 10, 'ICE BROKEN!', '#7DD3FC');
+
+          for (const player of this.players) {
+            if (!player.alive) continue;
+            if (isPointInIcePit(player.x, player.y, pit, -14)) {
+              this.drownPlayer(player, current.attacker ?? player.lastHitBy);
+            }
+          }
+        }
+      }
     }
+  }
+
+  public isTeammate(aId: number | null | undefined, bId: number | null | undefined): boolean {
+    if (this.config.teamMode !== '2V2') return false;
+    if (aId === null || aId === undefined || bId === null || bId === undefined) return false;
+    const a = this.players.find((p) => p.id === aId);
+    const b = this.players.find((p) => p.id === bId);
+    return Boolean(a && b && a.team !== undefined && a.team === b.team);
+  }
+
+  private drownPlayer(player: Player, attackerId: number | null) {
+    if (!player.alive) return;
+    player.hp = 0;
+    player.alive = false;
+    player.deaths += 1;
+    player.stunTimer = 0;
+    player.ammo = 0;
+    player.respawnTimer = RESPAWN_DELAY;
+
+    if (attackerId !== null && attackerId !== player.id && !this.isTeammate(attackerId, player.id)) {
+      const attacker = this.players.find((p) => p.id === attackerId);
+      if (attacker) attacker.kills += 1;
+    }
+
+    this.emitEvent('splash', player.x, player.y);
+    this.emitEvent('knockout', player.x, player.y);
+    this.spawnParticles(player.x, player.y, '#BAE6FD', 18, 190);
+    this.spawnParticles(player.x, player.y, '#38BDF8', 16, 150);
+    this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 10), 'SPLASH KO!', '#7DD3FC');
   }
 
   private applyDamage(
@@ -1366,6 +1845,9 @@ export class ArenaEngine {
     knockVy: number
   ) {
     if (!player.alive || player.spawnInvulnTimer > 0 || player.stunTimer > 0) return;
+    if (attackerId !== null && attackerId !== player.id && this.isTeammate(attackerId, player.id)) {
+      return;
+    }
 
     player.hp = Math.max(0, player.hp - amount);
     player.hurtFlashTimer = 0.22;
@@ -1411,7 +1893,7 @@ export class ArenaEngine {
     for (const sp of this.map.spawns) {
       let minD = Infinity;
       for (const other of this.players) {
-        if (other.id !== player.id && other.alive) {
+        if (other.id !== player.id && other.alive && !this.isTeammate(player.id, other.id)) {
           minD = Math.min(minD, dist(sp.x, sp.y, other.x, other.y));
         }
       }
@@ -1437,6 +1919,53 @@ export class ArenaEngine {
 
   private checkWinConditions() {
     if (this.players.length <= 1) return;
+
+    if (this.config.teamMode === '2V2') {
+      const team0 = this.players.filter((p) => p.team === 0);
+      const team1 = this.players.filter((p) => p.team === 1);
+      const team0Kills = team0.reduce((sum, p) => sum + p.kills, 0);
+      const team1Kills = team1.reduce((sum, p) => sum + p.kills, 0);
+
+      if (this.config.mode === 'ELIMINATION') {
+        const alive0 = team0.filter((p) => p.alive);
+        const alive1 = team1.filter((p) => p.alive);
+        if (alive0.length > 0 && alive1.length === 0) {
+          this.winnerTeam = 0;
+          this.winnerId = alive0[0].id;
+          this.winnerReason = 'Team Alpha wins Last Standing';
+          this.emitEvent('victory', alive0[0].x, alive0[0].y);
+        } else if (alive1.length > 0 && alive0.length === 0) {
+          this.winnerTeam = 1;
+          this.winnerId = alive1[0].id;
+          this.winnerReason = 'Team Bravo wins Last Standing';
+          this.emitEvent('victory', alive1[0].x, alive1[0].y);
+        } else if (alive0.length === 0 && alive1.length === 0) {
+          const team0Dmg = team0.reduce((sum, p) => sum + p.damageDealt, 0);
+          const team1Dmg = team1.reduce((sum, p) => sum + p.damageDealt, 0);
+          const winTeam = team0Kills > team1Kills || (team0Kills === team1Kills && team0Dmg >= team1Dmg) ? 0 : 1;
+          const mvp = (winTeam === 0 ? team0 : team1)[0] ?? this.players[0];
+          this.winnerTeam = winTeam;
+          this.winnerId = mvp.id;
+          this.winnerReason = `Double knockout — ${winTeam === 0 ? 'Team Alpha' : 'Team Bravo'} wins on points`;
+          this.emitEvent('victory', mvp.x, mvp.y);
+        }
+      } else {
+        if (team0Kills >= this.config.targetKills) {
+          const mvp = [...team0].sort((a, b) => b.kills - a.kills)[0] ?? this.players[0];
+          this.winnerTeam = 0;
+          this.winnerId = mvp.id;
+          this.winnerReason = `Team Alpha reached ${this.config.targetKills} team knockouts`;
+          this.emitEvent('victory', mvp.x, mvp.y);
+        } else if (team1Kills >= this.config.targetKills) {
+          const mvp = [...team1].sort((a, b) => b.kills - a.kills)[0] ?? this.players[0];
+          this.winnerTeam = 1;
+          this.winnerId = mvp.id;
+          this.winnerReason = `Team Bravo reached ${this.config.targetKills} team knockouts`;
+          this.emitEvent('victory', mvp.x, mvp.y);
+        }
+      }
+      return;
+    }
 
     if (this.config.mode === 'ELIMINATION') {
       const alivePlayers = this.players.filter((p) => p.alive);
@@ -1519,6 +2048,7 @@ export class ArenaEngine {
       players: this.players.map((p) => ({
         id: p.id,
         name: p.name,
+        team: p.team,
         isHuman: p.id === localPlayerId,
         color: p.color,
         hp: p.hp,
@@ -1534,7 +2064,9 @@ export class ArenaEngine {
       })),
       elapsedTime: this.elapsedTime,
       activeBullets: this.bullets.length,
+      teamMode: this.config.teamMode ?? 'FFA',
       winnerId: this.winnerId,
+      winnerTeam: this.winnerTeam,
       winnerReason: this.winnerReason,
     };
   }
@@ -1545,13 +2077,16 @@ export class ArenaEngine {
       mapId: this.map.id,
       immersive: this.map.immersive,
       extraDark: Boolean(this.config.extraDark),
+      teamMode: this.config.teamMode ?? 'FFA',
       elapsedTime: this.elapsedTime,
       screenShake: this.screenShake,
       winnerId: this.winnerId,
+      winnerTeam: this.winnerTeam,
       winnerReason: this.winnerReason,
       players: this.players.map((p) => ({
         id: p.id,
         name: p.name,
+        team: p.team,
         color: p.color,
         accentColor: p.accentColor,
         x: Math.round(p.x * 10) / 10,
@@ -1575,6 +2110,7 @@ export class ArenaEngine {
       bullets: this.bullets,
       pickups: this.pickups,
       boxes: this.boxes,
+      icePits: this.icePits,
       explosions: this.explosions,
       particles: this.particles,
       floatingTexts: this.floatingTexts,

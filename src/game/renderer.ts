@@ -6,10 +6,12 @@ import type {
   ControlScheme,
   Explosion,
   FloatingText,
+  IcePit,
   JoystickState,
   MapId,
   Particle,
   Pickup,
+  TeamMode,
   WallRect,
 } from './types';
 import {
@@ -26,6 +28,7 @@ import {
 export interface RenderPlayer {
   id: number;
   name: string;
+  team?: number;
   color: string;
   accentColor: string;
   x: number;
@@ -47,12 +50,14 @@ export interface RenderableWorld {
   mapId: MapId;
   immersive: boolean;
   extraDark?: boolean;
+  teamMode?: TeamMode;
   elapsedTime: number;
   screenShake: number;
   players: RenderPlayer[];
   bullets: Bullet[];
   pickups: Pickup[];
   boxes: CardboardBox[];
+  icePits?: IcePit[];
   explosions: Explosion[];
   particles: Particle[];
   floatingTexts: FloatingText[];
@@ -158,20 +163,28 @@ function drawPersianRug(
   border: string
 ) {
   ctx.save();
-  // Subtle rug shadow
-  ctx.fillStyle = 'rgba(20, 10, 4, 0.22)';
-  ctx.fillRect(x + 3, y + 4, w, h);
+  // Deep contrast rug drop shadow against rich walnut floor
+  ctx.fillStyle = 'rgba(5, 2, 1, 0.48)';
+  ctx.fillRect(x + 4, y + 6, w, h);
 
   ctx.fillStyle = primary;
   ctx.fillRect(x, y, w, h);
 
+  // Subtle woven center sheen for jewel-tone depth
+  const sheen = ctx.createLinearGradient(x, y, x, y + h);
+  sheen.addColorStop(0, 'rgba(255, 255, 255, 0.14)');
+  sheen.addColorStop(0.5, 'rgba(255, 255, 255, 0.02)');
+  sheen.addColorStop(1, 'rgba(0, 0, 0, 0.18)');
+  ctx.fillStyle = sheen;
+  ctx.fillRect(x, y, w, h);
+
   // Ornamental double border
   ctx.strokeStyle = border;
-  ctx.lineWidth = 4;
+  ctx.lineWidth = 4.5;
   ctx.strokeRect(x + 10, y + 10, w - 20, h - 20);
 
-  ctx.strokeStyle = 'rgba(254, 243, 199, 0.35)';
-  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = 'rgba(254, 249, 195, 0.52)';
+  ctx.lineWidth = 1.6;
   ctx.strokeRect(x + 18, y + 18, w - 36, h - 36);
 
   // Center diamond medallion
@@ -187,22 +200,26 @@ function drawPersianRug(
   ctx.closePath();
   ctx.fill();
 
-  // Fringe tassels on short ends
-  ctx.strokeStyle = 'rgba(245, 235, 215, 0.55)';
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.36)';
   ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Fringe tassels on short ends
+  ctx.strokeStyle = 'rgba(254, 243, 199, 0.68)';
+  ctx.lineWidth = 1.6;
   for (let fy = y + 8; fy < y + h - 6; fy += 8) {
     ctx.beginPath();
-    ctx.moveTo(x - 5, fy);
+    ctx.moveTo(x - 6, fy);
     ctx.lineTo(x, fy);
     ctx.moveTo(x + w, fy);
-    ctx.lineTo(x + w + 5, fy);
+    ctx.lineTo(x + w + 6, fy);
     ctx.stroke();
   }
   ctx.restore();
 }
 
 function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
-  const key = `${map.id}_${map.width}x${map.height}_v2`;
+  const key = `${map.id}_${map.width}x${map.height}_v4`;
   const existing = floorCache.get(key);
   if (existing) return existing;
 
@@ -286,17 +303,159 @@ function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
         ctx.stroke();
       }
     }
+  } else if (map.floorTheme === 'winter_snow') {
+    // Cool arctic twilight snowfield with lowered color temperature & sculpted ice-blue drifts
+    ctx.fillStyle = '#CEE3FA';
+    ctx.fillRect(0, 0, map.width, map.height);
+
+    // Cool glacial blue color-temperature wash across the arena
+    const skyWash = ctx.createLinearGradient(0, 0, map.width, map.height);
+    skyWash.addColorStop(0, 'rgba(224, 240, 255, 0.42)');
+    skyWash.addColorStop(0.5, 'rgba(147, 197, 253, 0.28)');
+    skyWash.addColorStop(1, 'rgba(59, 130, 246, 0.24)');
+    ctx.fillStyle = skyWash;
+    ctx.fillRect(0, 0, map.width, map.height);
+
+    // Sculpted wind-carved snowdrifts (cooler slate-blue shadow side + pale glacier crest)
+    for (let i = 0; i < 24; i++) {
+      const dx = 90 + seededRand(i * 17 + 5) * (map.width - 180);
+      const dy = 75 + seededRand(i * 31 + 11) * (map.height - 150);
+      const rx = 85 + seededRand(i * 43 + 3) * 115;
+      const ry = 28 + seededRand(i * 59 + 7) * 38;
+      const rot = (seededRand(i * 71 + 9) - 0.5) * 0.45;
+
+      ctx.save();
+      ctx.translate(dx, dy);
+      ctx.rotate(rot);
+
+      ctx.fillStyle = i % 2 === 0 ? 'rgba(96, 165, 250, 0.34)' : 'rgba(125, 211, 252, 0.32)';
+      ctx.beginPath();
+      ctx.ellipse(6, 8, rx, ry, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = 'rgba(232, 244, 255, 0.82)';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, rx * 0.94, ry * 0.86, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // Subtle icy court framing lines & center snow-compass border
+    ctx.save();
+    ctx.strokeStyle = 'rgba(37, 99, 235, 0.22)';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(56, 56, map.width - 112, map.height - 112);
+
+    ctx.strokeStyle = 'rgba(14, 165, 233, 0.22)';
+    ctx.lineWidth = 2.5;
+    ctx.setLineDash([12, 10]);
+    ctx.beginPath();
+    ctx.moveTo(map.width * 0.5, 56);
+    ctx.lineTo(map.width * 0.5, map.height - 56);
+    ctx.stroke();
+    ctx.restore();
+
+    // Cool sparkling frost crystals & snow glints
+    for (let i = 0; i < 210; i++) {
+      const fx = 28 + seededRand(i * 23 + 17) * (map.width - 56);
+      const fy = 28 + seededRand(i * 37 + 29) * (map.height - 56);
+      const r = 1.2 + seededRand(i * 53 + 3) * 1.8;
+      ctx.fillStyle = i % 3 === 0 ? 'rgba(56, 189, 248, 0.45)' : 'rgba(224, 242, 254, 0.88)';
+      ctx.beginPath();
+      ctx.arc(fx, fy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else if (map.floorTheme === 'maple_cargo') {
+    // Polished High-Contrast Marble & Dark Slate Tile Floor for Cargo Deck
+    ctx.fillStyle = '#0F172A';
+    ctx.fillRect(0, 0, map.width, map.height);
+
+    const tile = 100;
+    const cols = Math.ceil(map.width / tile);
+    const rows = Math.ceil(map.height / tile);
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const x = c * tile;
+        const y = r * tile;
+        const seed = r * 97 + c * 43;
+        const isLight = (r + c) % 2 === 0;
+
+        // Alternating dark obsidian-slate marble and cool silver-granite marble tiles
+        const tileGrad = ctx.createLinearGradient(x, y, x + tile, y + tile);
+        if (isLight) {
+          tileGrad.addColorStop(0, '#3B4C63');
+          tileGrad.addColorStop(0.55, '#334155');
+          tileGrad.addColorStop(1, '#293548');
+        } else {
+          tileGrad.addColorStop(0, '#232F42');
+          tileGrad.addColorStop(0.55, '#1B2536');
+          tileGrad.addColorStop(1, '#141C2B');
+        }
+        ctx.fillStyle = tileGrad;
+        ctx.fillRect(x, y, tile, tile);
+
+        // Diagonal marble veining inside each slab
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x + 2, y + 2, tile - 4, tile - 4);
+        ctx.clip();
+
+        ctx.strokeStyle = isLight ? 'rgba(226, 232, 240, 0.14)' : 'rgba(148, 163, 184, 0.08)';
+        ctx.lineWidth = 1.6;
+        for (let v = 0; v < 2; v++) {
+          const offset = seededRand(seed + v * 19) * tile * 0.65;
+          ctx.beginPath();
+          ctx.moveTo(x - 10 + offset, y + tile + 8);
+          ctx.bezierCurveTo(
+            x + tile * 0.3 + (seededRand(seed + v + 3) - 0.5) * 28,
+            y + tile * 0.65,
+            x + tile * 0.65,
+            y + tile * 0.35 + (seededRand(seed + v + 7) - 0.5) * 28,
+            x + tile + 8,
+            y - 8 + offset * 0.5
+          );
+          ctx.stroke();
+        }
+
+        // Crisp subtle marble speck / secondary fracture vein on light slabs
+        if (isLight) {
+          ctx.strokeStyle = 'rgba(15, 23, 42, 0.18)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(x + 8, y + tile * 0.25);
+          ctx.lineTo(x + tile * 0.65, y + tile * 0.55);
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        // Top & left polished bevel highlight
+        ctx.fillStyle = isLight ? 'rgba(248, 250, 252, 0.12)' : 'rgba(148, 163, 184, 0.07)';
+        ctx.fillRect(x + 1, y + 1, tile - 2, 2);
+        ctx.fillRect(x + 1, y + 1, 2, tile - 2);
+
+        // Deep crisp tile grout seam
+        ctx.strokeStyle = 'rgba(6, 10, 19, 0.72)';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x, y, tile, tile);
+      }
+    }
+
+    // Crisp industrial hazard lane border & center ring
+    ctx.strokeStyle = 'rgba(250, 204, 21, 0.28)';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(70, 70, map.width - 140, map.height - 140);
+    ctx.beginPath();
+    ctx.arc(map.width / 2, map.height / 2, 130, 0, Math.PI * 2);
+    ctx.stroke();
   } else {
-    // Rich warm honey-oak / golden walnut hardwood planks
-    const isCargo = map.floorTheme === 'maple_cargo';
-    ctx.fillStyle = isCargo ? '#7E5A38' : '#7D4E2B';
+    // Rich dark espresso/walnut hardwood planks for Manor Foyer & Wooden Mansion
+    ctx.fillStyle = '#331A0D';
     ctx.fillRect(0, 0, map.width, map.height);
 
     const plankH = 34;
     const plankW = 148;
-    const tones = isCargo
-      ? ['#9E744B', '#A87D52', '#946B43', '#B0855A', '#9A7148']
-      : ['#9C653A', '#A66D40', '#8F5B33', '#AE7446', '#966037'];
+    const tones = ['#452412', '#522C17', '#3E2010', '#5C321A', '#4A2714'];
 
     const rows = Math.ceil(map.height / plankH);
     for (let r = 0; r < rows; r++) {
@@ -311,9 +470,9 @@ function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
         ctx.fillStyle = tones[toneIdx];
         ctx.fillRect(x, y, plankW, plankH);
 
-        // Warm wood grain
-        ctx.strokeStyle = 'rgba(72, 36, 14, 0.18)';
-        ctx.lineWidth = 1;
+        // Deep dark walnut wood grain
+        ctx.strokeStyle = 'rgba(18, 8, 3, 0.36)';
+        ctx.lineWidth = 1.1;
         for (let g = 0; g < 3; g++) {
           const gy = y + 6 + g * 9 + seededRand(seed + g) * 4;
           ctx.beginPath();
@@ -329,43 +488,33 @@ function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
           ctx.stroke();
         }
 
-        // Subtle golden plank highlight
-        ctx.fillStyle = 'rgba(255, 236, 200, 0.08)';
+        // Subtle lacquered varnish sheen highlight
+        ctx.fillStyle = 'rgba(255, 224, 178, 0.065)';
         ctx.fillRect(x + 1, y + 1, plankW - 2, 2);
 
-        // Plank seam
-        ctx.strokeStyle = 'rgba(54, 27, 10, 0.36)';
-        ctx.lineWidth = 1.2;
+        // Crisp dark plank seam
+        ctx.strokeStyle = 'rgba(15, 6, 2, 0.65)';
+        ctx.lineWidth = 1.3;
         ctx.strokeRect(x, y, plankW, plankH);
       }
     }
 
-    if (map.floorTheme === 'mansion_wood') {
-      // Ornate colorful Persian carpets in the Mansion
-      drawPersianRug(
-        ctx,
-        map.width / 2 - (map.immersive ? 260 : 190),
-        map.height / 2 - (map.immersive ? 190 : 140),
-        map.immersive ? 520 : 380,
-        map.immersive ? 380 : 280,
-        '#7F1D1D',
-        '#D97706'
-      );
+    // Brighter jewel-toned Persian carpets creating crisp contrast against dark espresso walnut
+    drawPersianRug(
+      ctx,
+      map.width / 2 - (map.immersive ? 260 : 190),
+      map.height / 2 - (map.immersive ? 190 : 140),
+      map.immersive ? 520 : 380,
+      map.immersive ? 380 : 280,
+      '#C81E2E',
+      '#FBBF24'
+    );
 
-      if (map.immersive) {
-        drawPersianRug(ctx, 290, 220, 320, 210, '#1E3A8A', '#F59E0B');
-        drawPersianRug(ctx, map.width - 610, 220, 320, 210, '#065F46', '#FBBF24');
-        drawPersianRug(ctx, 290, map.height - 430, 320, 210, '#581C87', '#F59E0B');
-        drawPersianRug(ctx, map.width - 610, map.height - 430, 320, 210, '#991B1B', '#FBBF24');
-      }
-    } else {
-      // Industrial Cargo lane markings
-      ctx.strokeStyle = 'rgba(250, 204, 21, 0.22)';
-      ctx.lineWidth = 4;
-      ctx.strokeRect(70, 70, map.width - 140, map.height - 140);
-      ctx.beginPath();
-      ctx.arc(map.width / 2, map.height / 2, 130, 0, Math.PI * 2);
-      ctx.stroke();
+    if (map.immersive) {
+      drawPersianRug(ctx, 290, 220, 320, 210, '#2563EB', '#FCD34D');
+      drawPersianRug(ctx, map.width - 610, 220, 320, 210, '#10B981', '#FDE047');
+      drawPersianRug(ctx, 290, map.height - 430, 320, 210, '#9333EA', '#FCD34D');
+      drawPersianRug(ctx, map.width - 610, map.height - 430, 320, 210, '#E11D48', '#FDE047');
     }
   }
 
@@ -376,7 +525,12 @@ function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
 function drawObstacle(ctx: CanvasRenderingContext2D, wall: WallRect) {
   const kind = wall.kind ?? 'metal';
 
-  if (kind === 'perimeter_wood' || kind === 'perimeter_hedge' || kind === 'perimeter_steel') {
+  if (
+    kind === 'perimeter_wood' ||
+    kind === 'perimeter_hedge' ||
+    kind === 'perimeter_steel' ||
+    kind === 'perimeter_ice'
+  ) {
     if (kind === 'perimeter_hedge') {
       ctx.fillStyle = '#14532D';
       ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
@@ -384,25 +538,37 @@ function drawObstacle(ctx: CanvasRenderingContext2D, wall: WallRect) {
       ctx.lineWidth = 2;
       ctx.strokeRect(wall.x + 1, wall.y + 1, wall.w - 2, wall.h - 2);
     } else if (kind === 'perimeter_wood') {
-      ctx.fillStyle = '#451A03';
+      ctx.fillStyle = '#2E1306';
       ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
       ctx.strokeStyle = '#92400E';
       ctx.lineWidth = 2;
       ctx.strokeRect(wall.x + 1, wall.y + 1, wall.w - 2, wall.h - 2);
-    } else {
-      ctx.fillStyle = '#1E293B';
+    } else if (kind === 'perimeter_ice') {
+      ctx.fillStyle = '#0A1E3D';
       ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
-      ctx.strokeStyle = '#475569';
+      ctx.strokeStyle = '#38BDF8';
+      ctx.lineWidth = 2.4;
+      ctx.strokeRect(wall.x + 1, wall.y + 1, wall.w - 2, wall.h - 2);
+    } else {
+      ctx.fillStyle = '#0F172A';
+      ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
+      ctx.strokeStyle = '#64748B';
       ctx.lineWidth = 2;
       ctx.strokeRect(wall.x + 1, wall.y + 1, wall.w - 2, wall.h - 2);
     }
     return;
   }
 
-  // Cast shadow onto floor away from upper lights
-  ctx.fillStyle = 'rgba(6, 5, 10, 0.44)';
+  // Deep cinematic cast shadow onto floor away from upper lights
+  ctx.fillStyle = kind === 'pine_tree' ? 'rgba(8, 28, 66, 0.38)' : 'rgba(4, 3, 8, 0.56)';
   ctx.beginPath();
-  ctx.roundRect(wall.x + 10, wall.y + 14, wall.w, wall.h, kind === 'tree' || kind === 'rock' ? 20 : 7);
+  ctx.roundRect(
+    wall.x + 10,
+    wall.y + 15,
+    wall.w,
+    wall.h,
+    kind === 'tree' || kind === 'rock' || kind === 'pine_tree' ? 22 : 7
+  );
   ctx.fill();
 
   if (kind === 'sofa') {
@@ -612,6 +778,82 @@ function drawObstacle(ctx: CanvasRenderingContext2D, wall: WallRect) {
     return;
   }
 
+  if (kind === 'pine_tree') {
+    ctx.save();
+    const cx = wall.x + wall.w / 2;
+    const cy = wall.y + wall.h / 2;
+    const r = Math.min(wall.w, wall.h) * 0.5;
+
+    // Dark bark base
+    ctx.fillStyle = '#3F2312';
+    ctx.beginPath();
+    ctx.arc(cx, cy + 5, r * 0.28, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Tier 1 (outermost dark mountain evergreen needles)
+    ctx.fillStyle = '#064E3B';
+    ctx.beginPath();
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2;
+      const rad = i % 2 === 0 ? r * 1.02 : r * 0.78;
+      const px = cx + Math.cos(a) * rad;
+      const py = cy + Math.sin(a) * rad;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+
+    // Tier 2 (mid rich pine green boughs)
+    ctx.fillStyle = '#047857';
+    ctx.beginPath();
+    for (let i = 0; i < 14; i++) {
+      const a = (i / 14) * Math.PI * 2 + 0.22;
+      const rad = i % 2 === 0 ? r * 0.78 : r * 0.56;
+      const px = cx - 2 + Math.cos(a) * rad;
+      const py = cy - 2 + Math.sin(a) * rad;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+
+    // Cool glacier-tinted snow patches draped along upper boughs
+    ctx.fillStyle = '#BAE6FD';
+    for (let i = 0; i < 5; i++) {
+      const a = -Math.PI * 0.88 + i * 0.48;
+      ctx.beginPath();
+      ctx.ellipse(
+        cx + Math.cos(a) * r * 0.58,
+        cy + Math.sin(a) * r * 0.58,
+        r * 0.22,
+        r * 0.13,
+        a + Math.PI / 2,
+        0,
+        Math.PI * 2
+      );
+      ctx.fill();
+    }
+
+    // Tier 3 (inner bright spruce crown + cool frost-capped peak)
+    ctx.fillStyle = '#10B981';
+    ctx.beginPath();
+    ctx.arc(cx - 2, cy - 3, r * 0.42, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#E0F2FE';
+    ctx.beginPath();
+    ctx.arc(cx - 4, cy - 5, r * 0.24, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#F0F9FF';
+    ctx.beginPath();
+    ctx.arc(cx - 6, cy - 7, r * 0.12, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+    return;
+  }
+
   if (kind === 'hedge') {
     ctx.save();
     ctx.fillStyle = '#14532D';
@@ -804,16 +1046,16 @@ function drawCardboardBox(ctx: CanvasRenderingContext2D, box: CardboardBox) {
   const hw = box.w * 0.5;
   const hh = box.h * 0.5;
 
-  // Soft directional floor drop shadow
-  ctx.fillStyle = 'rgba(6, 5, 10, 0.44)';
+  // Deep cinematic directional floor drop shadow
+  ctx.fillStyle = 'rgba(4, 3, 8, 0.56)';
   ctx.beginPath();
-  ctx.roundRect(-hw + 8, -hh + 11, box.w, box.h, 6);
+  ctx.roundRect(-hw + 9, -hh + 12, box.w, box.h, 6);
   ctx.fill();
 
-  // Warm wooden cover crate base
-  ctx.fillStyle = box.state === 'punctured' ? '#FDE68A' : '#B4692B';
-  ctx.strokeStyle = '#1C1108';
-  ctx.lineWidth = 2.6;
+  // Warm wooden cover crate base (same hue, higher shadow/highlight contrast)
+  ctx.fillStyle = box.state === 'punctured' ? '#FDE68A' : '#C2762B';
+  ctx.strokeStyle = '#140B04';
+  ctx.lineWidth = 2.8;
   ctx.beginPath();
   ctx.roundRect(-hw, -hh, box.w, box.h, 5);
   ctx.fill();
@@ -821,15 +1063,15 @@ function drawCardboardBox(ctx: CanvasRenderingContext2D, box: CardboardBox) {
 
   // Inner slatted wooden panel
   const inset = 9;
-  ctx.fillStyle = box.state === 'punctured' ? '#FEF08A' : '#D99B52';
-  ctx.strokeStyle = '#78350F';
-  ctx.lineWidth = 1.8;
+  ctx.fillStyle = box.state === 'punctured' ? '#FEF08A' : '#EAB875';
+  ctx.strokeStyle = '#6B2D08';
+  ctx.lineWidth = 2;
   ctx.fillRect(-hw + inset, -hh + inset, box.w - inset * 2, box.h - inset * 2);
   ctx.strokeRect(-hw + inset, -hh + inset, box.w - inset * 2, box.h - inset * 2);
 
-  // Horizontal wooden plank seams & top highlight
-  ctx.strokeStyle = 'rgba(120, 53, 15, 0.45)';
-  ctx.lineWidth = 1.5;
+  // Horizontal wooden plank seams + top/bottom bevel contrast
+  ctx.strokeStyle = 'rgba(92, 38, 9, 0.55)';
+  ctx.lineWidth = 1.6;
   ctx.beginPath();
   ctx.moveTo(-hw + inset, -box.h * 0.14);
   ctx.lineTo(hw - inset, -box.h * 0.14);
@@ -837,11 +1079,13 @@ function drawCardboardBox(ctx: CanvasRenderingContext2D, box: CardboardBox) {
   ctx.lineTo(hw - inset, box.h * 0.14);
   ctx.stroke();
 
-  ctx.fillStyle = 'rgba(255, 245, 220, 0.24)';
-  ctx.fillRect(-hw + 3, -hh + 2.5, box.w - 6, 4);
+  ctx.fillStyle = 'rgba(255, 250, 230, 0.38)';
+  ctx.fillRect(-hw + 3, -hh + 2.5, box.w - 6, 4.5);
+  ctx.fillStyle = 'rgba(45, 20, 5, 0.35)';
+  ctx.fillRect(-hw + 3, hh - 6.5, box.w - 6, 4);
 
   // Diagonal timber brace
-  ctx.strokeStyle = 'rgba(146, 64, 14, 0.35)';
+  ctx.strokeStyle = 'rgba(120, 50, 10, 0.42)';
   ctx.lineWidth = 5;
   ctx.beginPath();
   ctx.moveTo(-hw + inset + 2, hh - inset - 2);
@@ -849,7 +1093,7 @@ function drawCardboardBox(ctx: CanvasRenderingContext2D, box: CardboardBox) {
   ctx.stroke();
 
   // Corner steel rivets
-  ctx.fillStyle = '#94A3B8';
+  ctx.fillStyle = '#CBD5E1';
   for (const [rx, ry] of [
     [-hw + 4.5, -hh + 4.5],
     [hw - 4.5, -hh + 4.5],
@@ -940,10 +1184,14 @@ export function renderArena(
   ctx.translate(worldTx, worldTy);
   ctx.scale(scale, scale);
 
-  // 1. Lively Wooden / Meadow Grass Floor + Subtle Ambient Light Pools
+  // 1. Lively Wooden / Marble / Snow / Meadow Floor + Ambient Light Pools + Light-Cast Shadows + Ice/Water Pits
   const floorCanvas = getFloorCanvas(map);
   ctx.drawImage(floorCanvas, 0, 0);
-  drawAmbientArenaLights(ctx, map);
+  drawAmbientArenaLights(ctx, map, world);
+  if (!isExtraDark) {
+    drawDynamicLightShadows(ctx, map, world);
+  }
+  drawIcePits(ctx, world, map);
 
   // 2. Spawn Pads
   map.spawns.forEach((sp, idx) => {
@@ -963,9 +1211,9 @@ export function renderArena(
     ctx.restore();
   });
 
-  // 3. TNT blast warning zones
+  // 3. TNT blast warning zones (shown once shot & armed for 3s countdown)
   for (const item of world.pickups) {
-    if (item.kind === 'tnt' && item.countdown !== undefined) {
+    if (item.kind === 'tnt' && item.armed && item.countdown !== undefined) {
       const progress = 1 - Math.max(0, item.countdown) / (item.maxCountdown || 3);
       const pulse = 0.5 + 0.5 * Math.sin(world.elapsedTime * (8 + progress * 16));
       ctx.save();
@@ -986,13 +1234,28 @@ export function renderArena(
 
   // 4. Pickups (Vibrant Arcade Bullets, Neon Green NITRO, Cherry-Red TNT & Medkits)
   for (const item of world.pickups) {
-    const bob = Math.sin(item.age * 4.2 + item.id) * 2.5;
+    const isCratePickup = item.kind === 'tnt' || item.kind === 'nitro';
+    const bob = isCratePickup ? 0 : Math.sin(item.age * 4.2 + item.id) * 2.5;
     ctx.save();
 
-    ctx.fillStyle = 'rgba(6, 5, 10, 0.42)';
-    ctx.beginPath();
-    ctx.ellipse(item.x + 5, item.y + 11, item.radius * 0.95, item.radius * 0.56, 0, 0, Math.PI * 2);
-    ctx.fill();
+    if (item.kind === 'tnt') {
+      const s = 29;
+      ctx.fillStyle = 'rgba(4, 3, 8, 0.56)';
+      ctx.beginPath();
+      ctx.roundRect(item.x - s + 9, item.y - s + 13, s * 2, s * 2, 6);
+      ctx.fill();
+    } else if (item.kind === 'nitro') {
+      const s = 24;
+      ctx.fillStyle = 'rgba(4, 3, 8, 0.56)';
+      ctx.beginPath();
+      ctx.roundRect(item.x - s + 8, item.y - s + 12, s * 2, s * 2, 6);
+      ctx.fill();
+    } else {
+      ctx.fillStyle = 'rgba(4, 3, 8, 0.48)';
+      ctx.beginPath();
+      ctx.ellipse(item.x + 5, item.y + 11, item.radius * 0.95, item.radius * 0.56, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
     ctx.translate(item.x, item.y + bob);
 
@@ -1037,65 +1300,68 @@ export function renderArena(
       ctx.fillRect(-12, -5.5, 3, 11);
       ctx.restore();
     } else if (item.kind === 'nitro') {
-      // Vivid toxic neon-green wooden NITRO crate (matching reference style!)
+      // Vivid toxic neon-green wooden NITRO crate (high shadow/highlight contrast, exact green hue)
       const s = 24;
       const pulse = 0.5 + 0.5 * Math.sin(world.elapsedTime * 5 + item.id);
-      const aura = ctx.createRadialGradient(0, 0, 12, 0, 0, 46);
-      aura.addColorStop(0, `rgba(74, 222, 128, ${0.32 + pulse * 0.16})`);
+      const aura = ctx.createRadialGradient(0, 0, 12, 0, 0, 48);
+      aura.addColorStop(0, `rgba(74, 222, 128, ${0.38 + pulse * 0.18})`);
       aura.addColorStop(1, 'rgba(34, 197, 94, 0)');
       ctx.fillStyle = aura;
       ctx.beginPath();
-      ctx.arc(0, 0, 46, 0, Math.PI * 2);
+      ctx.arc(0, 0, 48, 0, Math.PI * 2);
       ctx.fill();
 
       ctx.fillStyle = '#15803D';
-      ctx.strokeStyle = '#052E16';
-      ctx.lineWidth = 2.6;
-      ctx.beginPath();
-      ctx.roundRect(-s, -s, s * 2, s * 2, 5);
-      ctx.fill();
-      ctx.stroke();
-
-      // Bright neon lime wooden center planks
-      ctx.fillStyle = '#22C55E';
-      ctx.fillRect(-s + 5, -s + 5, s * 2 - 10, s * 2 - 10);
-      ctx.fillStyle = '#4ADE80';
-      ctx.fillRect(-s + 5, -s + 5, s * 2 - 10, 4);
-
-      ctx.strokeStyle = '#166534';
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(-s + 5, -s + 5, s * 2 - 10, s * 2 - 10);
-
-      // Bold stenciled NITRO badge
-      ctx.fillStyle = '#F0FDF4';
-      ctx.strokeStyle = '#052E16';
-      ctx.lineWidth = 2.5;
-      ctx.font = '900 12px "Outfit", sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.strokeText('NITRO', 0, 1);
-      ctx.fillText('NITRO', 0, 1);
-    } else if (item.kind === 'tnt') {
-      const cd = Math.max(0, item.countdown ?? 3);
-      const secText = Math.ceil(cd).toString();
-      const flash = cd < 1.0 && Math.floor(cd * 10) % 2 === 0;
-      const s = 29;
-
-      // Bright cherry-red wooden TNT crate with plank trim + yellow stencil
-      ctx.fillStyle = flash ? '#FCA5A5' : '#991B1B';
-      ctx.strokeStyle = '#1A0505';
+      ctx.strokeStyle = '#031F0E';
       ctx.lineWidth = 2.8;
       ctx.beginPath();
       ctx.roundRect(-s, -s, s * 2, s * 2, 5);
       ctx.fill();
       ctx.stroke();
 
-      ctx.fillStyle = flash ? '#FECACA' : '#EF231A';
+      // Bright neon lime wooden center planks + crisp bevel contrast
+      ctx.fillStyle = '#2EE86B';
+      ctx.fillRect(-s + 5, -s + 5, s * 2 - 10, s * 2 - 10);
+      ctx.fillStyle = '#86EFAC';
+      ctx.fillRect(-s + 4, -s + 3, s * 2 - 8, 4);
+      ctx.fillStyle = 'rgba(5, 46, 22, 0.45)';
+      ctx.fillRect(-s + 4, s - 7, s * 2 - 8, 4);
+
+      ctx.strokeStyle = '#14532D';
+      ctx.lineWidth = 1.6;
+      ctx.strokeRect(-s + 5, -s + 5, s * 2 - 10, s * 2 - 10);
+
+      // Bold stenciled NITRO badge
+      ctx.fillStyle = '#F0FDF4';
+      ctx.strokeStyle = '#031F0E';
+      ctx.lineWidth = 2.8;
+      ctx.font = '900 12px "Outfit", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.strokeText('NITRO', 0, 1);
+      ctx.fillText('NITRO', 0, 1);
+    } else if (item.kind === 'tnt') {
+      const armed = Boolean(item.armed);
+      const cd = Math.max(0, item.countdown ?? 3);
+      const secText = Math.ceil(cd).toString();
+      const flash = armed && cd < 1.0 && Math.floor(cd * 10) % 2 === 0;
+      const s = 29;
+
+      // Bright cherry-red wooden TNT crate (higher shadow & bevel contrast, same vibrant red)
+      ctx.fillStyle = flash ? '#FCA5A5' : '#991B1B';
+      ctx.strokeStyle = '#120303';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.roundRect(-s, -s, s * 2, s * 2, 5);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = flash ? '#FECACA' : '#FF2E22';
       ctx.fillRect(-s + 6, -s + 6, s * 2 - 12, s * 2 - 12);
 
       // Plank dividers
-      ctx.strokeStyle = 'rgba(127, 29, 29, 0.55)';
-      ctx.lineWidth = 1.6;
+      ctx.strokeStyle = 'rgba(105, 16, 16, 0.6)';
+      ctx.lineWidth = 1.7;
       ctx.beginPath();
       ctx.moveTo(-s + 6, -9);
       ctx.lineTo(s - 6, -9);
@@ -1103,12 +1369,14 @@ export function renderArena(
       ctx.lineTo(s - 6, 9);
       ctx.stroke();
 
-      // Top rim highlight
-      ctx.fillStyle = 'rgba(255, 220, 220, 0.3)';
-      ctx.fillRect(-s + 3, -s + 2.5, s * 2 - 6, 4);
+      // Top highlight & deep bottom edge shade
+      ctx.fillStyle = 'rgba(255, 235, 235, 0.38)';
+      ctx.fillRect(-s + 3, -s + 2.5, s * 2 - 6, 4.5);
+      ctx.fillStyle = 'rgba(40, 4, 4, 0.45)';
+      ctx.fillRect(-s + 3, s - 6.5, s * 2 - 6, 4);
 
       // Corner nails
-      ctx.fillStyle = '#FCA5A5';
+      ctx.fillStyle = '#FECACA';
       for (const [rx, ry] of [
         [-s + 4, -s + 4],
         [s - 4, -s + 4],
@@ -1120,27 +1388,38 @@ export function renderArena(
         ctx.fill();
       }
 
-      // Countdown progress ring around TNT
-      ctx.strokeStyle = '#FEF08A';
-      ctx.lineWidth = 3.2;
-      ctx.beginPath();
-      ctx.arc(0, 0, s + 8, -Math.PI / 2, -Math.PI / 2 + (cd / 3) * Math.PI * 2);
-      ctx.stroke();
+      if (armed) {
+        // Countdown progress ring around armed TNT
+        ctx.strokeStyle = '#FEF08A';
+        ctx.lineWidth = 3.2;
+        ctx.beginPath();
+        ctx.arc(0, 0, s + 8, -Math.PI / 2, -Math.PI / 2 + (cd / 3) * Math.PI * 2);
+        ctx.stroke();
 
-      // Bold TNT label + fuse second
-      ctx.fillStyle = flash ? '#7F1D1D' : '#FEF08A';
-      ctx.strokeStyle = '#450A0A';
-      ctx.lineWidth = 3;
-      ctx.font = '900 16px "Outfit", sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.strokeText('TNT', 0, -4);
-      ctx.fillText('TNT', 0, -4);
+        ctx.fillStyle = flash ? '#7F1D1D' : '#FEF08A';
+        ctx.strokeStyle = '#450A0A';
+        ctx.lineWidth = 3;
+        ctx.font = '900 16px "Outfit", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.strokeText('TNT', 0, -4);
+        ctx.fillText('TNT', 0, -4);
 
-      ctx.fillStyle = '#FFFFFF';
-      ctx.font = '800 12px "JetBrains Mono", monospace';
-      ctx.strokeText(`${secText}s`, 0, 12);
-      ctx.fillText(`${secText}s`, 0, 12);
+        ctx.fillStyle = '#FFFFFF';
+        ctx.font = '800 12px "JetBrains Mono", monospace';
+        ctx.strokeText(`${secText}s`, 0, 12);
+        ctx.fillText(`${secText}s`, 0, 12);
+      } else {
+        // Unlit movable TNT crate (pushable, shoot to ignite 3s countdown)
+        ctx.fillStyle = '#FEF08A';
+        ctx.strokeStyle = '#450A0A';
+        ctx.lineWidth = 3.2;
+        ctx.font = '900 18px "Outfit", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.strokeText('TNT', 0, 1);
+        ctx.fillText('TNT', 0, 1);
+      }
     } else if (item.kind === 'medkit') {
       const s = 20;
       ctx.fillStyle = 'rgba(16, 185, 129, 0.25)';
@@ -1203,11 +1482,22 @@ export function renderArena(
     ctx.ellipse(6, 10, PLAYER_RADIUS * 0.94, PLAYER_RADIUS * 0.88, 0, 0, Math.PI * 2);
     ctx.fill();
 
+    if (world.teamMode === '2V2' && player.team !== undefined) {
+      ctx.save();
+      ctx.strokeStyle = player.team === 0 ? '#38BDF8' : '#FB7185';
+      ctx.lineWidth = 2.6;
+      ctx.setLineDash([8, 5]);
+      ctx.beginPath();
+      ctx.arc(0, 0, PLAYER_RADIUS + 4, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     if (isLocal) {
       ctx.strokeStyle = `${player.color}70`;
       ctx.lineWidth = 2.5;
       ctx.beginPath();
-      ctx.arc(0, 0, PLAYER_RADIUS + 7, 0, Math.PI * 2);
+      ctx.arc(0, 0, PLAYER_RADIUS + 8, 0, Math.PI * 2);
       ctx.stroke();
     }
 
@@ -1369,8 +1659,8 @@ export function renderArena(
       ctx.fill();
       ctx.stroke();
     } else {
-      // Jade: Bright emerald scarf tails
-      ctx.fillStyle = '#15803D';
+      // Jade / Slot 4: Bright emerald-or-chosen scarf tails
+      ctx.fillStyle = skinColor;
       ctx.strokeStyle = '#090D16';
       ctx.lineWidth = 2.5;
       ctx.beginPath();
@@ -1390,9 +1680,7 @@ export function renderArena(
     ctx.ellipse(13, 0, 9.5, 17.5, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    const eyeColor =
-      player.id === 1 ? '#FCA5A5' : player.id === 2 ? '#FEF08A' : player.id === 3 ? '#86EFAC' : '#7DD3FC';
-    ctx.fillStyle = eyeColor;
+    ctx.fillStyle = accentColor;
     ctx.beginPath();
     ctx.arc(14.5, -7.2, 4.4, 0, Math.PI * 2);
     ctx.arc(14.5, 7.2, 4.4, 0, Math.PI * 2);
@@ -1454,13 +1742,22 @@ export function renderArena(
     ctx.fillStyle = hpRatio > 0.5 ? '#22C55E' : hpRatio > 0.25 ? '#FACC15' : '#EF4444';
     ctx.fillRect(-26.5, PLAYER_RADIUS + 11.5, 53 * hpRatio, 3);
 
-    ctx.fillStyle = '#F8FAFC';
+    const labelText =
+      world.teamMode === '2V2' && player.team !== undefined
+        ? `[${player.team === 0 ? 'A' : 'B'}] ${player.name}`
+        : player.name;
+    ctx.fillStyle =
+      world.teamMode === '2V2' && player.team !== undefined
+        ? player.team === 0
+          ? '#E0F2FE'
+          : '#FFE4E6'
+        : '#F8FAFC';
     ctx.strokeStyle = 'rgba(9, 13, 22, 0.9)';
     ctx.lineWidth = 3;
     ctx.font = '700 13px "Plus Jakarta Sans", sans-serif';
     ctx.textAlign = 'center';
-    ctx.strokeText(player.name, 0, -PLAYER_RADIUS - 16);
-    ctx.fillText(player.name, 0, -PLAYER_RADIUS - 16);
+    ctx.strokeText(labelText, 0, -PLAYER_RADIUS - 16);
+    ctx.fillText(labelText, 0, -PLAYER_RADIUS - 16);
 
     ctx.restore();
   }
@@ -1577,7 +1874,7 @@ export function renderArena(
 
     // Ticking TNT & Explosion floor light bursts
     for (const item of world.pickups) {
-      if (item.kind === 'tnt') {
+      if (item.kind === 'tnt' && item.armed) {
         const pulse = 0.5 + 0.5 * Math.sin(world.elapsedTime * 14);
         const r = 64 + pulse * 18;
         const g = ctx.createRadialGradient(item.x, item.y, 4, item.x, item.y, r);
@@ -1762,8 +2059,18 @@ export function renderArena(
     }
   }
 
-  // 9b. Volumetric Light Rays & Perimeter Light Fixtures (Bright Wooden Lamps, Cargo Green Vents & Meadow Sunbeams)
-  drawVolumetricArenaLights(ctx, map, world.elapsedTime, isExtraDark);
+  // 9b. Volumetric Light Rays & Perimeter Light Fixtures (with Real Cast Shadow Occlusion!)
+  drawVolumetricArenaLights(
+    ctx,
+    map,
+    world,
+    isExtraDark,
+    canvasWidth,
+    canvasHeight,
+    worldTx,
+    worldTy,
+    scale
+  );
 
   // 10. Glowing Bullets & Trails (always crisp & luminous in Immersive / Extra Dark!)
   for (const b of world.bullets) {
@@ -1982,20 +2289,430 @@ function hexWithAlpha(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-function drawAmbientArenaLights(ctx: CanvasRenderingContext2D, map: ArenaMap) {
+interface ConeLightSource {
+  x: number;
+  y: number;
+  dirY: number;
+  range: number;
+  beamLen: number;
+  beamHalfBase: number;
+  beamHalfEnd: number;
+  coneMaxHalfAngle: number;
+  colorRgb: string;
+}
+
+function getConeLightSources(map: ArenaMap): ConeLightSource[] {
+  if (map.floorTheme === 'mansion_wood') {
+    const topXs = map.immersive
+      ? [map.width * 0.25, map.width * 0.5, map.width * 0.75]
+      : [map.width * 0.3, map.width * 0.7];
+    const botXs = map.immersive
+      ? [map.width * 0.35, map.width * 0.65]
+      : [map.width * 0.5];
+    const lights: ConeLightSource[] = [];
+    for (const x of topXs) {
+      lights.push({
+        x,
+        y: 16,
+        dirY: 1,
+        range: 640,
+        beamLen: 530,
+        beamHalfBase: 44,
+        beamHalfEnd: 300,
+        coneMaxHalfAngle: Math.atan2(300, 530) + 0.18,
+        colorRgb: '254, 240, 138',
+      });
+    }
+    for (const x of botXs) {
+      lights.push({
+        x,
+        y: map.height - 16,
+        dirY: -1,
+        range: 590,
+        beamLen: 490,
+        beamHalfBase: 42,
+        beamHalfEnd: 280,
+        coneMaxHalfAngle: Math.atan2(280, 490) + 0.18,
+        colorRgb: '254, 240, 138',
+      });
+    }
+    return lights;
+  }
+
+  if (map.floorTheme === 'maple_cargo') {
+    return [
+      {
+        x: map.width * 0.32,
+        y: 16,
+        dirY: 1,
+        range: 640,
+        beamLen: 540,
+        beamHalfBase: 48,
+        beamHalfEnd: 290,
+        coneMaxHalfAngle: Math.atan2(290, 540) + 0.18,
+        colorRgb: '134, 239, 172',
+      },
+      {
+        x: map.width * 0.68,
+        y: 16,
+        dirY: 1,
+        range: 640,
+        beamLen: 540,
+        beamHalfBase: 48,
+        beamHalfEnd: 290,
+        coneMaxHalfAngle: Math.atan2(290, 540) + 0.18,
+        colorRgb: '134, 239, 172',
+      },
+      {
+        x: map.width * 0.68,
+        y: map.height - 16,
+        dirY: -1,
+        range: 640,
+        beamLen: 540,
+        beamHalfBase: 48,
+        beamHalfEnd: 290,
+        coneMaxHalfAngle: Math.atan2(290, 540) + 0.18,
+        colorRgb: '134, 239, 172',
+      },
+    ];
+  }
+
+  return [];
+}
+
+interface ShadowPolygon {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  fx1: number;
+  fy1: number;
+  fx0: number;
+  fy0: number;
+  tailX: number;
+  tailY: number;
+  strength: number;
+}
+
+function buildCircleShadowFromPoint(
+  lx: number,
+  ly: number,
+  px: number,
+  py: number,
+  r: number,
+  range: number,
+  shadowLen: number,
+  dirY: number,
+  coneMaxHalfAngle: number
+): ShadowPolygon | null {
+  const vx = px - lx;
+  const vy = py - ly;
+  const d = Math.hypot(vx, vy);
+  if (d <= r + 4 || d >= range) return null;
+
+  if (dirY !== 0) {
+    if (vy * dirY <= 8) return null;
+    const offAxis = Math.abs(Math.atan2(vx, vy * dirY));
+    if (offAxis > coneMaxHalfAngle + 0.25) return null;
+    const coneFade = Math.max(0, 1 - Math.max(0, offAxis - coneMaxHalfAngle * 0.6) / (coneMaxHalfAngle * 0.65 + 0.25));
+    const distFade = 1 - d / range;
+    const strength = Math.min(1, distFade * 1.15) * coneFade;
+    if (strength <= 0.03) return null;
+
+    const alpha = Math.asin(Math.min(0.95, r / d));
+    const theta = Math.atan2(vy, vx);
+    const tLen = d * Math.cos(alpha);
+    const a0 = theta - alpha;
+    const a1 = theta + alpha;
+    const x0 = lx + Math.cos(a0) * tLen;
+    const y0 = ly + Math.sin(a0) * tLen;
+    const x1 = lx + Math.cos(a1) * tLen;
+    const y1 = ly + Math.sin(a1) * tLen;
+    const len = Math.min(shadowLen, range - d + 90);
+
+    return {
+      x0,
+      y0,
+      x1,
+      y1,
+      fx1: x1 + Math.cos(a1) * len,
+      fy1: y1 + Math.sin(a1) * len,
+      fx0: x0 + Math.cos(a0) * len,
+      fy0: y0 + Math.sin(a0) * len,
+      tailX: px + (vx / d) * len,
+      tailY: py + (vy / d) * len,
+      strength,
+    };
+  }
+  return null;
+}
+
+function buildRectShadowFromPoint(
+  lx: number,
+  ly: number,
+  rx: number,
+  ry: number,
+  rw: number,
+  rh: number,
+  range: number,
+  shadowLen: number,
+  dirY: number,
+  coneMaxHalfAngle: number
+): ShadowPolygon | null {
+  const cx = rx + rw * 0.5;
+  const cy = ry + rh * 0.5;
+  const vx = cx - lx;
+  const vy = cy - ly;
+  const d = Math.hypot(vx, vy);
+  if (d < 12 || d >= range) return null;
+  if (dirY !== 0 && vy * dirY <= 8) return null;
+
+  const offAxis = Math.abs(Math.atan2(vx, vy * dirY));
+  if (offAxis > coneMaxHalfAngle + 0.28) return null;
+  const coneFade = Math.max(0, 1 - Math.max(0, offAxis - coneMaxHalfAngle * 0.6) / (coneMaxHalfAngle * 0.68 + 0.28));
+  const distFade = 1 - d / range;
+  const strength = Math.min(1, distFade * 1.15) * coneFade;
+  if (strength <= 0.03) return null;
+
+  const corners = [
+    { x: rx, y: ry },
+    { x: rx + rw, y: ry },
+    { x: rx + rw, y: ry + rh },
+    { x: rx, y: ry + rh },
+  ];
+  const baseAngle = Math.atan2(vy, vx);
+  let minRel = Infinity;
+  let maxRel = -Infinity;
+  let minC = corners[0];
+  let maxC = corners[0];
+
+  for (const c of corners) {
+    let rel = Math.atan2(c.y - ly, c.x - lx) - baseAngle;
+    while (rel > Math.PI) rel -= Math.PI * 2;
+    while (rel < -Math.PI) rel += Math.PI * 2;
+    if (rel < minRel) {
+      minRel = rel;
+      minC = c;
+    }
+    if (rel > maxRel) {
+      maxRel = rel;
+      maxC = c;
+    }
+  }
+
+  const len = Math.min(shadowLen, range - d + 100);
+  const a0 = Math.atan2(minC.y - ly, minC.x - lx);
+  const a1 = Math.atan2(maxC.y - ly, maxC.x - lx);
+
+  return {
+    x0: minC.x,
+    y0: minC.y,
+    x1: maxC.x,
+    y1: maxC.y,
+    fx1: maxC.x + Math.cos(a1) * len,
+    fy1: maxC.y + Math.sin(a1) * len,
+    fx0: minC.x + Math.cos(a0) * len,
+    fy0: minC.y + Math.sin(a0) * len,
+    tailX: cx + (vx / d) * len,
+    tailY: cy + (vy / d) * len,
+    strength,
+  };
+}
+
+function collectLightShadowPolys(
+  light: ConeLightSource,
+  map: ArenaMap,
+  world: RenderableWorld,
+  shadowLen: number,
+  includeWalls: boolean
+): ShadowPolygon[] {
+  const out: ShadowPolygon[] = [];
+
+  for (const p of world.players) {
+    if (!p.alive) continue;
+    const poly = buildCircleShadowFromPoint(
+      light.x,
+      light.y,
+      p.x,
+      p.y,
+      33,
+      light.range,
+      shadowLen,
+      light.dirY,
+      light.coneMaxHalfAngle
+    );
+    if (poly) out.push(poly);
+  }
+
+  for (const box of world.boxes) {
+    if (box.state !== 'active' && box.state !== 'spawning') continue;
+    const poly = buildRectShadowFromPoint(
+      light.x,
+      light.y,
+      box.x - box.w * 0.5,
+      box.y - box.h * 0.5,
+      box.w,
+      box.h,
+      light.range,
+      shadowLen,
+      light.dirY,
+      light.coneMaxHalfAngle
+    );
+    if (poly) out.push(poly);
+  }
+
+  for (const item of world.pickups) {
+    if (item.kind !== 'tnt' && item.kind !== 'nitro') continue;
+    const s = item.kind === 'tnt' ? 29 : 24;
+    const poly = buildRectShadowFromPoint(
+      light.x,
+      light.y,
+      item.x - s,
+      item.y - s,
+      s * 2,
+      s * 2,
+      light.range,
+      shadowLen,
+      light.dirY,
+      light.coneMaxHalfAngle
+    );
+    if (poly) out.push(poly);
+  }
+
+  if (includeWalls) {
+    for (const wall of map.walls) {
+      if (wall.kind?.startsWith('perimeter')) continue;
+      const poly = buildRectShadowFromPoint(
+        light.x,
+        light.y,
+        wall.x,
+        wall.y,
+        wall.w,
+        wall.h,
+        light.range,
+        shadowLen,
+        light.dirY,
+        light.coneMaxHalfAngle
+      );
+      if (poly) out.push(poly);
+    }
+  }
+
+  return out;
+}
+
+function drawDynamicLightShadows(
+  ctx: CanvasRenderingContext2D,
+  map: ArenaMap,
+  world: RenderableWorld
+) {
+  ctx.save();
+
+  if (map.floorTheme === 'grass_outdoors' || map.floorTheme === 'winter_snow') {
+    // Diagonal sunbeams cast angled directional floor shadows for players, crates, TNT & Nitro
+    const isWinter = map.floorTheme === 'winter_snow';
+    const sunSpots = map.immersive ? [450, 1200, 1850] : [360, 980];
+    const dirX = 0.41;
+    const dirY = 0.912;
+    const shadowRgb = isWinter ? '15, 39, 82' : '6, 18, 8';
+    const shadowPeak = isWinter ? 0.28 : 0.38;
+
+    const castDirectional = (cx: number, cy: number, radius: number, isCircle: boolean) => {
+      let bestStrength = 0;
+      for (const sx of sunSpots) {
+        const expectedCenterX = sx + (cy / 560) * 140;
+        const distFromShaft = Math.abs(cx - expectedCenterX);
+        if (distFromShaft < 210 && cy < 760) {
+          const s = (1 - distFromShaft / 210) * Math.max(0, 1 - cy / 820);
+          if (s > bestStrength) bestStrength = s;
+        }
+      }
+      if (bestStrength <= 0.04) return;
+      const len = 56 + bestStrength * 52;
+      const grad = ctx.createLinearGradient(cx, cy, cx + dirX * len, cy + dirY * len);
+      grad.addColorStop(0, `rgba(${shadowRgb}, ${shadowPeak * bestStrength})`);
+      grad.addColorStop(1, `rgba(${shadowRgb}, 0)`);
+      ctx.fillStyle = grad;
+      if (isCircle) {
+        const px = -dirY * radius;
+        const py = dirX * radius;
+        ctx.beginPath();
+        ctx.moveTo(cx + px, cy + py);
+        ctx.lineTo(cx + px + dirX * len, cy + py + dirY * len);
+        ctx.lineTo(cx - px + dirX * len, cy - py + dirY * len);
+        ctx.lineTo(cx - px, cy - py);
+        ctx.closePath();
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.roundRect(
+          cx - radius + dirX * 14,
+          cy - radius + dirY * 14,
+          radius * 2 + dirX * len * 0.55,
+          radius * 2 + dirY * len * 0.55,
+          6
+        );
+        ctx.fill();
+      }
+    };
+
+    for (const p of world.players) {
+      if (p.alive) castDirectional(p.x, p.y, 33, true);
+    }
+    for (const box of world.boxes) {
+      if (box.state === 'active' || box.state === 'spawning') castDirectional(box.x, box.y, box.w * 0.5, false);
+    }
+    for (const item of world.pickups) {
+      if (item.kind === 'tnt') castDirectional(item.x, item.y, 29, false);
+      else if (item.kind === 'nitro') castDirectional(item.x, item.y, 24, false);
+    }
+    ctx.restore();
+    return;
+  }
+
+  const lights = getConeLightSources(map);
+  for (const light of lights) {
+    const polys = collectLightShadowPolys(light, map, world, 220, true);
+    for (const poly of polys) {
+      const mx = (poly.x0 + poly.x1) * 0.5;
+      const my = (poly.y0 + poly.y1) * 0.5;
+      const grad = ctx.createLinearGradient(mx, my, poly.tailX, poly.tailY);
+      grad.addColorStop(0, `rgba(5, 6, 12, ${0.44 * poly.strength})`);
+      grad.addColorStop(0.55, `rgba(5, 6, 12, ${0.2 * poly.strength})`);
+      grad.addColorStop(1, 'rgba(5, 6, 12, 0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(poly.x0, poly.y0);
+      ctx.lineTo(poly.fx0, poly.fy0);
+      ctx.lineTo(poly.fx1, poly.fy1);
+      ctx.lineTo(poly.x1, poly.y1);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  ctx.restore();
+}
+
+function drawAmbientArenaLights(
+  ctx: CanvasRenderingContext2D,
+  map: ArenaMap,
+  world: RenderableWorld
+) {
   ctx.save();
   if (map.floorTheme === 'mansion_wood') {
     // Warm golden floor light pools under ceiling lamps / foyer chandelier
-    const lampXs = map.immersive
-      ? [map.width * 0.25, map.width * 0.5, map.width * 0.75]
-      : [map.width * 0.3, map.width * 0.7];
-    for (const lx of lampXs) {
-      const topPool = ctx.createRadialGradient(lx, 130, 14, lx, 190, 320);
+    const lights = getConeLightSources(map);
+    for (const l of lights) {
+      const py = l.y + l.dirY * 145;
+      const topPool = ctx.createRadialGradient(l.x, l.y + l.dirY * 65, 16, l.x, py, 330);
       topPool.addColorStop(0, 'rgba(253, 224, 71, 0.24)');
       topPool.addColorStop(0.55, 'rgba(250, 204, 21, 0.1)');
       topPool.addColorStop(1, 'rgba(250, 204, 21, 0)');
       ctx.fillStyle = topPool;
-      ctx.fillRect(lx - 320, 0, 640, 520);
+      ctx.beginPath();
+      ctx.arc(l.x, py, 330, 0, Math.PI * 2);
+      ctx.fill();
     }
 
     const centerGlow = ctx.createRadialGradient(
@@ -2006,14 +2723,14 @@ function drawAmbientArenaLights(ctx: CanvasRenderingContext2D, map: ArenaMap) {
       map.height * 0.5,
       map.immersive ? 420 : 280
     );
-    centerGlow.addColorStop(0, 'rgba(254, 240, 138, 0.16)');
+    centerGlow.addColorStop(0, 'rgba(254, 240, 138, 0.14)');
     centerGlow.addColorStop(1, 'rgba(254, 240, 138, 0)');
     ctx.fillStyle = centerGlow;
     ctx.beginPath();
     ctx.arc(map.width * 0.5, map.height * 0.5, map.immersive ? 420 : 280, 0, Math.PI * 2);
     ctx.fill();
   } else if (map.floorTheme === 'maple_cargo') {
-    // Industrial glowing green floor grates + emerald vent glow pools (matching reference aesthetic!)
+    // Industrial glowing green floor grates + emerald vent glow pools
     const grates = [
       { x: map.width * 0.32, y: map.height * 0.42 },
       { x: map.width * 0.5, y: map.height * 0.5 },
@@ -2028,7 +2745,6 @@ function drawAmbientArenaLights(ctx: CanvasRenderingContext2D, map: ArenaMap) {
       ctx.arc(g.x, g.y, 175, 0, Math.PI * 2);
       ctx.fill();
 
-      // Glowing perforated grate square
       ctx.fillStyle = 'rgba(15, 23, 42, 0.45)';
       ctx.fillRect(g.x - 42, g.y - 42, 84, 84);
       ctx.fillStyle = 'rgba(74, 222, 128, 0.48)';
@@ -2038,6 +2754,42 @@ function drawAmbientArenaLights(ctx: CanvasRenderingContext2D, map: ArenaMap) {
         }
       }
     }
+  } else if (map.floorTheme === 'winter_snow') {
+    // Cool arctic ground mist & subtle atmospheric twilight color-temperature veil
+    const t = world.elapsedTime;
+    const coolWash = ctx.createRadialGradient(
+      map.width * 0.5,
+      map.height * 0.45,
+      120,
+      map.width * 0.5,
+      map.height * 0.5,
+      map.width * 0.72
+    );
+    coolWash.addColorStop(0, 'rgba(186, 230, 253, 0.05)');
+    coolWash.addColorStop(0.65, 'rgba(96, 165, 250, 0.09)');
+    coolWash.addColorStop(1, 'rgba(15, 42, 92, 0.22)');
+    ctx.fillStyle = coolWash;
+    ctx.fillRect(0, 0, map.width, map.height);
+
+    // Drifting low ground-hugging fog banks
+    const fogBanks = [
+      { bx: map.width * 0.28, by: map.height * 0.3, r: 320, spd: 0.28, amp: 55 },
+      { bx: map.width * 0.72, by: map.height * 0.65, r: 350, spd: 0.22, amp: 65 },
+      { bx: map.width * 0.5, by: map.height * 0.85, r: 300, spd: 0.34, amp: 48 },
+    ];
+    for (let i = 0; i < fogBanks.length; i++) {
+      const f = fogBanks[i];
+      const fx = f.bx + Math.sin(t * f.spd + i * 2.1) * f.amp;
+      const fy = f.by + Math.cos(t * f.spd * 0.7 + i) * 22;
+      const fog = ctx.createRadialGradient(fx, fy, 15, fx, fy, f.r);
+      fog.addColorStop(0, 'rgba(219, 240, 255, 0.16)');
+      fog.addColorStop(0.55, 'rgba(147, 197, 253, 0.08)');
+      fog.addColorStop(1, 'rgba(147, 197, 253, 0)');
+      ctx.fillStyle = fog;
+      ctx.beginPath();
+      ctx.arc(fx, fy, f.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
   ctx.restore();
 }
@@ -2045,120 +2797,366 @@ function drawAmbientArenaLights(ctx: CanvasRenderingContext2D, map: ArenaMap) {
 function drawVolumetricArenaLights(
   ctx: CanvasRenderingContext2D,
   map: ArenaMap,
-  elapsedTime: number,
-  isExtraDark: boolean
+  world: RenderableWorld,
+  isExtraDark: boolean,
+  canvasWidth: number,
+  canvasHeight: number,
+  worldTx: number,
+  worldTy: number,
+  scale: number
 ) {
   if (isExtraDark) return;
+  const elapsedTime = world.elapsedTime;
   ctx.save();
 
-  if (map.floorTheme === 'mansion_wood') {
-    // Glowing golden wall/ceiling lamps casting warm volumetric rays downward
-    const lampXs = map.immersive
-      ? [map.width * 0.25, map.width * 0.5, map.width * 0.75]
-      : [map.width * 0.3, map.width * 0.7];
+  if (map.floorTheme === 'mansion_wood' || map.floorTheme === 'maple_cargo') {
+    const lights = getConeLightSources(map);
 
-    for (let i = 0; i < lampXs.length; i++) {
-      const lx = lampXs[i];
-      const ly = 16;
-      const shimmer = 0.92 + 0.08 * Math.sin(elapsedTime * 2.2 + i * 1.4);
+    // Render occluded volumetric beams on offscreen lightCanvas so players, TNT, Nitro, boxes & walls cut visible shadows through the light rays!
+    const lightScale = 0.5;
+    const lw = Math.max(1, Math.ceil(canvasWidth * lightScale));
+    const lh = Math.max(1, Math.ceil(canvasHeight * lightScale));
+    const lightCanvas = getLightCanvas(lw, lh);
+    const lctx = lightCanvas.getContext('2d');
+    if (lctx && scale > 0.001) {
+      lctx.save();
+      lctx.clearRect(0, 0, lw, lh);
+      lctx.scale(lightScale, lightScale);
+      lctx.translate(worldTx, worldTy);
+      lctx.scale(scale, scale);
 
-      // Soft angled volumetric golden light rays
-      ctx.save();
-      ctx.globalCompositeOperation = 'lighter';
-      const raySpread = 290;
-      const rayLen = 470;
-      const beamGrad = ctx.createLinearGradient(lx, ly, lx, ly + rayLen);
-      beamGrad.addColorStop(0, `rgba(254, 240, 138, ${0.24 * shimmer})`);
-      beamGrad.addColorStop(0.5, `rgba(253, 224, 71, ${0.1 * shimmer})`);
-      beamGrad.addColorStop(1, 'rgba(250, 204, 21, 0)');
-      ctx.fillStyle = beamGrad;
-      ctx.beginPath();
-      ctx.moveTo(lx - 42, ly + 8);
-      ctx.lineTo(lx + 42, ly + 8);
-      ctx.lineTo(lx + raySpread, ly + rayLen);
-      ctx.lineTo(lx - raySpread, ly + rayLen);
-      ctx.closePath();
-      ctx.fill();
-      ctx.restore();
+      for (let i = 0; i < lights.length; i++) {
+        const l = lights[i];
+        const shimmer = 0.91 + 0.09 * Math.sin(elapsedTime * 2.5 + i * 1.6);
+        const startY = l.y + l.dirY * 6;
+        const endY = l.y + l.beamLen * l.dirY;
+        const beamGrad = lctx.createLinearGradient(l.x, startY, l.x, endY);
+        beamGrad.addColorStop(0, `rgba(${l.colorRgb}, ${0.27 * shimmer})`);
+        beamGrad.addColorStop(0.55, `rgba(${l.colorRgb}, ${0.11 * shimmer})`);
+        beamGrad.addColorStop(1, `rgba(${l.colorRgb}, 0)`);
 
-      // Ornate golden wall lamp housing
-      ctx.fillStyle = '#78350F';
-      ctx.strokeStyle = '#1C1917';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(lx, ly, 24, 0, Math.PI, false);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
+        lctx.fillStyle = beamGrad;
+        lctx.beginPath();
+        lctx.moveTo(l.x - l.beamHalfBase, startY);
+        lctx.lineTo(l.x + l.beamHalfBase, startY);
+        lctx.lineTo(l.x + l.beamHalfEnd, endY);
+        lctx.lineTo(l.x - l.beamHalfEnd, endY);
+        lctx.closePath();
+        lctx.fill();
+      }
 
-      ctx.fillStyle = '#FEF08A';
-      ctx.beginPath();
-      ctx.arc(lx, ly + 4, 14, 0, Math.PI, false);
-      ctx.fill();
-    }
-  } else if (map.floorTheme === 'maple_cargo') {
-    // Glowing neon-green industrial ceiling vents casting volumetric beams
-    const vents = [
-      { x: map.width * 0.32, y: 16, dir: 1 },
-      { x: map.width * 0.68, y: 16, dir: 1 },
-      { x: map.width * 0.68, y: map.height - 16, dir: -1 },
-    ];
-
-    for (let i = 0; i < vents.length; i++) {
-      const v = vents[i];
-      const shimmer = 0.9 + 0.1 * Math.sin(elapsedTime * 3 + i * 2.1);
+      // Punch out shadow silhouettes for players, boxes, TNT, Nitro & obstacles inside the volumetric rays
+      lctx.globalCompositeOperation = 'destination-out';
+      for (const l of lights) {
+        const polys = collectLightShadowPolys(l, map, world, l.range + 160, true);
+        for (const poly of polys) {
+          lctx.fillStyle = `rgba(0, 0, 0, ${0.82 * Math.min(1, poly.strength + 0.18)})`;
+          lctx.beginPath();
+          lctx.moveTo(poly.x0, poly.y0);
+          lctx.lineTo(poly.fx0, poly.fy0);
+          lctx.lineTo(poly.fx1, poly.fy1);
+          lctx.lineTo(poly.x1, poly.y1);
+          lctx.closePath();
+          lctx.fill();
+        }
+      }
+      lctx.restore();
 
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
-      const rayLen = 420;
-      const beamGrad = ctx.createLinearGradient(v.x, v.y, v.x, v.y + rayLen * v.dir);
-      beamGrad.addColorStop(0, `rgba(134, 239, 172, ${0.26 * shimmer})`);
-      beamGrad.addColorStop(0.55, `rgba(74, 222, 128, ${0.1 * shimmer})`);
-      beamGrad.addColorStop(1, 'rgba(34, 197, 94, 0)');
-      ctx.fillStyle = beamGrad;
-      ctx.beginPath();
-      ctx.moveTo(v.x - 46, v.y);
-      ctx.lineTo(v.x + 46, v.y);
-      ctx.lineTo(v.x + 260, v.y + rayLen * v.dir);
-      ctx.lineTo(v.x - 260, v.y + rayLen * v.dir);
-      ctx.closePath();
-      ctx.fill();
+      ctx.drawImage(
+        lightCanvas,
+        -worldTx / scale,
+        -worldTy / scale,
+        canvasWidth / scale,
+        canvasHeight / scale
+      );
       ctx.restore();
-
-      // Industrial glowing green vent ring
-      ctx.fillStyle = '#1E293B';
-      ctx.strokeStyle = '#090D16';
-      ctx.lineWidth = 2.4;
-      ctx.beginPath();
-      ctx.arc(v.x, v.y, 28, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.fillStyle = '#4ADE80';
-      ctx.beginPath();
-      ctx.arc(v.x, v.y, 17, 0, Math.PI * 2);
-      ctx.fill();
     }
-  } else if (map.floorTheme === 'grass_outdoors') {
-    // Diagonal sunlit shafts streaming across the meadow
+
+    // Draw physical wall lamp / green vent housings on top
+    for (const l of lights) {
+      if (map.floorTheme === 'mansion_wood') {
+        ctx.fillStyle = '#78350F';
+        ctx.strokeStyle = '#1C1917';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(l.x, l.y, 24, l.dirY > 0 ? 0 : Math.PI, l.dirY > 0 ? Math.PI : Math.PI * 2, false);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#FEF08A';
+        ctx.beginPath();
+        ctx.arc(l.x, l.y + l.dirY * 4, 14, l.dirY > 0 ? 0 : Math.PI, l.dirY > 0 ? Math.PI : Math.PI * 2, false);
+        ctx.fill();
+      } else {
+        ctx.fillStyle = '#1E293B';
+        ctx.strokeStyle = '#090D16';
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.arc(l.x, l.y, 28, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#4ADE80';
+        ctx.beginPath();
+        ctx.arc(l.x, l.y, 17, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  } else if (map.floorTheme === 'grass_outdoors' || map.floorTheme === 'winter_snow') {
+    const isWinter = map.floorTheme === 'winter_snow';
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     const sunSpots = map.immersive ? [450, 1200, 1850] : [360, 980];
-    for (const sx of sunSpots) {
-      const sunGrad = ctx.createLinearGradient(sx, 0, sx + 260, 560);
-      sunGrad.addColorStop(0, 'rgba(254, 249, 195, 0.13)');
-      sunGrad.addColorStop(1, 'rgba(254, 249, 195, 0)');
+    for (let idx = 0; idx < sunSpots.length; idx++) {
+      const sx = sunSpots[idx];
+      const sway = isWinter ? Math.sin(elapsedTime * 0.45 + idx * 1.4) * 18 : 0;
+      const sunGrad = ctx.createLinearGradient(sx, 0, sx + 280, 660);
+      sunGrad.addColorStop(
+        0,
+        isWinter ? 'rgba(147, 210, 255, 0.16)' : 'rgba(254, 249, 195, 0.14)'
+      );
+      sunGrad.addColorStop(
+        0.55,
+        isWinter ? 'rgba(125, 211, 252, 0.08)' : 'rgba(254, 249, 195, 0.05)'
+      );
+      sunGrad.addColorStop(1, isWinter ? 'rgba(125, 211, 252, 0)' : 'rgba(254, 249, 195, 0)');
       ctx.fillStyle = sunGrad;
       ctx.beginPath();
-      ctx.moveTo(sx - 70, 0);
-      ctx.lineTo(sx + 70, 0);
-      ctx.lineTo(sx + 340, 560);
-      ctx.lineTo(sx + 90, 560);
+      ctx.moveTo(sx - (isWinter ? 95 : 70) + sway * 0.3, 0);
+      ctx.lineTo(sx + (isWinter ? 95 : 70) + sway * 0.3, 0);
+      ctx.lineTo(sx + (isWinter ? 380 : 340) + sway, isWinter ? 680 : 560);
+      ctx.lineTo(sx + (isWinter ? 95 : 90) + sway, isWinter ? 680 : 560);
       ctx.closePath();
       ctx.fill();
+
+      if (isWinter) {
+        // Soft atmospheric light-scattering bloom halo where beam meets frozen air
+        const bloom = ctx.createRadialGradient(
+          sx + 100 + sway * 0.4,
+          170,
+          12,
+          sx + 100 + sway * 0.4,
+          170,
+          260
+        );
+        bloom.addColorStop(0, 'rgba(186, 230, 253, 0.11)');
+        bloom.addColorStop(0.6, 'rgba(125, 211, 252, 0.04)');
+        bloom.addColorStop(1, 'rgba(125, 211, 252, 0)');
+        ctx.fillStyle = bloom;
+        ctx.beginPath();
+        ctx.arc(sx + 100 + sway * 0.4, 170, 260, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    if (isWinter) {
+      // Drifting high-altitude ice mist veil + suspended glinting frost motes
+      const mistA = ctx.createRadialGradient(
+        map.width * (0.35 + Math.sin(elapsedTime * 0.18) * 0.06),
+        map.height * 0.55,
+        30,
+        map.width * 0.35,
+        map.height * 0.55,
+        460
+      );
+      mistA.addColorStop(0, 'rgba(186, 230, 253, 0.08)');
+      mistA.addColorStop(1, 'rgba(186, 230, 253, 0)');
+      ctx.fillStyle = mistA;
+      ctx.fillRect(0, 0, map.width, map.height);
+
+      for (let m = 0; m < 28; m++) {
+        const px = ((seededRand(m * 19 + 3) * map.width + elapsedTime * (14 + (m % 5) * 3)) % (map.width - 40)) + 20;
+        const py = ((seededRand(m * 37 + 11) * map.height + elapsedTime * (6 + (m % 3) * 2)) % (map.height - 40)) + 20;
+        const alpha = 0.25 + 0.3 * Math.sin(elapsedTime * 2.2 + m);
+        ctx.fillStyle = `rgba(224, 242, 254, ${Math.max(0.08, alpha)})`;
+        ctx.beginPath();
+        ctx.arc(px, py, 1.3 + (m % 3) * 0.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
     ctx.restore();
   }
 
   ctx.restore();
+}
+
+function traceSmoothClosedPoly(
+  ctx: CanvasRenderingContext2D,
+  pts: Array<{ x: number; y: number }>,
+  scale = 1
+) {
+  const n = pts.length;
+  if (n < 3) return;
+  const firstMidX = ((pts[n - 1].x + pts[0].x) * 0.5) * scale;
+  const firstMidY = ((pts[n - 1].y + pts[0].y) * 0.5) * scale;
+  ctx.beginPath();
+  ctx.moveTo(firstMidX, firstMidY);
+  for (let i = 0; i < n; i++) {
+    const curr = pts[i];
+    const next = pts[(i + 1) % n];
+    const mx = ((curr.x + next.x) * 0.5) * scale;
+    const my = ((curr.y + next.y) * 0.5) * scale;
+    ctx.quadraticCurveTo(curr.x * scale, curr.y * scale, mx, my);
+  }
+  ctx.closePath();
+}
+
+function drawIcePits(ctx: CanvasRenderingContext2D, world: RenderableWorld, map: ArenaMap) {
+  const pits: IcePit[] =
+    world.icePits && world.icePits.length > 0
+      ? world.icePits
+      : (map.icePits ?? []).map((p, idx) => ({
+          id: idx + 1,
+          x: p.x,
+          y: p.y,
+          rx: p.rx,
+          ry: p.ry,
+          points: p.points,
+          broken: false,
+        }));
+  if (pits.length === 0) return;
+
+  for (const pit of pits) {
+    const pts = pit.points ?? map.icePits?.[pit.id - 1]?.points;
+    ctx.save();
+    ctx.translate(pit.x, pit.y);
+
+    const traceContour = (scale = 1) => {
+      if (pts && pts.length >= 3) {
+        traceSmoothClosedPoly(ctx, pts, scale);
+      } else {
+        ctx.beginPath();
+        ctx.ellipse(0, 0, pit.rx * scale, pit.ry * scale, 0, 0, Math.PI * 2);
+      }
+    };
+
+    if (pit.broken) {
+      // 1. Jagged shattered icy shoreline ledge surrounding deep arctic water
+      ctx.fillStyle = '#C7E2FE';
+      ctx.beginPath();
+      if (pts && pts.length >= 3) {
+        const n = pts.length;
+        for (let i = 0; i < n * 2; i++) {
+          const base = pts[Math.floor(i / 2)];
+          const next = pts[(Math.floor(i / 2) + 1) % n];
+          const px = i % 2 === 0 ? base.x * 1.11 : ((base.x + next.x) * 0.5) * 1.01;
+          const py = i % 2 === 0 ? base.y * 1.11 : ((base.y + next.y) * 0.5) * 1.01;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+      } else {
+        const shards = 24;
+        for (let i = 0; i < shards; i++) {
+          const a = (i / shards) * Math.PI * 2;
+          const jag = i % 2 === 0 ? 1.09 : 0.99;
+          const px = Math.cos(a) * pit.rx * jag;
+          const py = Math.sin(a) * pit.ry * jag;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = '#38BDF8';
+      ctx.lineWidth = 2.4;
+      ctx.stroke();
+
+      // 2. Deep abyssal blue water pit (instant death hazard!)
+      ctx.save();
+      traceContour(1);
+      ctx.clip();
+
+      const maxR = Math.max(pit.rx, pit.ry) * 1.2;
+      const waterGrad = ctx.createRadialGradient(-pit.rx * 0.15, -pit.ry * 0.2, 10, 0, 0, maxR);
+      waterGrad.addColorStop(0, '#1D4ED8');
+      waterGrad.addColorStop(0.45, '#0B2E6B');
+      waterGrad.addColorStop(0.85, '#05163B');
+      waterGrad.addColorStop(1, '#020B24');
+      ctx.fillStyle = waterGrad;
+      ctx.fillRect(-pit.rx * 1.4, -pit.ry * 1.4, pit.rx * 2.8, pit.ry * 2.8);
+
+      // Animated shimmering arctic water ripples conforming to organic pond shape
+      const phase = world.elapsedTime * 1.6 + pit.id * 1.4;
+      for (let r = 0; r < 3; r++) {
+        const frac = (phase * 0.35 + r / 3) % 1;
+        const alpha = (1 - frac) * 0.36;
+        ctx.strokeStyle = `rgba(125, 211, 252, ${alpha})`;
+        ctx.lineWidth = 2;
+        traceContour(0.28 + frac * 0.65);
+        ctx.stroke();
+      }
+
+      // Inner cliff overhang drop shadow
+      ctx.strokeStyle = 'rgba(2, 6, 23, 0.72)';
+      ctx.lineWidth = 10;
+      ctx.save();
+      ctx.translate(0, 5);
+      traceContour(1.01);
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.restore();
+    } else {
+      // Intact walkable frozen ice pond with cool glacier sheen & warning fracture cracks
+      ctx.fillStyle = 'rgba(125, 211, 252, 0.40)';
+      ctx.save();
+      ctx.translate(0, 2);
+      traceContour(1.07);
+      ctx.fill();
+      ctx.restore();
+
+      ctx.save();
+      traceContour(1);
+      ctx.clip();
+
+      const iceGrad = ctx.createLinearGradient(-pit.rx, -pit.ry, pit.rx, pit.ry);
+      iceGrad.addColorStop(0, '#E0F2FE');
+      iceGrad.addColorStop(0.42, '#BAE6FD');
+      iceGrad.addColorStop(0.82, '#7DD3FC');
+      iceGrad.addColorStop(1, '#38BDF8');
+      ctx.fillStyle = iceGrad;
+      ctx.fillRect(-pit.rx * 1.4, -pit.ry * 1.4, pit.rx * 2.8, pit.ry * 2.8);
+
+      // Glossy diagonal specular ice bands
+      ctx.fillStyle = 'rgba(240, 249, 255, 0.44)';
+      ctx.beginPath();
+      ctx.moveTo(-pit.rx * 0.75, -pit.ry * 1.2);
+      ctx.lineTo(-pit.rx * 0.4, -pit.ry * 1.2);
+      ctx.lineTo(-pit.rx * 0.95, pit.ry * 1.2);
+      ctx.lineTo(-pit.rx * 1.3, pit.ry * 1.2);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.moveTo(pit.rx * 0.15, -pit.ry * 1.2);
+      ctx.lineTo(pit.rx * 0.34, -pit.ry * 1.2);
+      ctx.lineTo(-pit.rx * 0.24, pit.ry * 1.2);
+      ctx.lineTo(-pit.rx * 0.42, pit.ry * 1.2);
+      ctx.closePath();
+      ctx.fill();
+
+      // Subtle hairline cracks warning that blasts can shatter the ice
+      ctx.strokeStyle = 'rgba(12, 74, 110, 0.38)';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(-pit.rx * 0.38, -pit.ry * 0.28);
+      ctx.lineTo(0, 4);
+      ctx.lineTo(pit.rx * 0.44, -pit.ry * 0.14);
+      ctx.moveTo(0, 4);
+      ctx.lineTo(-pit.rx * 0.14, pit.ry * 0.46);
+      ctx.stroke();
+      ctx.restore();
+
+      // Crisp frosted ice border
+      ctx.strokeStyle = '#E0F2FE';
+      ctx.lineWidth = 2.4;
+      traceContour(1);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
 }

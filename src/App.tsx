@@ -28,20 +28,24 @@ import { MultiplayerClient } from './net/multiplayerClient';
 
 const DEFAULT_SOLO_CONFIG: MatchConfig = {
   mode: 'BRAWL',
+  teamMode: 'FFA',
   mapId: 'crossroads',
   difficulty: 'TACTICAL',
   targetKills: 8,
   immersive: false,
+  playerColorId: 'cobalt',
 };
 
 const DEFAULT_ONLINE_CONFIG: MatchConfig = {
   mode: 'BRAWL',
+  teamMode: 'FFA',
   mapId: 'immersive_mansion',
   difficulty: 'TACTICAL',
   targetKills: 8,
   immersive: true,
   extraDark: false,
   fillBots: true,
+  playerColorId: 'cobalt',
 };
 
 function formatClock(seconds: number): string {
@@ -56,7 +60,13 @@ function playEngineEvents(events: EngineEvent[], listenerX?: number, listenerY?:
     if (listenerX !== undefined && listenerY !== undefined) {
       const dist = Math.hypot(evt.x - listenerX, evt.y - listenerY);
       // In huge immersive maps, skip quiet far-off pickups/bounces outside earshot
-      if (dist > 950 && evt.type !== 'explosion' && evt.type !== 'knockout' && evt.type !== 'victory') {
+      if (
+        dist > 950 &&
+        evt.type !== 'explosion' &&
+        evt.type !== 'knockout' &&
+        evt.type !== 'victory' &&
+        evt.type !== 'splash'
+      ) {
         continue;
       }
     }
@@ -82,6 +92,9 @@ function playEngineEvents(events: EngineEvent[], listenerX?: number, listenerY?:
       case 'tnt_tick':
         sound.playTntTick(evt.value ?? 3);
         break;
+      case 'splash':
+        sound.playSplash();
+        break;
       case 'knockout':
         sound.playKnockout();
         break;
@@ -97,6 +110,7 @@ function worldToSnapshot(world: WorldSyncState, localSlot: number): GameSnapshot
     players: world.players.map((p) => ({
       id: p.id,
       name: p.name,
+      team: p.team,
       isHuman: p.id === localSlot,
       color: p.color,
       hp: p.hp,
@@ -112,7 +126,9 @@ function worldToSnapshot(world: WorldSyncState, localSlot: number): GameSnapshot
     })),
     elapsedTime: world.elapsedTime,
     activeBullets: world.bullets.length,
+    teamMode: world.teamMode,
     winnerId: world.winnerId,
+    winnerTeam: world.winnerTeam,
     winnerReason: world.winnerReason,
   };
 }
@@ -287,14 +303,17 @@ export default function App() {
     sound.unlock();
     setOnlineError(null);
     setOnlineConnecting(true);
-    clientRef.current?.createRoom(name, DEFAULT_ONLINE_CONFIG);
+    clientRef.current?.createRoom(name, {
+      ...DEFAULT_ONLINE_CONFIG,
+      playerColorId: config.playerColorId,
+    });
   };
 
   const handleJoinOnlineRoom = (code: string, name: string) => {
     sound.unlock();
     setOnlineError(null);
     setOnlineConnecting(true);
-    clientRef.current?.joinRoom(code, name);
+    clientRef.current?.joinRoom(code, name, config.playerColorId);
   };
 
   const handleLeaveOnline = () => {
@@ -450,6 +469,7 @@ export default function App() {
             mapId: serverWorld.mapId,
             immersive: serverWorld.immersive,
             extraDark: serverWorld.extraDark,
+            teamMode: serverWorld.teamMode,
             elapsedTime: serverWorld.elapsedTime + sinceSync,
             screenShake: serverWorld.screenShake,
             players: serverWorld.players.map((p) => ({
@@ -464,6 +484,7 @@ export default function App() {
             })),
             pickups: serverWorld.pickups,
             boxes: serverWorld.boxes ?? [],
+            icePits: serverWorld.icePits ?? [],
             explosions: serverWorld.explosions,
             particles: serverWorld.particles,
             floatingTexts: serverWorld.floatingTexts,
@@ -490,12 +511,14 @@ export default function App() {
         worldToRender = {
           mapId: engine.map.id,
           immersive: engine.map.immersive,
+          teamMode: engine.config.teamMode ?? 'FFA',
           elapsedTime: engine.elapsedTime,
           screenShake: engine.screenShake,
           players: engine.players,
           bullets: engine.bullets,
           pickups: engine.pickups,
           boxes: engine.boxes,
+          icePits: engine.icePits,
           explosions: engine.explosions,
           particles: engine.particles,
           floatingTexts: engine.floatingTexts,
@@ -677,6 +700,8 @@ export default function App() {
         room={roomState}
         errorMessage={onlineError}
         onUpdateConfig={(nextCfg) => clientRef.current?.updateRoomConfig(nextCfg)}
+        onUpdateColor={(colorId) => clientRef.current?.updatePlayerColor(colorId)}
+        onSwapTeam={() => clientRef.current?.swapTeam()}
         onStartMatch={() => clientRef.current?.startMatch()}
         onLeave={handleLeaveOnline}
       />
@@ -684,14 +709,20 @@ export default function App() {
   }
 
   const activeConfig = isOnline && roomState ? roomState.config : config;
+  const is2v2 = (activeConfig.teamMode ?? snapshot.teamMode ?? 'FFA') === '2V2';
   const isHost = isOnline && roomState ? roomState.mySlot === roomState.hostSlot : true;
   const localSlot = isOnline && roomState ? roomState.mySlot : 0;
   const localSnap = snapshot.players.find((p) => p.id === localSlot);
 
-  const p0 = snapshot.players.find((p) => p.id === 0);
-  const p1 = snapshot.players.find((p) => p.id === 1);
-  const p2 = snapshot.players.find((p) => p.id === 2);
-  const p3 = snapshot.players.find((p) => p.id === 3);
+  const team0List = snapshot.players.filter((p) => p.team === 0);
+  const team1List = snapshot.players.filter((p) => p.team === 1);
+  const p0 = is2v2 ? team0List[0] : snapshot.players.find((p) => p.id === 0);
+  const p2 = is2v2 ? team0List[1] : snapshot.players.find((p) => p.id === 2);
+  const p1 = is2v2 ? team1List[0] : snapshot.players.find((p) => p.id === 1);
+  const p3 = is2v2 ? team1List[1] : snapshot.players.find((p) => p.id === 3);
+
+  const teamAKills = team0List.reduce((sum, p) => sum + p.kills, 0);
+  const teamBKills = team1List.reduce((sum, p) => sum + p.kills, 0);
 
   return (
     <div className="h-dvh w-screen flex flex-col bg-[#0B1120] overflow-hidden">
@@ -710,10 +741,22 @@ export default function App() {
               <span aria-hidden="true">·</span>
             </>
           )}
+          {is2v2 && (
+            <>
+              <span className="font-mono-tabular font-bold text-sky-300">A {teamAKills}</span>
+              <span className="text-slate-600">vs</span>
+              <span className="font-mono-tabular font-bold text-rose-300">B {teamBKills}</span>
+              <span aria-hidden="true">·</span>
+            </>
+          )}
           <span>
             {activeConfig.mode === 'BRAWL'
-              ? `First to ${activeConfig.targetKills} KOs`
-              : 'Last Standing'}
+              ? is2v2
+                ? `2v2 · First to ${activeConfig.targetKills} KOs`
+                : `First to ${activeConfig.targetKills} KOs`
+              : is2v2
+                ? '2v2 Last Team Standing'
+                : 'Last Standing'}
           </span>
           <span aria-hidden="true">·</span>
           <span>{ARENA_MAPS[activeConfig.mapId].name}</span>
@@ -1016,7 +1059,7 @@ export default function App() {
             </div>
             <div className="flex items-center justify-between">
               <span className="text-red-400">TNT (3s)</span>
-              <span className="font-mono-tabular text-slate-300">-45 HP · Shootable</span>
+              <span className="font-mono-tabular text-slate-300">-45 HP · Shoot Fuse</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-amber-400">Cardboard</span>

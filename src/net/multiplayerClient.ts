@@ -1,11 +1,13 @@
 import Peer, { type DataConnection } from 'peerjs';
-import { ArenaEngine, PLAYER_PRESETS, type SlotSetup } from '../game/engine';
+import { ArenaEngine, PLAYER_PRESETS, pickDistinctColorOption, type SlotSetup } from '../game/engine';
 import { ARENA_MAPS } from '../game/maps';
-import type {
-  MatchConfig,
-  OnlineLobbySlot,
-  OnlineRoomState,
-  WorldSyncState,
+import {
+  type MatchConfig,
+  type OnlineLobbySlot,
+  type OnlineRoomState,
+  PLAYER_COLOR_PALETTE,
+  type PlayerColorOption,
+  type WorldSyncState,
 } from '../game/types';
 
 type RoomHandler = (room: OnlineRoomState) => void;
@@ -41,11 +43,20 @@ function sanitizeName(raw: unknown, fallback: string): string {
   return trimmed.length > 0 ? trimmed : fallback;
 }
 
+function sanitizeColorId(raw: unknown, fallback: string): string {
+  if (typeof raw === 'string' && PLAYER_COLOR_PALETTE.some((c) => c.id === raw)) {
+    return raw;
+  }
+  return fallback;
+}
+
 function sanitizeConfig(raw: Partial<MatchConfig> | undefined): MatchConfig {
   const map =
     raw?.mapId && ARENA_MAPS[raw.mapId] ? ARENA_MAPS[raw.mapId] : ARENA_MAPS.immersive_mansion;
+  const teamMode = raw?.teamMode === '2V2' ? '2V2' : 'FFA';
   return {
     mode: raw?.mode === 'ELIMINATION' ? 'ELIMINATION' : 'BRAWL',
+    teamMode,
     mapId: map.id,
     difficulty:
       raw?.difficulty === 'CHILL' || raw?.difficulty === 'RUTHLESS' ? raw.difficulty : 'TACTICAL',
@@ -53,7 +64,12 @@ function sanitizeConfig(raw: Partial<MatchConfig> | undefined): MatchConfig {
       typeof raw?.targetKills === 'number' ? Math.max(3, Math.min(20, raw.targetKills)) : 8,
     immersive: map.immersive,
     extraDark: map.immersive ? Boolean(raw?.extraDark) : false,
-    fillBots: raw?.fillBots !== undefined ? Boolean(raw.fillBots) : true,
+    fillBots: teamMode === '2V2' ? true : raw?.fillBots !== undefined ? Boolean(raw.fillBots) : true,
+    playerColorId:
+      typeof raw?.playerColorId === 'string' &&
+      PLAYER_COLOR_PALETTE.some((c) => c.id === raw.playerColorId)
+        ? raw.playerColorId
+        : undefined,
   };
 }
 
@@ -61,12 +77,14 @@ interface HostMember {
   conn: DataConnection;
   slot: number;
   name: string;
+  colorId: string;
 }
 
 interface HostRoom {
   code: string;
   hostSlot: number;
   hostName: string;
+  hostColorId: string;
   phase: 'LOBBY' | 'PLAYING' | 'GAME_OVER';
   config: MatchConfig;
   members: Map<number, HostMember>;
@@ -203,11 +221,18 @@ export class MultiplayerClient {
     const seq = this.sessionSeq;
     const hostName = sanitizeName(name, PLAYER_PRESETS[0].defaultName);
     const cleanConfig = sanitizeConfig(config);
+    const hostColorId = sanitizeColorId(cleanConfig.playerColorId, PLAYER_PRESETS[0].colorId);
 
-    this.attemptHostPeer(hostName, cleanConfig, 0, seq);
+    this.attemptHostPeer(hostName, hostColorId, cleanConfig, 0, seq);
   }
 
-  private attemptHostPeer(hostName: string, config: MatchConfig, attempt: number, seq: number) {
+  private attemptHostPeer(
+    hostName: string,
+    hostColorId: string,
+    config: MatchConfig,
+    attempt: number,
+    seq: number
+  ) {
     if (seq !== this.sessionSeq) return;
 
     const code = generateRoomCode();
@@ -230,6 +255,7 @@ export class MultiplayerClient {
         code,
         hostSlot: 0,
         hostName,
+        hostColorId,
         phase: 'LOBBY',
         config,
         members: new Map(),
@@ -261,7 +287,7 @@ export class MultiplayerClient {
           // Ignore
         }
         this.peer = null;
-        this.attemptHostPeer(hostName, config, attempt + 1, seq);
+        this.attemptHostPeer(hostName, hostColorId, config, attempt + 1, seq);
         return;
       }
 
@@ -279,7 +305,6 @@ export class MultiplayerClient {
 
     peer.on('disconnected', () => {
       if (seq !== this.sessionSeq || this.intentionalClose) return;
-      // Attempt silent reconnection to signaling server while keeping existing WebRTC channels alive
       try {
         if (!peer.destroyed) peer.reconnect();
       } catch {
@@ -288,13 +313,52 @@ export class MultiplayerClient {
     });
   }
 
+  private getHumanUsedColorIds(room: HostRoom, excludeSlot?: number): Set<string> {
+    const used = new Set<string>();
+    if (excludeSlot !== room.hostSlot) {
+      used.add(room.hostColorId);
+    }
+    for (const m of room.members.values()) {
+      if (m.slot !== excludeSlot) {
+        used.add(m.colorId);
+      }
+    }
+    return used;
+  }
+
+  private resolveSlotColors(room: HostRoom): Map<number, PlayerColorOption> {
+    const usedIds = new Set<string>();
+    const map = new Map<number, PlayerColorOption>();
+
+    // 1. Reserve host color
+    const hostColor = pickDistinctColorOption(room.hostColorId, usedIds, room.hostSlot);
+    room.hostColorId = hostColor.id;
+    map.set(room.hostSlot, hostColor);
+
+    // 2. Reserve connected human guest colors
+    const sortedMembers = [...room.members.values()].sort((a, b) => a.slot - b.slot);
+    for (const member of sortedMembers) {
+      const col = pickDistinctColorOption(member.colorId, usedIds, member.slot);
+      member.colorId = col.id;
+      map.set(member.slot, col);
+    }
+
+    // 3. Assign remaining distinct colors to bot/open slots
+    for (const preset of PLAYER_PRESETS) {
+      if (!map.has(preset.id)) {
+        map.set(preset.id, pickDistinctColorOption(preset.colorId, usedIds, preset.id));
+      }
+    }
+    return map;
+  }
+
   private attachGuestConnectionToHost(conn: DataConnection, seq: number) {
-    let assignedSlot: number | null = null;
+    let memberRef: HostMember | null = null;
 
     const handleDisconnect = () => {
-      if (seq !== this.sessionSeq || !this.hostRoom || assignedSlot === null) return;
-      const slot = assignedSlot;
-      assignedSlot = null;
+      if (seq !== this.sessionSeq || !this.hostRoom || !memberRef) return;
+      const slot = memberRef.slot;
+      memberRef = null;
       this.removeHostMember(slot);
     };
 
@@ -305,7 +369,7 @@ export class MultiplayerClient {
       const type = msg.type;
 
       if (type === 'join_request') {
-        if (assignedSlot !== null) return;
+        if (memberRef) return;
         const room = this.hostRoom;
 
         if (room.phase !== 'LOBBY') {
@@ -324,9 +388,11 @@ export class MultiplayerClient {
           return;
         }
 
+        // In 2V2 prefer putting the second player on Team Bravo (slot 1/3) first if available, else any free slot
+        const candidateOrder = room.config.teamMode === '2V2' ? [1, 3, 2, 0] : [0, 1, 2, 3];
         let freeSlot: number | null = null;
-        for (let s = 1; s < 4; s++) {
-          if (!room.members.has(s)) {
+        for (const s of candidateOrder) {
+          if (s !== room.hostSlot && !room.members.has(s)) {
             freeSlot = s;
             break;
           }
@@ -348,17 +414,46 @@ export class MultiplayerClient {
           return;
         }
 
-        assignedSlot = freeSlot;
         const playerName = sanitizeName(msg.name, PLAYER_PRESETS[freeSlot].defaultName);
-        room.members.set(freeSlot, { conn, slot: freeSlot, name: playerName });
+        const usedByHumans = this.getHumanUsedColorIds(room);
+        const chosenColor = pickDistinctColorOption(
+          typeof msg.colorId === 'string' ? msg.colorId : PLAYER_PRESETS[freeSlot].colorId,
+          usedByHumans,
+          freeSlot
+        );
+        memberRef = { conn, slot: freeSlot, name: playerName, colorId: chosenColor.id };
+        room.members.set(freeSlot, memberRef);
         this.broadcastHostRoomState();
         return;
       }
 
-      if (assignedSlot === null) return;
+      if (!memberRef) return;
+      const currentSlot = memberRef.slot;
 
       if (type === 'leave_room') {
         handleDisconnect();
+      } else if (type === 'set_color') {
+        const room = this.hostRoom;
+        if (room.phase !== 'LOBBY') return;
+        const requestedId = sanitizeColorId(msg.colorId, '');
+        if (!requestedId) return;
+        const usedByOthers = this.getHumanUsedColorIds(room, currentSlot);
+        if (!usedByOthers.has(requestedId)) {
+          memberRef.colorId = requestedId;
+          this.broadcastHostRoomState();
+        }
+      } else if (type === 'swap_team') {
+        const room = this.hostRoom;
+        if (room.phase !== 'LOBBY' || room.config.teamMode !== '2V2') return;
+        const currentTeam = currentSlot % 2;
+        const targetSlots = currentTeam === 0 ? [1, 3] : [0, 2];
+        const openTarget = targetSlots.find((s) => s !== room.hostSlot && !room.members.has(s));
+        if (openTarget !== undefined) {
+          room.members.delete(currentSlot);
+          memberRef.slot = openTarget;
+          room.members.set(openTarget, memberRef);
+          this.broadcastHostRoomState();
+        }
       } else if (type === 'joystick_input') {
         const room = this.hostRoom;
         if (!room.engine || room.phase !== 'PLAYING') return;
@@ -370,15 +465,15 @@ export class MultiplayerClient {
           typeof msg.moveAngle === 'number' && Number.isFinite(msg.moveAngle)
             ? msg.moveAngle
             : undefined;
-        room.engine.setRemoteInput(assignedSlot, Boolean(msg.active), angle, magnitude, moveAngle);
+        room.engine.setRemoteInput(currentSlot, Boolean(msg.active), angle, magnitude, moveAngle);
       } else if (type === 'joystick_release') {
         const room = this.hostRoom;
         if (!room.engine || room.phase !== 'PLAYING') return;
-        room.engine.releaseRemoteJoystick(assignedSlot);
+        room.engine.releaseRemoteJoystick(currentSlot);
       } else if (type === 'shoot_action') {
         const room = this.hostRoom;
         if (!room.engine || room.phase !== 'PLAYING') return;
-        room.engine.firePlayerShot(assignedSlot);
+        room.engine.firePlayerShot(currentSlot);
       }
     });
 
@@ -404,13 +499,18 @@ export class MultiplayerClient {
   }
 
   private buildHostSlots(room: HostRoom): OnlineLobbySlot[] {
-    const fillBots = room.config.fillBots ?? true;
+    const fillBots = room.config.teamMode === '2V2' ? true : (room.config.fillBots ?? true);
+    const colors = this.resolveSlotColors(room);
     return PLAYER_PRESETS.map((preset) => {
+      const col = colors.get(preset.id) ?? PLAYER_COLOR_PALETTE[preset.id];
+      const team = preset.id % 2;
       if (preset.id === room.hostSlot) {
         return {
           slot: preset.id,
           name: room.hostName,
-          color: preset.color,
+          color: col.color,
+          colorId: col.id,
+          team,
           occupied: true,
           isBot: false,
           isHost: true,
@@ -420,7 +520,9 @@ export class MultiplayerClient {
       return {
         slot: preset.id,
         name: member ? member.name : fillBots ? `${preset.defaultName} (Bot)` : 'Open Slot',
-        color: preset.color,
+        color: col.color,
+        colorId: col.id,
+        team,
         occupied: Boolean(member),
         isBot: !member && fillBots,
         isHost: false,
@@ -461,7 +563,7 @@ export class MultiplayerClient {
     }
   }
 
-  public joinRoom(code: string, name: string) {
+  public joinRoom(code: string, name: string, colorId?: string) {
     const cleanCode = code.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (cleanCode.length < 3) {
       this.onError('Please enter a valid 4-letter room code.');
@@ -495,7 +597,7 @@ export class MultiplayerClient {
         if (seq !== this.sessionSeq) return;
         this.onStatus(true);
         try {
-          conn.send({ type: 'join_request', name: cleanName });
+          conn.send({ type: 'join_request', name: cleanName, colorId });
         } catch {
           this.clearConnectTimeout();
           this.teardown(false);
@@ -568,25 +670,91 @@ export class MultiplayerClient {
     this.broadcastHostRoomState();
   }
 
+  public updatePlayerColor(colorId: string) {
+    const cleanId = sanitizeColorId(colorId, '');
+    if (!cleanId) return;
+
+    if (this.role === 'host' && this.hostRoom && this.hostRoom.phase === 'LOBBY') {
+      const usedByGuests = this.getHumanUsedColorIds(this.hostRoom, this.hostRoom.hostSlot);
+      if (!usedByGuests.has(cleanId)) {
+        this.hostRoom.hostColorId = cleanId;
+        this.broadcastHostRoomState();
+      }
+      return;
+    }
+
+    if (this.role === 'guest' && this.guestConn?.open) {
+      try {
+        this.guestConn.send({ type: 'set_color', colorId: cleanId });
+      } catch {
+        // Ignore
+      }
+    }
+  }
+
+  public swapTeam() {
+    if (this.role === 'host' && this.hostRoom && this.hostRoom.phase === 'LOBBY') {
+      const room = this.hostRoom;
+      if (room.config.teamMode !== '2V2') return;
+      const currentTeam = room.hostSlot % 2;
+      const targetSlots = currentTeam === 0 ? [1, 3] : [0, 2];
+      const openTarget = targetSlots.find((s) => !room.members.has(s));
+      if (openTarget !== undefined) {
+        room.hostSlot = openTarget;
+        this.broadcastHostRoomState();
+      }
+      return;
+    }
+
+    if (this.role === 'guest' && this.guestConn?.open) {
+      try {
+        this.guestConn.send({ type: 'swap_team' });
+      } catch {
+        // Ignore
+      }
+    }
+  }
+
   public startMatch() {
     if (this.role !== 'host' || !this.hostRoom) return;
     const room = this.hostRoom;
     this.stopHostLoop();
 
-    const fillBots = room.config.fillBots ?? true;
+    const is2v2 = room.config.teamMode === '2V2';
+    const fillBots = is2v2 ? true : (room.config.fillBots ?? true);
+    const colors = this.resolveSlotColors(room);
+
     const slotSetups: SlotSetup[] = PLAYER_PRESETS.map((preset) => {
+      const colorId = colors.get(preset.id)?.id ?? preset.colorId;
+      const team = is2v2 ? preset.id % 2 : undefined;
       if (preset.id === room.hostSlot) {
-        return { slot: preset.id, name: room.hostName, isHuman: true, enabled: true };
+        return {
+          slot: preset.id,
+          name: room.hostName,
+          isHuman: true,
+          enabled: true,
+          colorId,
+          team,
+        };
       }
       const member = room.members.get(preset.id);
       if (member) {
-        return { slot: preset.id, name: member.name, isHuman: true, enabled: true };
+        return {
+          slot: preset.id,
+          name: member.name,
+          isHuman: true,
+          enabled: true,
+          colorId,
+          team,
+        };
       }
       return {
         slot: preset.id,
         name: preset.defaultName,
         isHuman: false,
         enabled: fillBots,
+        colorId,
+        team,
       };
     });
 

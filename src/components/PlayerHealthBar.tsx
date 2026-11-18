@@ -57,6 +57,15 @@ export function PlayerHealthBar({
           }`}
         >
           <div className={`flex items-center gap-1 min-w-0 ${align === 'right' ? 'flex-row-reverse' : ''}`}>
+            {player.team !== undefined && (
+              <span
+                className={`text-[9px] font-bold px-1 rounded ${
+                  player.team === 0 ? 'bg-sky-500/35 text-sky-200' : 'bg-rose-500/35 text-rose-200'
+                }`}
+              >
+                {player.team === 0 ? 'A' : 'B'}
+              </span>
+            )}
             <span className="font-display font-bold text-white truncate max-w-[78px]">
               {player.name}
             </span>
@@ -106,6 +115,15 @@ export function PlayerHealthBar({
           <span className="font-display text-sm font-bold text-slate-100 truncate">
             {player.name}
           </span>
+          {player.team !== undefined && (
+            <span
+              className={`px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 ${
+                player.team === 0 ? 'bg-sky-500/20 text-sky-300' : 'bg-rose-500/20 text-rose-300'
+              }`}
+            >
+              {player.team === 0 ? 'Team A' : 'Team B'}
+            </span>
+          )}
         </div>
         <span className={`font-mono-tabular text-xs font-medium whitespace-nowrap ${statusColor}`}>
           {statusLabel === 'Stun' ? 'Stunned' : !player.alive && mode === 'BRAWL' ? `Spawn ${statusLabel}` : statusLabel}

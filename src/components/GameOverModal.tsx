@@ -25,7 +25,16 @@ export function GameOverModal({
   });
 
   const winner = snapshot.players.find((p) => p.id === snapshot.winnerId) ?? ranked[0];
-  const humanWon = winner?.isHuman;
+  const is2v2 = snapshot.teamMode === '2V2' && snapshot.winnerTeam !== null && snapshot.winnerTeam !== undefined;
+  const localPlayer = snapshot.players.find((p) => p.isHuman);
+  const humanWon = is2v2 ? localPlayer?.team === snapshot.winnerTeam : winner?.isHuman;
+  const headline = is2v2
+    ? humanWon
+      ? `Team ${snapshot.winnerTeam === 0 ? 'Alpha' : 'Bravo'} Victory`
+      : `Team ${snapshot.winnerTeam === 0 ? 'Alpha' : 'Bravo'} Wins`
+    : humanWon
+      ? 'Victory'
+      : `${winner?.name ?? 'Rival'} Wins`;
 
   return (
     <div className="fixed inset-0 z-30 overflow-y-auto overscroll-contain bg-slate-950/75 backdrop-blur-sm">
@@ -40,7 +49,7 @@ export function GameOverModal({
           </div>
           <div>
             <h2 className="font-display text-2xl font-extrabold text-slate-50">
-              {humanWon ? 'Victory' : `${winner?.name ?? 'Rival'} Wins`}
+              {headline}
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
               {snapshot.winnerReason} · {Math.floor(snapshot.elapsedTime)}s match
@@ -68,6 +77,15 @@ export function GameOverModal({
                         style={{ backgroundColor: p.color }}
                       />
                       <span className="font-semibold text-slate-100">{p.name}</span>
+                      {p.team !== undefined && (
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                            p.team === 0 ? 'bg-sky-500/20 text-sky-300' : 'bg-rose-500/20 text-rose-300'
+                          }`}
+                        >
+                          {p.team === 0 ? 'Team A' : 'Team B'}
+                        </span>
+                      )}
                     </div>
                   </td>
                   <td className="py-2.5 px-3 text-right font-mono-tabular font-bold text-slate-100">

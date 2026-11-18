@@ -2,6 +2,8 @@ export type GameState = 'TITLE_MENU' | 'ONLINE_LOBBY' | 'PLAYING' | 'PAUSED' | '
 
 export type MatchMode = 'ELIMINATION' | 'BRAWL';
 
+export type TeamMode = 'FFA' | '2V2';
+
 export type BotDifficulty = 'CHILL' | 'TACTICAL' | 'RUTHLESS';
 
 export type ControlScheme = 'CURSOR_SPACE' | 'DRAG_STICK';
@@ -10,21 +12,24 @@ export type MapId =
   | 'crossroads'
   | 'pillars'
   | 'bunkers'
+  | 'winter_tussle'
   | 'immersive_mansion'
   | 'immersive_outdoors';
 
-export type FloorTheme = 'mansion_wood' | 'grass_outdoors' | 'maple_cargo';
+export type FloorTheme = 'mansion_wood' | 'grass_outdoors' | 'maple_cargo' | 'winter_snow';
 
 export type ObstacleKind =
   | 'perimeter_wood'
   | 'perimeter_hedge'
   | 'perimeter_steel'
+  | 'perimeter_ice'
   | 'metal'
   | 'sofa'
   | 'bed'
   | 'table'
   | 'bookshelf'
   | 'tree'
+  | 'pine_tree'
   | 'rock'
   | 'hedge';
 
@@ -51,8 +56,19 @@ export interface CardboardBox {
   vx: number;
   vy: number;
   age: number;
+  lastPusherId?: number | null;
   state: 'spawning' | 'active' | 'punctured' | 'fading';
   stateTimer: number;
+}
+
+export interface IcePit {
+  id: number;
+  x: number;
+  y: number;
+  rx: number;
+  ry: number;
+  points?: Vec2[];
+  broken: boolean;
 }
 
 export interface ArenaMap {
@@ -65,11 +81,30 @@ export interface ArenaMap {
   floorTheme: FloorTheme;
   walls: WallRect[];
   spawns: Vec2[];
+  icePits?: Array<{ x: number; y: number; rx: number; ry: number; points?: Vec2[] }>;
 }
+
+export interface PlayerColorOption {
+  id: string;
+  name: string;
+  color: string;
+  accentColor: string;
+}
+
+export const PLAYER_COLOR_PALETTE: PlayerColorOption[] = [
+  { id: 'cobalt', name: 'Cobalt', color: '#0EA5E9', accentColor: '#7DD3FC' },
+  { id: 'crimson', name: 'Crimson', color: '#EF4444', accentColor: '#FCA5A5' },
+  { id: 'volt', name: 'Volt', color: '#FACC15', accentColor: '#FEF08A' },
+  { id: 'jade', name: 'Jade', color: '#22C55E', accentColor: '#86EFAC' },
+  { id: 'violet', name: 'Violet', color: '#A855F7', accentColor: '#D8B4FE' },
+  { id: 'orange', name: 'Blaze', color: '#F97316', accentColor: '#FDBA74' },
+  { id: 'magenta', name: 'Nova', color: '#EC4899', accentColor: '#F9A8D4' },
+];
 
 export interface Player {
   id: number;
   name: string;
+  team?: number;
   isHuman: boolean;
   isRemote?: boolean;
   color: string;
@@ -131,6 +166,10 @@ export interface Pickup {
   y: number;
   radius: number;
   age: number;
+  vx?: number;
+  vy?: number;
+  armed?: boolean;
+  ownerId?: number | null;
   countdown?: number;
   maxCountdown?: number;
   lastTickSecond?: number;
@@ -175,6 +214,7 @@ export type EngineEventType =
   | 'hit'
   | 'explosion'
   | 'tnt_tick'
+  | 'splash'
   | 'knockout'
   | 'victory';
 
@@ -202,6 +242,7 @@ export interface JoystickState {
 export interface HudPlayerSnapshot {
   id: number;
   name: string;
+  team?: number;
   isHuman: boolean;
   color: string;
   hp: number;
@@ -218,19 +259,23 @@ export interface HudPlayerSnapshot {
 
 export interface MatchConfig {
   mode: MatchMode;
+  teamMode?: TeamMode;
   mapId: MapId;
   difficulty: BotDifficulty;
   targetKills: number;
   immersive: boolean;
   extraDark?: boolean;
   fillBots?: boolean;
+  playerColorId?: string;
 }
 
 export interface GameSnapshot {
   players: HudPlayerSnapshot[];
   elapsedTime: number;
   activeBullets: number;
+  teamMode?: TeamMode;
   winnerId: number | null;
+  winnerTeam?: number | null;
   winnerReason: string;
 }
 
@@ -238,6 +283,8 @@ export interface OnlineLobbySlot {
   slot: number;
   name: string;
   color: string;
+  colorId: string;
+  team: number;
   occupied: boolean;
   isBot: boolean;
   isHost: boolean;
@@ -256,13 +303,16 @@ export interface WorldSyncState {
   mapId: MapId;
   immersive: boolean;
   extraDark: boolean;
+  teamMode?: TeamMode;
   elapsedTime: number;
   screenShake: number;
   winnerId: number | null;
+  winnerTeam?: number | null;
   winnerReason: string;
   players: Array<{
     id: number;
     name: string;
+    team?: number;
     color: string;
     accentColor: string;
     x: number;
@@ -286,6 +336,7 @@ export interface WorldSyncState {
   bullets: Bullet[];
   pickups: Pickup[];
   boxes: CardboardBox[];
+  icePits: IcePit[];
   explosions: Explosion[];
   particles: Particle[];
   floatingTexts: FloatingText[];
@@ -300,6 +351,7 @@ export const IMMERSIVE_VIEW_HEIGHT = 740;
 export const PLAYER_RADIUS = 42;
 export const PLAYER_MAX_SPEED = 245;
 export const PLAYER_MAX_ACCEL = 1950;
+export const PLAYER_TURN_SPEED = 17;
 export const PLAYER_MAX_HP = 100;
 export const PLAYER_MAX_AMMO = 5;
 
@@ -324,7 +376,7 @@ export const MEDKIT_HEAL = 35;
 
 export const PICKUP_BULLET_RADIUS = 20;
 
-export const CARDBOARD_SIZE = 74;
+export const CARDBOARD_SIZE = 64;
 export const CARDBOARD_FADE_IN = 0.36;
 export const CARDBOARD_PUNCTURE_FRAME = 0.11;
 export const CARDBOARD_FADE_OUT = 0.34;

@@ -1,12 +1,22 @@
-import { Check, Copy, LogOut, Play, Users } from 'lucide-react';
+import { ArrowLeftRight, Check, Copy, Lock, LogOut, Play, Users } from 'lucide-react';
 import { useState } from 'react';
 import { IMMERSIVE_MAP_LIST, SOLO_MAP_LIST } from '../game/maps';
-import type { BotDifficulty, MapId, MatchConfig, MatchMode, OnlineRoomState } from '../game/types';
+import {
+  type BotDifficulty,
+  type MapId,
+  type MatchConfig,
+  type MatchMode,
+  type OnlineRoomState,
+  PLAYER_COLOR_PALETTE,
+  type TeamMode,
+} from '../game/types';
 
 interface OnlineLobbyScreenProps {
   room: OnlineRoomState;
   errorMessage: string | null;
   onUpdateConfig: (config: MatchConfig) => void;
+  onUpdateColor: (colorId: string) => void;
+  onSwapTeam: () => void;
   onStartMatch: () => void;
   onLeave: () => void;
 }
@@ -15,13 +25,23 @@ export function OnlineLobbyScreen({
   room,
   errorMessage,
   onUpdateConfig,
+  onUpdateColor,
+  onSwapTeam,
   onStartMatch,
   onLeave,
 }: OnlineLobbyScreenProps) {
   const [copied, setCopied] = useState(false);
   const isHost = room.mySlot === room.hostSlot;
+  const is2v2 = room.config.teamMode === '2V2';
   const occupiedCount = room.slots.filter((s) => s.occupied).length;
   const activePlayerCount = room.slots.filter((s) => s.occupied || s.isBot).length;
+  const mySlotObj = room.slots.find((s) => s.slot === room.mySlot);
+  const myTeam = mySlotObj?.team ?? room.mySlot % 2;
+  const otherTeamHasOpenSlot =
+    is2v2 && room.slots.some((s) => s.team !== myTeam && !s.occupied);
+  const humanTakenColors = new Set(
+    room.slots.filter((s) => s.occupied && s.slot !== room.mySlot).map((s) => s.colorId)
+  );
 
   const copyInviteLink = async () => {
     const url = `${window.location.origin}/?room=${room.code}`;
@@ -35,6 +55,8 @@ export function OnlineLobbyScreen({
   };
 
   const setMode = (mode: MatchMode) => onUpdateConfig({ ...room.config, mode });
+  const setTeamMode = (teamMode: TeamMode) =>
+    onUpdateConfig({ ...room.config, teamMode, fillBots: teamMode === '2V2' ? true : room.config.fillBots });
   const setArenaView = (immersive: boolean) => {
     if (immersive === room.config.immersive) return;
     const nextMapId = immersive ? IMMERSIVE_MAP_LIST[0].id : SOLO_MAP_LIST[0].id;
@@ -103,13 +125,25 @@ export function OnlineLobbyScreen({
           <div className="mt-5 flex flex-col md:flex-row gap-5 md:gap-6">
             {/* Player Slots */}
             <div className="flex-1 min-w-0">
-            <div className="flex items-center justify-between mb-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
               <h2 className="text-sm font-semibold text-slate-200">
                 Players ({occupiedCount}/4 Joined)
               </h2>
-              <span className="text-xs text-slate-400">
-                Share the code or link for friends to join
-              </span>
+              {is2v2 ? (
+                <button
+                  type="button"
+                  disabled={!otherTeamHasOpenSlot}
+                  onClick={onSwapTeam}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 disabled:opacity-45 px-2.5 py-1 text-xs font-semibold text-slate-100 transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  <ArrowLeftRight className="w-3.5 h-3.5 text-sky-400" />
+                  Switch Team ({myTeam === 0 ? 'A → B' : 'B → A'})
+                </button>
+              ) : (
+                <span className="text-xs text-slate-400">
+                  Share the code or link for friends to join
+                </span>
+              )}
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -119,11 +153,13 @@ export function OnlineLobbyScreen({
                   <div
                     key={slot.slot}
                     className={`rounded-xl border p-3.5 transition-colors ${
-                      slot.occupied
-                        ? 'bg-[#152136] border-slate-700'
-                        : slot.isBot
-                          ? 'bg-slate-900/70 border-slate-800'
-                          : 'bg-slate-950/50 border-slate-800/60 opacity-60'
+                      isMe
+                        ? 'bg-[#17253C] border-sky-500/60'
+                        : slot.occupied
+                          ? 'bg-[#152136] border-slate-700'
+                          : slot.isBot
+                            ? 'bg-slate-900/70 border-slate-800'
+                            : 'bg-slate-950/50 border-slate-800/60 opacity-60'
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2">
@@ -136,16 +172,62 @@ export function OnlineLobbyScreen({
                           {slot.name}
                         </span>
                       </div>
-                      <span className="text-[11px] font-medium text-slate-400 whitespace-nowrap">
-                        {isMe ? 'You' : slot.isHost ? 'Host' : slot.occupied ? 'Joined' : slot.isBot ? 'AI Bot' : 'Empty'}
-                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {is2v2 && (
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                              slot.team === 0
+                                ? 'bg-sky-500/20 text-sky-300'
+                                : 'bg-rose-500/20 text-rose-300'
+                            }`}
+                          >
+                            {slot.team === 0 ? 'Team A' : 'Team B'}
+                          </span>
+                        )}
+                        <span className="text-[11px] font-medium text-slate-400 whitespace-nowrap">
+                          {isMe ? 'You' : slot.isHost ? 'Host' : slot.occupied ? 'Joined' : slot.isBot ? 'AI Bot' : 'Empty'}
+                        </span>
+                      </div>
                     </div>
                   </div>
                 );
               })}
             </div>
 
-            <div className="mt-5 rounded-xl border border-slate-800 bg-slate-900/60 p-4 text-xs text-slate-300 space-y-1.5">
+            <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/60 p-3.5">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <span className="text-xs font-semibold text-slate-300">Your Fighter Color</span>
+                <span className="text-[11px] text-slate-400">Unique per player</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {PLAYER_COLOR_PALETTE.map((opt) => {
+                  const isMine = mySlotObj?.colorId === opt.id;
+                  const takenByHuman = humanTakenColors.has(opt.id);
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      disabled={takenByHuman}
+                      title={takenByHuman ? `${opt.name} (taken)` : opt.name}
+                      aria-label={`Choose ${opt.name} color`}
+                      onClick={() => onUpdateColor(opt.id)}
+                      className={`h-8 flex-1 rounded-lg border-2 flex items-center justify-center transition-all ${
+                        isMine
+                          ? 'border-white scale-105 shadow-[0_0_0_2px_rgba(14,165,233,0.45)] cursor-pointer'
+                          : takenByHuman
+                            ? 'border-slate-900 opacity-30 cursor-not-allowed'
+                            : 'border-slate-950/80 opacity-80 hover:opacity-100 cursor-pointer'
+                      }`}
+                      style={{ backgroundColor: opt.color }}
+                    >
+                      {takenByHuman && <Lock className="w-3 h-3 text-slate-950" />}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/60 p-4 text-xs text-slate-300 space-y-1.5">
               <div className="font-semibold text-slate-100">
                 {room.config.immersive ? 'Immersive Mode Rules' : 'Normal Arena Rules'}
               </div>
@@ -193,7 +275,13 @@ export function OnlineLobbyScreen({
               <div className="text-xs font-semibold text-slate-400 mb-2">
                 {room.config.immersive ? 'Immersive Map' : 'Arena Map'}
               </div>
-              <div className="flex flex-col gap-1.5">
+              <div
+                className={
+                  availableMaps.length > 2
+                    ? 'grid grid-cols-1 sm:grid-cols-2 gap-1.5'
+                    : 'flex flex-col gap-1.5'
+                }
+              >
                 {availableMaps.map((m) => (
                   <button
                     key={m.id}
@@ -246,6 +334,32 @@ export function OnlineLobbyScreen({
             )}
 
             <div>
+              <div className="text-xs font-semibold text-slate-400 mb-2">Team Format</div>
+              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-lg bg-slate-900 border border-slate-800">
+                <button
+                  type="button"
+                  disabled={!isHost}
+                  onClick={() => setTeamMode('FFA')}
+                  className={`px-2 py-1.5 text-[11px] sm:text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                    !is2v2 ? 'bg-sky-500 text-slate-950' : 'text-slate-300 hover:text-white'
+                  } ${!isHost ? 'cursor-default' : 'cursor-pointer'}`}
+                >
+                  Free-for-All
+                </button>
+                <button
+                  type="button"
+                  disabled={!isHost}
+                  onClick={() => setTeamMode('2V2')}
+                  className={`px-2 py-1.5 text-[11px] sm:text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                    is2v2 ? 'bg-sky-500 text-slate-950' : 'text-slate-300 hover:text-white'
+                  } ${!isHost ? 'cursor-default' : 'cursor-pointer'}`}
+                >
+                  2v2 Teams
+                </button>
+              </div>
+            </div>
+
+            <div>
               <div className="text-xs font-semibold text-slate-400 mb-2">Match Mode</div>
               <div className="grid grid-cols-2 gap-1.5 p-1 rounded-lg bg-slate-900 border border-slate-800">
                 <button
@@ -279,15 +393,15 @@ export function OnlineLobbyScreen({
               <span className="text-xs font-medium text-slate-200">Fill empty slots with bots</span>
               <button
                 type="button"
-                disabled={!isHost}
+                disabled={!isHost || is2v2}
                 onClick={toggleFillBots}
                 className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${
-                  room.config.fillBots ?? true
+                  is2v2 || (room.config.fillBots ?? true)
                     ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
                     : 'bg-slate-800 text-slate-400 border border-slate-700'
-                } ${!isHost ? 'opacity-70 cursor-default' : 'cursor-pointer'}`}
+                } ${!isHost || is2v2 ? 'opacity-70 cursor-default' : 'cursor-pointer'}`}
               >
-                {room.config.fillBots ?? true ? 'On' : 'Off'}
+                {is2v2 ? '2v2 Auto' : room.config.fillBots ?? true ? 'On' : 'Off'}
               </button>
             </div>
 
