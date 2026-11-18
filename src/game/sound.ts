@@ -27,6 +27,11 @@ export interface FootstepWalker {
   stunTimer: number;
 }
 
+export interface SpatialAudioOpts {
+  volume?: number;
+  pan?: number;
+}
+
 class SoundEngine {
   private ctx: AudioContext | null = null;
   private muted = false;
@@ -35,7 +40,8 @@ class SoundEngine {
   private ambientExtraDark = false;
   private stepCooldowns = new Map<number, number>();
   private creakTimer = 5.0;
-  private noiseBuffer: AudioBuffer | null = null;
+  private brownNoiseBuffer: AudioBuffer | null = null;
+  private whiteNoiseBuffer: AudioBuffer | null = null;
 
   public setMuted(muted: boolean) {
     this.muted = muted;
@@ -68,8 +74,8 @@ class SoundEngine {
   }
 
   private getNoiseBuffer(ctx: AudioContext): AudioBuffer {
-    if (this.noiseBuffer && this.noiseBuffer.sampleRate === ctx.sampleRate) {
-      return this.noiseBuffer;
+    if (this.brownNoiseBuffer && this.brownNoiseBuffer.sampleRate === ctx.sampleRate) {
+      return this.brownNoiseBuffer;
     }
     const len = ctx.sampleRate * 2;
     const buf = ctx.createBuffer(1, len, ctx.sampleRate);
@@ -80,8 +86,95 @@ class SoundEngine {
       last = (last + 0.04 * white) / 1.04;
       data[i] = last * 2.4;
     }
-    this.noiseBuffer = buf;
+    this.brownNoiseBuffer = buf;
     return buf;
+  }
+
+  private getWhiteNoiseBuffer(ctx: AudioContext): AudioBuffer {
+    if (this.whiteNoiseBuffer && this.whiteNoiseBuffer.sampleRate === ctx.sampleRate) {
+      return this.whiteNoiseBuffer;
+    }
+    const len = ctx.sampleRate * 2;
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) {
+      data[i] = Math.random() * 2 - 1;
+    }
+    this.whiteNoiseBuffer = buf;
+    return buf;
+  }
+
+  private createOutputNode(ctx: AudioContext, opts?: SpatialAudioOpts): { node: AudioNode; vol: number } {
+    const vol = Math.max(0.05, Math.min(1.2, opts?.volume ?? 1));
+    const pan = Math.max(-0.9, Math.min(0.9, opts?.pan ?? 0));
+
+    const master = ctx.createGain();
+    master.gain.setValueAtTime(vol, ctx.currentTime);
+
+    if (Math.abs(pan) > 0.02 && typeof ctx.createStereoPanner === 'function') {
+      const panner = ctx.createStereoPanner();
+      panner.pan.setValueAtTime(pan, ctx.currentTime);
+      master.connect(panner);
+      panner.connect(ctx.destination);
+    } else {
+      master.connect(ctx.destination);
+    }
+
+    return { node: master, vol };
+  }
+
+  private spawnNoiseBurst(
+    ctx: AudioContext,
+    dest: AudioNode,
+    startTime: number,
+    duration: number,
+    filterType: BiquadFilterType,
+    startFreq: number,
+    endFreq: number,
+    q: number,
+    peakGain: number,
+    decayPow = 1.6
+  ) {
+    const src = ctx.createBufferSource();
+    src.buffer = this.getWhiteNoiseBuffer(ctx);
+    src.loop = true;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = filterType;
+    filter.frequency.setValueAtTime(Math.max(30, startFreq), startTime);
+    if (endFreq !== startFreq) {
+      filter.frequency.exponentialRampToValueAtTime(Math.max(30, endFreq), startTime + duration);
+    }
+    filter.Q.setValueAtTime(q, startTime);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, startTime);
+    gain.gain.linearRampToValueAtTime(peakGain, startTime + Math.min(0.004, duration * 0.15));
+    gain.gain.exponentialRampToValueAtTime(0.0005, startTime + duration);
+    if (decayPow !== 1.6) {
+      // Gentle secondary shape via mid-point
+      gain.gain.setValueCurveAtTime(
+        (() => {
+          const steps = 16;
+          const arr = new Float32Array(steps);
+          for (let i = 0; i < steps; i++) {
+            const t = i / (steps - 1);
+            arr[i] = Math.max(0.0005, peakGain * Math.pow(1 - t, decayPow));
+          }
+          return arr;
+        })(),
+        startTime,
+        duration
+      );
+    }
+
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(dest);
+
+    const offset = Math.random() * 1.2;
+    src.start(startTime, offset, duration + 0.02);
+    src.stop(startTime + duration + 0.02);
   }
 
   public unlock() {
@@ -121,7 +214,6 @@ class SoundEngine {
     filter.Q.setValueAtTime(1.8, now);
     filter.connect(master);
 
-    // Deep detuned horror sub-drone
     const oscA = ctx.createOscillator();
     oscA.type = 'sine';
     oscA.frequency.setValueAtTime(55, now);
@@ -132,14 +224,12 @@ class SoundEngine {
     const oscBGain = ctx.createGain();
     oscBGain.gain.setValueAtTime(0.45, now);
 
-    // Eerie minor/tritone upper harmonic
     const oscC = ctx.createOscillator();
     oscC.type = 'sine';
     oscC.frequency.setValueAtTime(extraDark ? 77.78 : 82.41, now);
     const oscCGain = ctx.createGain();
     oscCGain.gain.setValueAtTime(0.32, now);
 
-    // Slow eerie filter sweep LFO
     const lfo = ctx.createOscillator();
     lfo.type = 'sine';
     lfo.frequency.setValueAtTime(0.11, now);
@@ -148,7 +238,6 @@ class SoundEngine {
     lfo.connect(lfoGain);
     lfoGain.connect(filter.frequency);
 
-    // Hollow looping wind noise
     const windSource = ctx.createBufferSource();
     windSource.buffer = this.getNoiseBuffer(ctx);
     windSource.loop = true;
@@ -255,7 +344,7 @@ class SoundEngine {
       let cd = (this.stepCooldowns.get(p.id) ?? 0.1) - dt;
       if (cd <= 0) {
         const speedRatio = Math.min(1, speed / 205);
-        cd = 0.46 - speedRatio * 0.17; // 0.46s slow creep -> 0.29s fast sprint
+        cd = 0.46 - speedRatio * 0.17;
 
         const isLocal = p.id === listener.id;
         if (isLocal) {
@@ -267,7 +356,6 @@ class SoundEngine {
           const maxHearDist = 740;
           if (d < maxHearDist) {
             const closeness = 1 - d / maxHearDist;
-            // Steep proximity curve: quiet whisper far off, loud & heavy when close
             const volume = (0.012 + Math.pow(closeness, 1.75) * 0.22) * (0.6 + speedRatio * 0.4);
             const pan = Math.max(-0.85, Math.min(0.85, dx / 400));
             this.playFootstep(volume, pan, floorTheme, false);
@@ -293,7 +381,6 @@ class SoundEngine {
           })()
         : ctx.destination;
 
-    // Low footfall thud (deeper on wooden mansion floorboards)
     const osc = ctx.createOscillator();
     const oscGain = ctx.createGain();
     osc.type = 'sine';
@@ -310,7 +397,6 @@ class SoundEngine {
     osc.start(now);
     osc.stop(now + 0.08);
 
-    // Subtle sole scuff / grass / snow crunch
     const noiseLen = Math.floor(ctx.sampleRate * 0.055);
     const buf = ctx.createBuffer(1, noiseLen, ctx.sampleRate);
     const data = buf.getChannelData(0);
@@ -338,202 +424,386 @@ class SoundEngine {
     noise.start(now);
   }
 
-  public playShoot() {
+  /** Crisp tactical semi-auto firearm shot: gunpowder crack + low punch + slide snap + room tail */
+  public playShoot(opts?: SpatialAudioOpts) {
     const ctx = this.ensureCtx();
     if (!ctx) return;
     const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'triangle';
-    osc.frequency.setValueAtTime(520, now);
-    osc.frequency.exponentialRampToValueAtTime(140, now + 0.11);
-    gain.gain.setValueAtTime(0.18, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start(now);
-    osc.stop(now + 0.13);
+    const { node: out } = this.createOutputNode(ctx, opts);
+    const pitchJitter = 0.94 + Math.random() * 0.12;
+
+    // 1. Sharp gunpowder muzzle crack
+    this.spawnNoiseBurst(ctx, out, now, 0.11, 'bandpass', 2400 * pitchJitter, 420, 0.85, 0.42, 2.4);
+
+    // 2. Crisp high-frequency supersonic snap transient
+    this.spawnNoiseBurst(ctx, out, now, 0.028, 'highpass', 3200, 1400, 0.7, 0.28, 2.6);
+
+    // 3. Chest-punch chamber thump
+    const body = ctx.createOscillator();
+    const bodyGain = ctx.createGain();
+    body.type = 'sine';
+    body.frequency.setValueAtTime(175 * pitchJitter, now);
+    body.frequency.exponentialRampToValueAtTime(46, now + 0.085);
+    bodyGain.gain.setValueAtTime(0.32, now);
+    bodyGain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
+    body.connect(bodyGain);
+    bodyGain.connect(out);
+    body.start(now);
+    body.stop(now + 0.095);
+
+    // 4. Quick mechanical bolt/slide return click + subtle arena echo tail
+    this.spawnNoiseBurst(ctx, out, now + 0.025, 0.17, 'lowpass', 950, 260, 0.7, 0.09, 2.0);
   }
 
-  public playPickup() {
+  /** Realistic mechanical reload ("chk-clack") when picking up / chambering bullet */
+  public playPickup(opts?: SpatialAudioOpts) {
     const ctx = this.ensureCtx();
     if (!ctx) return;
     const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(580, now);
-    osc.frequency.exponentialRampToValueAtTime(920, now + 0.08);
-    gain.gain.setValueAtTime(0.11, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start(now);
-    osc.stop(now + 0.1);
+    const { node: out } = this.createOutputNode(ctx, opts);
+
+    // Stage 1: Magazine / shell snap into receiver
+    this.spawnNoiseBurst(ctx, out, now, 0.032, 'bandpass', 2600, 1800, 2.8, 0.22, 2.5);
+    const clickA = ctx.createOscillator();
+    const gainA = ctx.createGain();
+    clickA.type = 'triangle';
+    clickA.frequency.setValueAtTime(1450, now);
+    clickA.frequency.exponentialRampToValueAtTime(620, now + 0.022);
+    gainA.gain.setValueAtTime(0.14, now);
+    gainA.gain.exponentialRampToValueAtTime(0.001, now + 0.024);
+    clickA.connect(gainA);
+    gainA.connect(out);
+    clickA.start(now);
+    clickA.stop(now + 0.026);
+
+    // Stage 2: Metallic bolt rack pull-back (t + 75ms)
+    this.spawnNoiseBurst(ctx, out, now + 0.075, 0.042, 'bandpass', 3600, 2200, 3.2, 0.24, 2.0);
+    const rack = ctx.createOscillator();
+    const rackGain = ctx.createGain();
+    rack.type = 'square';
+    rack.frequency.setValueAtTime(2150, now + 0.076);
+    rack.frequency.exponentialRampToValueAtTime(1180, now + 0.105);
+    rackGain.gain.setValueAtTime(0.045, now + 0.076);
+    rackGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.108);
+    rack.connect(rackGain);
+    rackGain.connect(out);
+    rack.start(now + 0.076);
+    rack.stop(now + 0.11);
+
+    // Stage 3: Slide lock / chamber clack (t + 140ms)
+    this.spawnNoiseBurst(ctx, out, now + 0.14, 0.038, 'bandpass', 2900, 1200, 2.6, 0.28, 2.4);
+    const lockOsc = ctx.createOscillator();
+    const lockGain = ctx.createGain();
+    lockOsc.type = 'triangle';
+    lockOsc.frequency.setValueAtTime(1720, now + 0.14);
+    lockOsc.frequency.exponentialRampToValueAtTime(740, now + 0.175);
+    lockGain.gain.setValueAtTime(0.16, now + 0.14);
+    lockGain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+    lockOsc.connect(lockGain);
+    lockGain.connect(out);
+    lockOsc.start(now + 0.14);
+    lockOsc.stop(now + 0.185);
   }
 
-  public playHeal() {
+  /** Tactical medkit / stim-pack latch & pressurized heal hiss */
+  public playHeal(opts?: SpatialAudioOpts) {
     const ctx = this.ensureCtx();
     if (!ctx) return;
     const now = ctx.currentTime;
-    [523.25, 659.25, 783.99].forEach((freq, i) => {
+    const { node: out } = this.createOutputNode(ctx, opts);
+
+    // Latch pop + pressurized injector hiss
+    this.spawnNoiseBurst(ctx, out, now, 0.025, 'bandpass', 1800, 900, 2.4, 0.18, 2.2);
+    this.spawnNoiseBurst(ctx, out, now + 0.035, 0.22, 'bandpass', 4200, 2400, 1.8, 0.16, 1.5);
+
+    // Clean warm tactical HUD confirmation chime
+    [659.25, 880].forEach((freq, i) => {
       const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
+      const g = ctx.createGain();
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(freq, now + i * 0.055);
-      gain.gain.setValueAtTime(0.11, now + i * 0.055);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.055 + 0.14);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(now + i * 0.055);
-      osc.stop(now + i * 0.055 + 0.15);
+      osc.frequency.setValueAtTime(freq, now + 0.06 + i * 0.065);
+      g.gain.setValueAtTime(0.075, now + 0.06 + i * 0.065);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.06 + i * 0.065 + 0.16);
+      osc.connect(g);
+      g.connect(out);
+      osc.start(now + 0.06 + i * 0.065);
+      osc.stop(now + 0.06 + i * 0.065 + 0.17);
     });
   }
 
-  public playBounce() {
+  /** Realistic high-velocity bullet ricochet ("crack + metallic/stone zing") */
+  public playBounce(opts?: SpatialAudioOpts, surface: 'metal' | 'solid' = 'solid') {
     const ctx = this.ensureCtx();
     if (!ctx) return;
     const now = ctx.currentTime;
+    const { node: out } = this.createOutputNode(ctx, opts);
+    const jitter = 0.88 + Math.random() * 0.26;
+
+    // 1. Crisp micro-impact debris/spark crack
+    this.spawnNoiseBurst(
+      ctx,
+      out,
+      now,
+      0.028,
+      'bandpass',
+      surface === 'metal' ? 4200 : 2800,
+      950,
+      1.6,
+      0.2,
+      2.6
+    );
+
+    // 2. High-velocity spinning bullet ricochet whine
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = surface === 'metal' ? 'triangle' : 'sine';
+    const startHz = (surface === 'metal' ? 3200 : 2350) * jitter;
+    const endHz = (surface === 'metal' ? 1450 : 880) * jitter;
+    osc.frequency.setValueAtTime(startHz, now);
+    osc.frequency.exponentialRampToValueAtTime(endHz, now + 0.095);
+
+    gain.gain.setValueAtTime(surface === 'metal' ? 0.11 : 0.085, now);
+    gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.1);
+    osc.connect(gain);
+    gain.connect(out);
+    osc.start(now);
+    osc.stop(now + 0.105);
+
+    if (surface === 'metal') {
+      const ping = ctx.createOscillator();
+      const pingGain = ctx.createGain();
+      ping.type = 'sine';
+      ping.frequency.setValueAtTime(4100 * jitter, now);
+      pingGain.gain.setValueAtTime(0.045, now);
+      pingGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.075);
+      ping.connect(pingGain);
+      pingGain.connect(out);
+      ping.start(now);
+      ping.stop(now + 0.08);
+    }
+  }
+
+  /** Ballistic impact / cover splinter sound (1 = wood crate, 2 = heavy TNT crate, 3 = player body/armor hit) */
+  public playHit(opts?: SpatialAudioOpts, hitKind: 'wood' | 'crate' | 'body' = 'body') {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const { node: out } = this.createOutputNode(ctx, opts);
+
+    if (hitKind === 'wood') {
+      // Cardboard / wooden crate splintering crack
+      this.spawnNoiseBurst(ctx, out, now, 0.085, 'bandpass', 1350, 420, 1.2, 0.28, 2.1);
+      const thud = ctx.createOscillator();
+      const g = ctx.createGain();
+      thud.type = 'triangle';
+      thud.frequency.setValueAtTime(240, now);
+      thud.frequency.exponentialRampToValueAtTime(85, now + 0.065);
+      g.gain.setValueAtTime(0.18, now);
+      g.gain.exponentialRampToValueAtTime(0.001, now + 0.07);
+      thud.connect(g);
+      g.connect(out);
+      thud.start(now);
+      thud.stop(now + 0.075);
+      return;
+    }
+
+    if (hitKind === 'crate') {
+      // Heavy TNT crate impact + fuse ignition spark
+      this.spawnNoiseBurst(ctx, out, now, 0.09, 'lowpass', 1100, 260, 1.0, 0.26, 2.0);
+      this.spawnNoiseBurst(ctx, out, now + 0.02, 0.14, 'highpass', 3600, 5200, 1.4, 0.12, 1.6);
+      return;
+    }
+
+    // Player armor/flesh ballistic punch + sharp hit-marker tick
+    this.spawnNoiseBurst(ctx, out, now, 0.055, 'lowpass', 1600, 320, 0.9, 0.3, 2.2);
+    const punch = ctx.createOscillator();
+    const punchGain = ctx.createGain();
+    punch.type = 'sine';
+    punch.frequency.setValueAtTime(160, now);
+    punch.frequency.exponentialRampToValueAtTime(48, now + 0.11);
+    punchGain.gain.setValueAtTime(0.28, now);
+    punchGain.gain.exponentialRampToValueAtTime(0.001, now + 0.115);
+    punch.connect(punchGain);
+    punchGain.connect(out);
+    punch.start(now);
+    punch.stop(now + 0.12);
+
+    // Subtle crisp hitmarker tick
+    const marker = ctx.createOscillator();
+    const markerGain = ctx.createGain();
+    marker.type = 'triangle';
+    marker.frequency.setValueAtTime(1850, now);
+    marker.frequency.exponentialRampToValueAtTime(980, now + 0.022);
+    markerGain.gain.setValueAtTime(0.11, now);
+    markerGain.gain.exponentialRampToValueAtTime(0.001, now + 0.025);
+    marker.connect(markerGain);
+    markerGain.connect(out);
+    marker.start(now);
+    marker.stop(now + 0.03);
+  }
+
+  /** Tactical C4 / fuse countdown beep + spark hiss */
+  public playTntTick(secondsLeft: number, opts?: SpatialAudioOpts) {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const { node: out } = this.createOutputNode(ctx, opts);
+
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(840, now);
-    osc.frequency.exponentialRampToValueAtTime(420, now + 0.045);
-    gain.gain.setValueAtTime(0.06, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start(now);
-    osc.stop(now + 0.055);
-  }
-
-  public playHit() {
-    const ctx = this.ensureCtx();
-    if (!ctx) return;
-    const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(210, now);
-    osc.frequency.exponentialRampToValueAtTime(65, now + 0.16);
-    gain.gain.setValueAtTime(0.18, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.17);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start(now);
-    osc.stop(now + 0.18);
-  }
-
-  public playTntTick(secondsLeft: number) {
-    const ctx = this.ensureCtx();
-    if (!ctx) return;
-    const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'square';
-    const base = secondsLeft <= 1 ? 880 : secondsLeft <= 2 ? 700 : 540;
+    const base = secondsLeft <= 1 ? 1560 : secondsLeft <= 2 ? 1240 : 980;
     osc.frequency.setValueAtTime(base, now);
-    gain.gain.setValueAtTime(0.05, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
+    gain.gain.setValueAtTime(0.095, now);
+    gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.07);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(out);
     osc.start(now);
-    osc.stop(now + 0.065);
+    osc.stop(now + 0.075);
+
+    this.spawnNoiseBurst(ctx, out, now, 0.06, 'highpass', 3800, 2600, 1.2, 0.055, 1.8);
   }
 
-  public playExplosion() {
+  /** Heavy multi-layered Nitro / TNT detonation (sub-bass shockwave + mid blast crack + debris rumble) */
+  public playExplosion(kind: 'nitro' | 'tnt' = 'nitro', opts?: SpatialAudioOpts) {
     const ctx = this.ensureCtx();
     if (!ctx) return;
     const now = ctx.currentTime;
-    const bufferSize = ctx.sampleRate * 0.35;
-    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) {
-      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufferSize, 1.8);
-    }
-    const noise = ctx.createBufferSource();
-    noise.buffer = buffer;
+    const { node: out } = this.createOutputNode(ctx, opts);
+    const isTnt = kind === 'tnt';
 
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(420, now);
-    filter.frequency.exponentialRampToValueAtTime(60, now + 0.32);
+    // 1. Sub-bass shockwave punch
+    const sub = ctx.createOscillator();
+    const subGain = ctx.createGain();
+    sub.type = 'sine';
+    sub.frequency.setValueAtTime(isTnt ? 115 : 138, now);
+    sub.frequency.exponentialRampToValueAtTime(isTnt ? 24 : 30, now + (isTnt ? 0.52 : 0.4));
+    subGain.gain.setValueAtTime(isTnt ? 0.48 : 0.4, now);
+    subGain.gain.exponentialRampToValueAtTime(0.001, now + (isTnt ? 0.55 : 0.42));
+    sub.connect(subGain);
+    subGain.connect(out);
+    sub.start(now);
+    sub.stop(now + (isTnt ? 0.56 : 0.43));
 
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.32, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.34);
+    // 2. Concussive high-pressure initial blast crack
+    this.spawnNoiseBurst(
+      ctx,
+      out,
+      now,
+      isTnt ? 0.22 : 0.18,
+      'bandpass',
+      isTnt ? 1900 : 2600,
+      360,
+      0.7,
+      isTnt ? 0.46 : 0.44,
+      2.1
+    );
 
-    noise.connect(filter);
-    filter.connect(gain);
-    gain.connect(ctx.destination);
-    noise.start(now);
+    // 3. Rolling low-end explosion roar & rumble tail
+    this.spawnNoiseBurst(
+      ctx,
+      out,
+      now + 0.02,
+      isTnt ? 0.72 : 0.55,
+      'lowpass',
+      isTnt ? 680 : 820,
+      75,
+      0.8,
+      isTnt ? 0.44 : 0.36,
+      1.7
+    );
+
+    // 4. Flying shrapnel / wood debris scatter
+    this.spawnNoiseBurst(
+      ctx,
+      out,
+      now + 0.04,
+      isTnt ? 0.38 : 0.28,
+      'highpass',
+      2400,
+      1100,
+      0.9,
+      0.16,
+      2.2
+    );
   }
 
-  public playSplash() {
+  public playSplash(opts?: SpatialAudioOpts) {
     const ctx = this.ensureCtx();
     if (!ctx) return;
     const now = ctx.currentTime;
+    const { node: out } = this.createOutputNode(ctx, opts);
 
-    const bufferSize = Math.floor(ctx.sampleRate * 0.28);
-    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) {
-      data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufferSize, 1.4);
-    }
-
-    const noise = ctx.createBufferSource();
-    noise.buffer = buffer;
-
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'bandpass';
-    filter.frequency.setValueAtTime(920, now);
-    filter.frequency.exponentialRampToValueAtTime(260, now + 0.26);
-    filter.Q.setValueAtTime(1.1, now);
-
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.24, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.27);
-
-    noise.connect(filter);
-    filter.connect(gain);
-    gain.connect(ctx.destination);
-    noise.start(now);
+    this.spawnNoiseBurst(ctx, out, now, 0.3, 'bandpass', 1100, 280, 1.0, 0.28, 1.5);
+    const plunge = ctx.createOscillator();
+    const g = ctx.createGain();
+    plunge.type = 'sine';
+    plunge.frequency.setValueAtTime(220, now);
+    plunge.frequency.exponentialRampToValueAtTime(68, now + 0.16);
+    g.gain.setValueAtTime(0.18, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.17);
+    plunge.connect(g);
+    g.connect(out);
+    plunge.start(now);
+    plunge.stop(now + 0.18);
   }
 
-  public playKnockout() {
+  /** Player elimination / death sound: heavy fatal impact + armor crunch + tactical down flatline cue */
+  public playKnockout(opts?: SpatialAudioOpts) {
     const ctx = this.ensureCtx();
     if (!ctx) return;
     const now = ctx.currentTime;
-    [340, 220].forEach((freq, i) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(freq, now + i * 0.08);
-      osc.frequency.exponentialRampToValueAtTime(freq * 0.5, now + i * 0.08 + 0.18);
-      gain.gain.setValueAtTime(0.14, now + i * 0.08);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.08 + 0.19);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(now + i * 0.08);
-      osc.stop(now + i * 0.08 + 0.2);
-    });
+    const { node: out } = this.createOutputNode(ctx, opts);
+
+    // 1. Heavy lethal body impact / armor shatter
+    this.spawnNoiseBurst(ctx, out, now, 0.16, 'bandpass', 1500, 260, 0.9, 0.34, 2.0);
+    const thump = ctx.createOscillator();
+    const thumpGain = ctx.createGain();
+    thump.type = 'sine';
+    thump.frequency.setValueAtTime(140, now);
+    thump.frequency.exponentialRampToValueAtTime(34, now + 0.22);
+    thumpGain.gain.setValueAtTime(0.36, now);
+    thumpGain.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+    thump.connect(thumpGain);
+    thumpGain.connect(out);
+    thump.start(now);
+    thump.stop(now + 0.25);
+
+    // 2. Sharp tactical kill-confirmed chime + comms squelch drop
+    const confirm = ctx.createOscillator();
+    const confirmGain = ctx.createGain();
+    confirm.type = 'triangle';
+    confirm.frequency.setValueAtTime(520, now + 0.04);
+    confirm.frequency.exponentialRampToValueAtTime(190, now + 0.26);
+    confirmGain.gain.setValueAtTime(0.14, now + 0.04);
+    confirmGain.gain.exponentialRampToValueAtTime(0.001, now + 0.27);
+    confirm.connect(confirmGain);
+    confirmGain.connect(out);
+    confirm.start(now + 0.04);
+    confirm.stop(now + 0.28);
+
+    // Subtle comms static burst ("player down")
+    this.spawnNoiseBurst(ctx, out, now + 0.11, 0.14, 'bandpass', 2200, 1400, 2.2, 0.085, 1.8);
   }
 
+  /** Clean modern tactical match victory chord */
   public playVictory() {
     const ctx = this.ensureCtx();
     if (!ctx) return;
     const now = ctx.currentTime;
-    [523.25, 659.25, 783.99, 1046.5].forEach((freq, i) => {
+    [392.0, 493.88, 587.33, 783.99].forEach((freq, i) => {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(freq, now + i * 0.09);
-      gain.gain.setValueAtTime(0.14, now + i * 0.09);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.09 + 0.28);
+      osc.type = i === 0 ? 'triangle' : 'sine';
+      const t0 = now + i * 0.085;
+      osc.frequency.setValueAtTime(freq, t0);
+      gain.gain.setValueAtTime(0.001, t0);
+      gain.gain.linearRampToValueAtTime(0.11, t0 + 0.025);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t0 + 0.45);
       osc.connect(gain);
       gain.connect(ctx.destination);
-      osc.start(now + i * 0.09);
-      osc.stop(now + i * 0.09 + 0.3);
+      osc.start(t0);
+      osc.stop(t0 + 0.46);
     });
   }
 }

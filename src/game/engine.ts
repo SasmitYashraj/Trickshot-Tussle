@@ -623,7 +623,7 @@ export class ArenaEngine {
       box.vx += (impactVx / speed) * 85;
       box.vy += (impactVy / speed) * 85;
     }
-    this.emitEvent('hit', box.x, box.y);
+    this.emitEvent('hit', box.x, box.y, 1);
     this.spawnParticles(box.x, box.y, '#D97706', 10, 130);
     this.spawnParticles(box.x, box.y, '#FDE68A', 5, 95);
   }
@@ -1072,7 +1072,7 @@ export class ArenaEngine {
             if (player.ammo < player.maxAmmo) {
               player.ammo += 1;
               this.pickups.splice(i, 1);
-              this.emitEvent('pickup', item.x, item.y);
+              this.emitEvent('pickup', item.x, item.y, player.id);
               this.spawnParticles(item.x, item.y, '#FACC15', 8, 95);
               this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 8), '+1 AMMO', '#FDE047');
             }
@@ -1616,7 +1616,8 @@ export class ArenaEngine {
             }
 
             b.bouncesLeft -= 1;
-            this.emitEvent('bounce', b.x, b.y);
+            const isMetal = wall.kind === 'metal' || wall.kind === 'perimeter_steel';
+            this.emitEvent('bounce', b.x, b.y, isMetal ? 2 : 1);
             this.spawnParticles(b.x, b.y, wall.kind === 'metal' ? '#E2E8F0' : '#FDE047', 5, 110);
             hitWall = true;
             break;
@@ -1676,7 +1677,7 @@ export class ArenaEngine {
                 this.addFloatingText(p.x, p.y - (TNT_HALF_SIZE + 12), '3s FUSE!', '#FEF08A');
               }
 
-              this.emitEvent('hit', p.x, p.y);
+              this.emitEvent('hit', p.x, p.y, 2);
               this.spawnParticles(b.x, b.y, '#EF4444', 9, 140);
               this.spawnParticles(b.x, b.y, '#FEF08A', 5, 110);
               destroyed = true;
@@ -1745,7 +1746,7 @@ export class ArenaEngine {
       });
 
       this.screenShake = Math.min(16, this.screenShake + (isTnt ? 11 : 8));
-      this.emitEvent('explosion', current.item.x, current.item.y);
+      this.emitEvent('explosion', current.item.x, current.item.y, isTnt ? 2 : 1);
       this.spawnParticles(current.item.x, current.item.y, blastColor, isTnt ? 26 : 18, 250);
       this.spawnParticles(current.item.x, current.item.y, '#FEF08A', 10, 170);
 
@@ -1862,7 +1863,7 @@ export class ArenaEngine {
 
     if (player.hp > 0) {
       player.stunTimer = STUN_DURATION;
-      this.emitEvent('hit', player.x, player.y);
+      this.emitEvent('hit', player.x, player.y, 3);
       this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 10), `-${amount}`, '#FDA4AF');
       if (player.hp === 1) {
         this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 28), '1 HP CLUTCH!', '#FACC15');

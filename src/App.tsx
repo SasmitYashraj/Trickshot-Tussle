@@ -55,48 +55,65 @@ function formatClock(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
-function playEngineEvents(events: EngineEvent[], listenerX?: number, listenerY?: number) {
+function playEngineEvents(
+  events: EngineEvent[],
+  listenerX?: number,
+  listenerY?: number,
+  listenerId = 0
+) {
   for (const evt of events) {
+    let spatial: { volume: number; pan: number } | undefined;
+
     if (listenerX !== undefined && listenerY !== undefined) {
-      const dist = Math.hypot(evt.x - listenerX, evt.y - listenerY);
-      // In huge immersive maps, skip quiet far-off pickups/bounces outside earshot
-      if (
-        dist > 950 &&
-        evt.type !== 'explosion' &&
-        evt.type !== 'knockout' &&
-        evt.type !== 'victory' &&
-        evt.type !== 'splash'
-      ) {
-        continue;
+      const dx = evt.x - listenerX;
+      const dy = evt.y - listenerY;
+      const d = Math.hypot(dx, dy);
+      const isHeavyGlobal =
+        evt.type === 'explosion' || evt.type === 'knockout' || evt.type === 'victory';
+
+      // Reload sound: full punch for the local player, subtle nearby audio, skip faraway bot reloads
+      if (evt.type === 'pickup') {
+        const isSelf = evt.value === listenerId || d < 95;
+        if (!isSelf && d > 560) continue;
+        const vol = isSelf ? 1 : Math.max(0.18, 0.72 * (1 - d / 560));
+        const pan = Math.max(-0.85, Math.min(0.85, dx / 480));
+        spatial = { volume: vol, pan };
+      } else {
+        const maxDist = isHeavyGlobal ? 1650 : 980;
+        if (d > maxDist && evt.type !== 'victory') continue;
+        const falloff = d < 95 ? 1 : Math.max(isHeavyGlobal ? 0.28 : 0.14, 1 - (d - 95) / maxDist);
+        const pan = Math.max(-0.85, Math.min(0.85, dx / 520));
+        spatial = { volume: falloff, pan };
       }
     }
+
     switch (evt.type) {
       case 'shoot':
-        sound.playShoot();
+        sound.playShoot(spatial);
         break;
       case 'pickup':
-        sound.playPickup();
+        sound.playPickup(spatial);
         break;
       case 'heal':
-        sound.playHeal();
+        sound.playHeal(spatial);
         break;
       case 'bounce':
-        sound.playBounce();
+        sound.playBounce(spatial, evt.value === 2 ? 'metal' : 'solid');
         break;
       case 'hit':
-        sound.playHit();
+        sound.playHit(spatial, evt.value === 1 ? 'wood' : evt.value === 2 ? 'crate' : 'body');
         break;
       case 'explosion':
-        sound.playExplosion();
+        sound.playExplosion(evt.value === 2 ? 'tnt' : 'nitro', spatial);
         break;
       case 'tnt_tick':
-        sound.playTntTick(evt.value ?? 3);
+        sound.playTntTick(evt.value ?? 3, spatial);
         break;
       case 'splash':
-        sound.playSplash();
+        sound.playSplash(spatial);
         break;
       case 'knockout':
-        sound.playKnockout();
+        sound.playKnockout(spatial);
         break;
       case 'victory':
         sound.playVictory();
@@ -246,7 +263,7 @@ export default function App() {
         const mySlot = roomStateRef.current?.mySlot ?? 0;
         const me = world.players.find((p) => p.id === mySlot);
         if (world.events && world.events.length > 0) {
-          playEngineEvents(world.events, me?.x, me?.y);
+          playEngineEvents(world.events, me?.x, me?.y, mySlot);
         }
         setSnapshot(worldToSnapshot(world, mySlot));
       },
@@ -495,7 +512,10 @@ export default function App() {
         if (gameStateRef.current === 'PLAYING') {
           engine.update(dt);
           const evts = engine.drainEvents();
-          if (evts.length > 0) playEngineEvents(evts);
+          if (evts.length > 0) {
+            const human = engine.players[0];
+            playEngineEvents(evts, human?.x, human?.y, 0);
+          }
           if (engine.winnerId !== null) {
             setSnapshot(engine.getSnapshot(0));
             setGameState('GAME_OVER');
