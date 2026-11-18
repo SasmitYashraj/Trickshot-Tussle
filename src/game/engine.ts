@@ -50,10 +50,10 @@ import {
 } from './types.ts';
 
 export const PLAYER_PRESETS = [
-  { id: 0, defaultName: 'Cobalt', color: '#38BDF8', accentColor: '#BAE6FD' },
-  { id: 1, defaultName: 'Viper', color: '#F43F5E', accentColor: '#FECDD3' },
-  { id: 2, defaultName: 'Volt', color: '#FBBF24', accentColor: '#FDE68A' },
-  { id: 3, defaultName: 'Jade', color: '#34D399', accentColor: '#A7F3D0' },
+  { id: 0, defaultName: 'Cobalt', color: '#0EA5E9', accentColor: '#7DD3FC' },
+  { id: 1, defaultName: 'Viper', color: '#EF4444', accentColor: '#FCA5A5' },
+  { id: 2, defaultName: 'Volt', color: '#FACC15', accentColor: '#FEF08A' },
+  { id: 3, defaultName: 'Jade', color: '#22C55E', accentColor: '#86EFAC' },
 ];
 
 export interface SlotSetup {
@@ -820,7 +820,7 @@ export class ArenaEngine {
               this.pickups.splice(i, 1);
               this.emitEvent('pickup', item.x, item.y);
               this.spawnParticles(item.x, item.y, '#FACC15', 8, 95);
-              this.addFloatingText(player.x, player.y - 22, '+1 AMMO', '#FDE047');
+              this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 8), '+1 AMMO', '#FDE047');
             }
           } else if (item.kind === 'medkit') {
             if (player.hp < player.maxHp) {
@@ -829,7 +829,7 @@ export class ArenaEngine {
               this.pickups.splice(i, 1);
               this.emitEvent('heal', item.x, item.y);
               this.spawnParticles(item.x, item.y, '#34D399', 12, 110);
-              this.addFloatingText(player.x, player.y - 22, `+${healed} HP`, '#34D399');
+              this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 8), `+${healed} HP`, '#34D399');
             }
           } else if (item.kind === 'nitro') {
             this.detonatePickup(item, player.id);
@@ -927,7 +927,7 @@ export class ArenaEngine {
         }
       } else if (p.kind === 'nitro') {
         const d = dist(bot.x, bot.y, p.x, p.y);
-        if (d < 62) {
+        if (d < NITRO_RADIUS + PLAYER_RADIUS + 20) {
           const away = Math.atan2(bot.y - p.y, bot.x - p.x);
           evadeX += Math.cos(away) * 2.0;
           evadeY += Math.sin(away) * 2.0;
@@ -1381,9 +1381,9 @@ export class ArenaEngine {
     if (player.hp > 0) {
       player.stunTimer = STUN_DURATION;
       this.emitEvent('hit', player.x, player.y);
-      this.addFloatingText(player.x, player.y - 26, `-${amount}`, '#FDA4AF');
+      this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 10), `-${amount}`, '#FDA4AF');
       if (player.hp === 1) {
-        this.addFloatingText(player.x, player.y - 44, '1 HP CLUTCH!', '#FACC15');
+        this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 28), '1 HP CLUTCH!', '#FACC15');
       }
     } else {
       player.alive = false;
@@ -1396,12 +1396,12 @@ export class ArenaEngine {
         const attacker = this.players.find((p) => p.id === attackerId);
         if (attacker) attacker.kills += 1;
       } else if (attackerId === player.id) {
-        this.addFloatingText(player.x, player.y - 44, 'SELF KO', '#F87171');
+        this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 28), 'SELF KO', '#F87171');
       }
 
       this.emitEvent('knockout', player.x, player.y);
       this.spawnParticles(player.x, player.y, player.color, 24, 210);
-      this.addFloatingText(player.x, player.y - 26, 'KO!', '#F43F5E');
+      this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 10), 'KO!', '#F43F5E');
     }
   }
 
@@ -1432,7 +1432,7 @@ export class ArenaEngine {
     player.spawnInvulnTimer = SPAWN_INVULN_DURATION;
     player.angle = Math.atan2(this.map.height / 2 - bestSpawn.y, this.map.width / 2 - bestSpawn.x);
     this.spawnParticles(player.x, player.y, player.color, 14, 120);
-    this.addFloatingText(player.x, player.y - 24, 'SPAWN!', player.accentColor);
+    this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 10), 'SPAWN!', player.accentColor);
   }
 
   private checkWinConditions() {

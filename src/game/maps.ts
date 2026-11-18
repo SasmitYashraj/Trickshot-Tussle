@@ -119,24 +119,24 @@ export const ARENA_MAPS: Record<MapId, ArenaMap> = {
       ...makeOuterWalls(2400, 1680, 'perimeter_wood'),
 
       // Top-left Wing (Master Bedroom)
-      prop(330, 260, 170, 120, 'bed', '#9F1239'),
-      prop(570, 250, 190, 58, 'sofa', '#B91C1C'),
-      prop(330, 460, 62, 190, 'bookshelf'),
+      prop(330, 260, 150, 115, 'bed', '#9F1239'),
+      prop(590, 250, 180, 58, 'sofa', '#B91C1C'),
+      prop(330, 485, 62, 180, 'bookshelf'),
 
       // Top-right Wing (Guest Suite)
-      prop(1900, 260, 170, 120, 'bed', '#1E40AF'),
-      prop(1640, 250, 190, 58, 'sofa', '#1D4ED8'),
-      prop(2008, 460, 62, 190, 'bookshelf'),
+      prop(1920, 260, 150, 115, 'bed', '#1E40AF'),
+      prop(1630, 250, 180, 58, 'sofa', '#1D4ED8'),
+      prop(2008, 485, 62, 180, 'bookshelf'),
 
       // Bottom-left Wing (Emerald Parlor)
-      prop(330, 1300, 170, 120, 'bed', '#065F46'),
-      prop(570, 1372, 190, 58, 'sofa', '#047857'),
-      prop(330, 1030, 62, 190, 'bookshelf'),
+      prop(330, 1305, 150, 115, 'bed', '#065F46'),
+      prop(590, 1372, 180, 58, 'sofa', '#047857'),
+      prop(330, 1015, 62, 180, 'bookshelf'),
 
       // Bottom-right Wing (Royal Study)
-      prop(1900, 1300, 170, 120, 'bed', '#6B21A8'),
-      prop(1640, 1372, 190, 58, 'sofa', '#7E22CE'),
-      prop(2008, 1030, 62, 190, 'bookshelf'),
+      prop(1920, 1305, 150, 115, 'bed', '#6B21A8'),
+      prop(1630, 1372, 180, 58, 'sofa', '#7E22CE'),
+      prop(2008, 1015, 62, 180, 'bookshelf'),
 
       // Mid Hallway Banquet Tables & Sofas
       prop(860, 340, 160, 95, 'table'),
@@ -150,10 +150,10 @@ export const ARENA_MAPS: Record<MapId, ArenaMap> = {
 
       // Grand Foyer Center: Long Banquet Table + Corner Steel Safes
       prop(1115, 760, 170, 160, 'table'),
-      prop(945, 610, 92, 92, 'metal'),
-      prop(1363, 610, 92, 92, 'metal'),
-      prop(945, 978, 92, 92, 'metal'),
-      prop(1363, 978, 92, 92, 'metal'),
+      prop(930, 595, 90, 90, 'metal'),
+      prop(1380, 595, 90, 90, 'metal'),
+      prop(930, 995, 90, 90, 'metal'),
+      prop(1380, 995, 90, 90, 'metal'),
     ],
     spawns: [
       { x: 165, y: 1515 },
@@ -186,19 +186,19 @@ export const ARENA_MAPS: Record<MapId, ArenaMap> = {
       prop(1578, 1210, 62, 250, 'hedge'),
 
       // Mid-Grove Ancient Trees & Mossy Rocks
-      prop(570, 770, 135, 135, 'tree'),
-      prop(1695, 770, 135, 135, 'tree'),
-      prop(760, 790, 95, 95, 'rock'),
-      prop(1545, 790, 95, 95, 'rock'),
+      prop(535, 770, 130, 130, 'tree'),
+      prop(1735, 770, 130, 130, 'tree'),
+      prop(775, 795, 90, 90, 'rock'),
+      prop(1535, 795, 90, 90, 'rock'),
 
       // Central Clearing Trees & Steel Supply Crates
-      prop(1135, 450, 130, 130, 'tree'),
-      prop(1135, 1100, 130, 130, 'tree'),
+      prop(1135, 440, 130, 130, 'tree'),
+      prop(1135, 1110, 130, 130, 'tree'),
       prop(1145, 785, 110, 110, 'metal'),
-      prop(980, 635, 86, 86, 'rock'),
-      prop(1334, 635, 86, 86, 'rock'),
-      prop(980, 959, 86, 86, 'rock'),
-      prop(1334, 959, 86, 86, 'rock'),
+      prop(950, 625, 86, 86, 'rock'),
+      prop(1364, 625, 86, 86, 'rock'),
+      prop(950, 969, 86, 86, 'rock'),
+      prop(1364, 969, 86, 86, 'rock'),
     ],
     spawns: [
       { x: 175, y: 840 },

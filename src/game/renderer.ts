@@ -104,15 +104,15 @@ export function getArenaViewTransform(
       camY = camera.y;
     }
 
-    const halfViewW = IMMERSIVE_VIEW_WIDTH * 0.5;
-    const halfViewH = IMMERSIVE_VIEW_HEIGHT * 0.5;
-    const clampedCamX = Math.max(halfViewW - 32, Math.min(map.width - halfViewW + 32, camX));
-    const clampedCamY = Math.max(halfViewH - 32, Math.min(map.height - halfViewH + 32, camY));
-
     const scale = Math.min(
       Math.max(canvasWidth / IMMERSIVE_VIEW_WIDTH, canvasHeight / IMMERSIVE_VIEW_HEIGHT) * 0.92,
-      Math.min(canvasWidth / 640, canvasHeight / 480)
+      Math.min(canvasWidth / 760, canvasHeight / 540)
     );
+
+    const visHalfW = Math.min(map.width * 0.5, (canvasWidth * 0.5) / scale);
+    const visHalfH = Math.min(map.height * 0.5, (canvasHeight * 0.5) / scale);
+    const clampedCamX = Math.max(visHalfW - 16, Math.min(map.width - visHalfW + 16, camX));
+    const clampedCamY = Math.max(visHalfH - 16, Math.min(map.height - visHalfH + 16, camY));
 
     return {
       scale,
@@ -399,10 +399,10 @@ function drawObstacle(ctx: CanvasRenderingContext2D, wall: WallRect) {
     return;
   }
 
-  // Cast shadow onto floor
-  ctx.fillStyle = 'rgba(10, 6, 4, 0.42)';
+  // Cast shadow onto floor away from upper lights
+  ctx.fillStyle = 'rgba(6, 5, 10, 0.44)';
   ctx.beginPath();
-  ctx.roundRect(wall.x + 6, wall.y + 8, wall.w, wall.h, kind === 'tree' || kind === 'rock' ? 18 : 6);
+  ctx.roundRect(wall.x + 10, wall.y + 14, wall.w, wall.h, kind === 'tree' || kind === 'rock' ? 20 : 7);
   ctx.fill();
 
   if (kind === 'sofa') {
@@ -804,45 +804,62 @@ function drawCardboardBox(ctx: CanvasRenderingContext2D, box: CardboardBox) {
   const hw = box.w * 0.5;
   const hh = box.h * 0.5;
 
-  // Soft floor drop shadow
-  ctx.fillStyle = 'rgba(10, 6, 4, 0.36)';
+  // Soft directional floor drop shadow
+  ctx.fillStyle = 'rgba(6, 5, 10, 0.44)';
   ctx.beginPath();
-  ctx.roundRect(-hw + 4, -hh + 6, box.w, box.h, 5);
+  ctx.roundRect(-hw + 8, -hh + 11, box.w, box.h, 6);
   ctx.fill();
 
-  // Corrugated kraft cardboard base
-  ctx.fillStyle = box.state === 'punctured' ? '#EAB676' : '#C89B62';
-  ctx.strokeStyle = '#784E24';
-  ctx.lineWidth = 2;
+  // Warm wooden cover crate base
+  ctx.fillStyle = box.state === 'punctured' ? '#FDE68A' : '#B4692B';
+  ctx.strokeStyle = '#1C1108';
+  ctx.lineWidth = 2.6;
   ctx.beginPath();
-  ctx.roundRect(-hw, -hh, box.w, box.h, 4);
+  ctx.roundRect(-hw, -hh, box.w, box.h, 5);
   ctx.fill();
   ctx.stroke();
 
-  // Inner flap highlight
-  ctx.fillStyle = 'rgba(255, 240, 214, 0.18)';
-  ctx.fillRect(-hw + 3, -hh + 3, box.w - 6, 4);
+  // Inner slatted wooden panel
+  const inset = 9;
+  ctx.fillStyle = box.state === 'punctured' ? '#FEF08A' : '#D99B52';
+  ctx.strokeStyle = '#78350F';
+  ctx.lineWidth = 1.8;
+  ctx.fillRect(-hw + inset, -hh + inset, box.w - inset * 2, box.h - inset * 2);
+  ctx.strokeRect(-hw + inset, -hh + inset, box.w - inset * 2, box.h - inset * 2);
 
-  // Center packing tape strip
-  ctx.fillStyle = 'rgba(245, 224, 181, 0.78)';
-  ctx.fillRect(-7, -hh + 1, 14, box.h - 2);
-
-  // Box flap seam
-  ctx.strokeStyle = 'rgba(120, 78, 36, 0.45)';
-  ctx.lineWidth = 1.2;
+  // Horizontal wooden plank seams & top highlight
+  ctx.strokeStyle = 'rgba(120, 53, 15, 0.45)';
+  ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.moveTo(0, -hh + 2);
-  ctx.lineTo(0, hh - 2);
+  ctx.moveTo(-hw + inset, -box.h * 0.14);
+  ctx.lineTo(hw - inset, -box.h * 0.14);
+  ctx.moveTo(-hw + inset, box.h * 0.14);
+  ctx.lineTo(hw - inset, box.h * 0.14);
   ctx.stroke();
 
-  // Subtle corrugated lines on corner
-  ctx.strokeStyle = 'rgba(120, 78, 36, 0.35)';
+  ctx.fillStyle = 'rgba(255, 245, 220, 0.24)';
+  ctx.fillRect(-hw + 3, -hh + 2.5, box.w - 6, 4);
+
+  // Diagonal timber brace
+  ctx.strokeStyle = 'rgba(146, 64, 14, 0.35)';
+  ctx.lineWidth = 5;
   ctx.beginPath();
-  ctx.moveTo(-hw + 6, hh - 8);
-  ctx.lineTo(-hw + 14, hh - 8);
-  ctx.moveTo(-hw + 6, hh - 12);
-  ctx.lineTo(-hw + 12, hh - 12);
+  ctx.moveTo(-hw + inset + 2, hh - inset - 2);
+  ctx.lineTo(hw - inset - 2, -hh + inset + 2);
   ctx.stroke();
+
+  // Corner steel rivets
+  ctx.fillStyle = '#94A3B8';
+  for (const [rx, ry] of [
+    [-hw + 4.5, -hh + 4.5],
+    [hw - 4.5, -hh + 4.5],
+    [-hw + 4.5, hh - 4.5],
+    [hw - 4.5, hh - 4.5],
+  ]) {
+    ctx.beginPath();
+    ctx.arc(rx, ry, 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
   // Punctured tear & 1-frame impact burst
   if (box.state === 'punctured' || box.state === 'fading') {
@@ -923,9 +940,10 @@ export function renderArena(
   ctx.translate(worldTx, worldTy);
   ctx.scale(scale, scale);
 
-  // 1. Lively Wooden / Meadow Grass Floor
+  // 1. Lively Wooden / Meadow Grass Floor + Subtle Ambient Light Pools
   const floorCanvas = getFloorCanvas(map);
   ctx.drawImage(floorCanvas, 0, 0);
+  drawAmbientArenaLights(ctx, map);
 
   // 2. Spawn Pads
   map.spawns.forEach((sp, idx) => {
@@ -966,97 +984,181 @@ export function renderArena(
     }
   }
 
-  // 4. Pickups
+  // 4. Pickups (Vibrant Arcade Bullets, Neon Green NITRO, Cherry-Red TNT & Medkits)
   for (const item of world.pickups) {
-    const bob = Math.sin(item.age * 4.2 + item.id) * 2.2;
+    const bob = Math.sin(item.age * 4.2 + item.id) * 2.5;
     ctx.save();
 
-    ctx.fillStyle = 'rgba(12, 7, 4, 0.36)';
+    ctx.fillStyle = 'rgba(6, 5, 10, 0.42)';
     ctx.beginPath();
-    ctx.ellipse(item.x + 2, item.y + 8, item.radius * 0.9, item.radius * 0.5, 0, 0, Math.PI * 2);
+    ctx.ellipse(item.x + 5, item.y + 11, item.radius * 0.95, item.radius * 0.56, 0, 0, Math.PI * 2);
     ctx.fill();
 
     ctx.translate(item.x, item.y + bob);
 
     if (item.kind === 'bullet') {
-      ctx.fillStyle = 'rgba(250, 204, 21, 0.25)';
+      // Glowing cyan-blue energy bubble orb around bright red/white shell
+      const glow = ctx.createRadialGradient(0, 0, 4, 0, 0, item.radius + 7);
+      glow.addColorStop(0, 'rgba(56, 189, 248, 0.32)');
+      glow.addColorStop(0.75, 'rgba(56, 189, 248, 0.14)');
+      glow.addColorStop(1, 'rgba(56, 189, 248, 0)');
+      ctx.fillStyle = glow;
       ctx.beginPath();
-      ctx.arc(0, 0, item.radius + 5, 0, Math.PI * 2);
+      ctx.arc(0, 0, item.radius + 7, 0, Math.PI * 2);
       ctx.fill();
 
+      ctx.fillStyle = 'rgba(14, 165, 233, 0.16)';
+      ctx.strokeStyle = '#38BDF8';
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.arc(0, 0, item.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Tilted crisp red-and-white cartridge shell
+      ctx.save();
+      ctx.rotate(-0.62);
+      ctx.fillStyle = '#EF4444';
+      ctx.strokeStyle = '#090D16';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(-11, -6, 14, 12, 3);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#F8FAFC';
+      ctx.beginPath();
+      ctx.roundRect(1, -5.5, 10, 11, [1, 5, 5, 1]);
+      ctx.fill();
+      ctx.stroke();
+
+      // Brass shell rim
       ctx.fillStyle = '#FACC15';
-      ctx.strokeStyle = '#FEF9C3';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(0, 0, item.radius - 2, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.fillStyle = '#0F172A';
-      ctx.beginPath();
-      ctx.arc(0, 0, 3.5, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.fillRect(-12, -5.5, 3, 11);
+      ctx.restore();
     } else if (item.kind === 'nitro') {
-      ctx.strokeStyle = 'rgba(251, 146, 60, 0.34)';
-      ctx.lineWidth = 1.5;
+      // Vivid toxic neon-green wooden NITRO crate (matching reference style!)
+      const s = 24;
+      const pulse = 0.5 + 0.5 * Math.sin(world.elapsedTime * 5 + item.id);
+      const aura = ctx.createRadialGradient(0, 0, 12, 0, 0, 46);
+      aura.addColorStop(0, `rgba(74, 222, 128, ${0.32 + pulse * 0.16})`);
+      aura.addColorStop(1, 'rgba(34, 197, 94, 0)');
+      ctx.fillStyle = aura;
       ctx.beginPath();
-      ctx.arc(0, 0, NITRO_BLAST_RADIUS * 0.34, 0, Math.PI * 2);
-      ctx.stroke();
+      ctx.arc(0, 0, 46, 0, Math.PI * 2);
+      ctx.fill();
 
-      ctx.fillStyle = '#EA580C';
-      ctx.strokeStyle = '#FED7AA';
-      ctx.lineWidth = 2;
+      ctx.fillStyle = '#15803D';
+      ctx.strokeStyle = '#052E16';
+      ctx.lineWidth = 2.6;
       ctx.beginPath();
-      ctx.roundRect(-13, -13, 26, 26, 6);
+      ctx.roundRect(-s, -s, s * 2, s * 2, 5);
       ctx.fill();
       ctx.stroke();
 
-      ctx.fillStyle = '#FFF7ED';
-      ctx.font = '700 11px "JetBrains Mono", monospace';
+      // Bright neon lime wooden center planks
+      ctx.fillStyle = '#22C55E';
+      ctx.fillRect(-s + 5, -s + 5, s * 2 - 10, s * 2 - 10);
+      ctx.fillStyle = '#4ADE80';
+      ctx.fillRect(-s + 5, -s + 5, s * 2 - 10, 4);
+
+      ctx.strokeStyle = '#166534';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(-s + 5, -s + 5, s * 2 - 10, s * 2 - 10);
+
+      // Bold stenciled NITRO badge
+      ctx.fillStyle = '#F0FDF4';
+      ctx.strokeStyle = '#052E16';
+      ctx.lineWidth = 2.5;
+      ctx.font = '900 12px "Outfit", sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('N₂', 0, 1);
+      ctx.strokeText('NITRO', 0, 1);
+      ctx.fillText('NITRO', 0, 1);
     } else if (item.kind === 'tnt') {
       const cd = Math.max(0, item.countdown ?? 3);
       const secText = Math.ceil(cd).toString();
       const flash = cd < 1.0 && Math.floor(cd * 10) % 2 === 0;
+      const s = 29;
 
-      ctx.fillStyle = flash ? '#FCA5A5' : '#DC2626';
-      ctx.strokeStyle = '#FEE2E2';
-      ctx.lineWidth = 2.5;
+      // Bright cherry-red wooden TNT crate with plank trim + yellow stencil
+      ctx.fillStyle = flash ? '#FCA5A5' : '#991B1B';
+      ctx.strokeStyle = '#1A0505';
+      ctx.lineWidth = 2.8;
       ctx.beginPath();
-      ctx.roundRect(-20, -20, 40, 40, 6);
+      ctx.roundRect(-s, -s, s * 2, s * 2, 5);
       ctx.fill();
       ctx.stroke();
 
-      ctx.strokeStyle = '#FEF08A';
-      ctx.lineWidth = 3;
+      ctx.fillStyle = flash ? '#FECACA' : '#EF231A';
+      ctx.fillRect(-s + 6, -s + 6, s * 2 - 12, s * 2 - 12);
+
+      // Plank dividers
+      ctx.strokeStyle = 'rgba(127, 29, 29, 0.55)';
+      ctx.lineWidth = 1.6;
       ctx.beginPath();
-      ctx.arc(0, 0, 27, -Math.PI / 2, -Math.PI / 2 + (cd / 3) * Math.PI * 2);
+      ctx.moveTo(-s + 6, -9);
+      ctx.lineTo(s - 6, -9);
+      ctx.moveTo(-s + 6, 9);
+      ctx.lineTo(s - 6, 9);
       ctx.stroke();
 
-      ctx.fillStyle = flash ? '#7F1D1D' : '#FFFFFF';
-      ctx.font = '800 20px "Outfit", sans-serif';
+      // Top rim highlight
+      ctx.fillStyle = 'rgba(255, 220, 220, 0.3)';
+      ctx.fillRect(-s + 3, -s + 2.5, s * 2 - 6, 4);
+
+      // Corner nails
+      ctx.fillStyle = '#FCA5A5';
+      for (const [rx, ry] of [
+        [-s + 4, -s + 4],
+        [s - 4, -s + 4],
+        [-s + 4, s - 4],
+        [s - 4, s - 4],
+      ]) {
+        ctx.beginPath();
+        ctx.arc(rx, ry, 1.8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Countdown progress ring around TNT
+      ctx.strokeStyle = '#FEF08A';
+      ctx.lineWidth = 3.2;
+      ctx.beginPath();
+      ctx.arc(0, 0, s + 8, -Math.PI / 2, -Math.PI / 2 + (cd / 3) * Math.PI * 2);
+      ctx.stroke();
+
+      // Bold TNT label + fuse second
+      ctx.fillStyle = flash ? '#7F1D1D' : '#FEF08A';
+      ctx.strokeStyle = '#450A0A';
+      ctx.lineWidth = 3;
+      ctx.font = '900 16px "Outfit", sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(secText, 0, 1);
+      ctx.strokeText('TNT', 0, -4);
+      ctx.fillText('TNT', 0, -4);
+
+      ctx.fillStyle = '#FFFFFF';
+      ctx.font = '800 12px "JetBrains Mono", monospace';
+      ctx.strokeText(`${secText}s`, 0, 12);
+      ctx.fillText(`${secText}s`, 0, 12);
     } else if (item.kind === 'medkit') {
-      ctx.fillStyle = 'rgba(16, 185, 129, 0.22)';
+      const s = 20;
+      ctx.fillStyle = 'rgba(16, 185, 129, 0.25)';
       ctx.beginPath();
-      ctx.arc(0, 0, item.radius + 5, 0, Math.PI * 2);
+      ctx.arc(0, 0, item.radius + 7, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.fillStyle = '#F8FAFC';
-      ctx.strokeStyle = '#10B981';
-      ctx.lineWidth = 2.5;
+      ctx.fillStyle = '#FFFFFF';
+      ctx.strokeStyle = '#065F46';
+      ctx.lineWidth = 2.6;
       ctx.beginPath();
-      ctx.roundRect(-13, -13, 26, 26, 6);
+      ctx.roundRect(-s, -s, s * 2, s * 2, 7);
       ctx.fill();
       ctx.stroke();
 
       ctx.fillStyle = '#10B981';
-      ctx.fillRect(-2.5, -7.5, 5, 15);
-      ctx.fillRect(-7.5, -2.5, 15, 5);
+      ctx.fillRect(-4, -12, 8, 24);
+      ctx.fillRect(-12, -4, 24, 8);
     }
     ctx.restore();
   }
@@ -1096,14 +1198,14 @@ export function renderArena(
       ctx.globalAlpha = 0.5;
     }
 
-    ctx.fillStyle = 'rgba(10, 6, 4, 0.45)';
+    ctx.fillStyle = 'rgba(6, 5, 10, 0.48)';
     ctx.beginPath();
-    ctx.arc(3, 5, PLAYER_RADIUS, 0, Math.PI * 2);
+    ctx.ellipse(6, 10, PLAYER_RADIUS * 0.94, PLAYER_RADIUS * 0.88, 0, 0, Math.PI * 2);
     ctx.fill();
 
     if (isLocal) {
-      ctx.strokeStyle = `${player.color}77`;
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = `${player.color}70`;
+      ctx.lineWidth = 2.5;
       ctx.beginPath();
       ctx.arc(0, 0, PLAYER_RADIUS + 7, 0, Math.PI * 2);
       ctx.stroke();
@@ -1112,179 +1214,253 @@ export function renderArena(
     if (player.ammo > 0 && player.stunTimer <= 0) {
       ctx.save();
       ctx.rotate(player.angle);
-      ctx.strokeStyle = hexWithAlpha(player.color, isLocal ? 0.65 : 0.25);
-      ctx.lineWidth = 2;
-      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = hexWithAlpha(player.color, isLocal ? 0.65 : 0.34);
+      ctx.lineWidth = isLocal ? 2.4 : 1.8;
+      ctx.setLineDash([7, 5]);
       ctx.beginPath();
-      ctx.moveTo(PLAYER_RADIUS + 6, 0);
-      ctx.lineTo(PLAYER_RADIUS + (isLocal ? 68 : 36), 0);
+      ctx.moveTo(PLAYER_RADIUS + 14, 0);
+      ctx.lineTo(PLAYER_RADIUS + (isLocal ? 135 : 68), 0);
       ctx.stroke();
       ctx.restore();
     }
 
     const skinColor = player.hurtFlashTimer > 0 ? '#FFFFFF' : player.color;
+    const accentColor = player.hurtFlashTimer > 0 ? '#FFFFFF' : player.accentColor;
 
-    // Keep the crisp circle hitbox base & team ring
-    ctx.fillStyle = hexWithAlpha(skinColor, 0.17);
-    ctx.strokeStyle = hexWithAlpha(skinColor, 0.82);
+    // Crisp outer hitbox ring
+    ctx.fillStyle = hexWithAlpha(skinColor, 0.14);
+    ctx.strokeStyle = hexWithAlpha(skinColor, 0.52);
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.arc(0, 0, PLAYER_RADIUS, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
 
-    // Top-down humanoid stickman body + small handgun rotated in facing direction
+    // Chunky bright candy-arcade mascot fighter + checkered tactical blaster
     const moveSpeed = Math.hypot(player.vx ?? 0, player.vy ?? 0);
-    const moveBlend = Math.min(1, moveSpeed / 145);
+    const moveBlend = Math.min(1, moveSpeed / 160);
     const stride = Math.sin(world.elapsedTime * 15 + player.id * 1.7) * moveBlend;
 
     ctx.save();
     ctx.rotate(player.angle);
 
-    // 1. Animated striding stickman feet peeking beneath shoulders
+    // 1. Animated striding boots
     ctx.fillStyle = '#0F172A';
     ctx.strokeStyle = skinColor;
-    ctx.lineWidth = 1.2;
-    const leftFootX = stride * 6.5;
-    const rightFootX = -stride * 6.5;
-    ctx.beginPath();
-    ctx.ellipse(leftFootX, -5.5, 4.2, 2.5, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.ellipse(rightFootX, 5.5, 4.2, 2.5, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    // 2. Stickman arms reaching forward to hold the small handgun
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    // Dark arm outline
-    ctx.strokeStyle = '#0F172A';
-    ctx.lineWidth = 5.4;
-    ctx.beginPath();
-    ctx.moveTo(0, -10.5);
-    ctx.quadraticCurveTo(9, -9.5, 13.5, -1.8);
-    ctx.moveTo(0, 10.5);
-    ctx.quadraticCurveTo(9, 9.5, 13.5, 1.8);
-    ctx.stroke();
-    // Colored stickman arm skin
-    ctx.strokeStyle = skinColor;
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.moveTo(0, -10.5);
-    ctx.quadraticCurveTo(9, -9.5, 13.5, -1.8);
-    ctx.moveTo(0, 10.5);
-    ctx.quadraticCurveTo(9, 9.5, 13.5, 1.8);
-    ctx.stroke();
-
-    // 3. Top-down stickman shoulders / torso capsule
-    ctx.fillStyle = skinColor;
-    ctx.strokeStyle = '#0F172A';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.roundRect(-4.8, -11.8, 9.6, 23.6, 4.8);
-    ctx.fill();
-    ctx.stroke();
-
-    // 4. Small top-down handgun held in both hands
-    // Gun grip / receiver
-    ctx.fillStyle = '#1E293B';
-    ctx.strokeStyle = '#0F172A';
-    ctx.lineWidth = 1.6;
-    ctx.beginPath();
-    ctx.roundRect(11, -2.5, 13.5, 5, 1.5);
-    ctx.fill();
-    ctx.stroke();
-
-    // Metallic pistol slide & armed chamber glow
-    ctx.fillStyle = player.ammo > 0 ? '#FACC15' : '#94A3B8';
-    ctx.fillRect(13.5, -1.3, 9.5, 2.6);
-    if (player.ammo > 0) {
-      ctx.fillStyle = '#FEF9C3';
-      ctx.fillRect(22, -1.1, 2.5, 2.2);
-    }
-
-    // 5. Stickman head (top-down sphere with highlight & subtle directional eyes)
-    ctx.fillStyle = skinColor;
-    ctx.strokeStyle = '#0F172A';
     ctx.lineWidth = 2.2;
     ctx.beginPath();
-    ctx.arc(1.5, 0, 7.6, 0, Math.PI * 2);
+    ctx.ellipse(stride * 12, -23, 9.5, 5.8, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(-stride * 12, 23, 9.5, 5.8, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
 
-    // Crown highlight
-    ctx.save();
-    ctx.fillStyle = player.hurtFlashTimer > 0 ? '#FFFFFF' : player.accentColor;
-    ctx.globalAlpha *= 0.55;
+    // 2. Rounded gloves gripping forward blaster
+    ctx.fillStyle = skinColor;
+    ctx.strokeStyle = '#090D16';
+    ctx.lineWidth = 2.8;
     ctx.beginPath();
-    ctx.arc(0.2, -1.5, 3.6, 0, Math.PI * 2);
+    ctx.arc(20, -17.5, 8.2, 0, Math.PI * 2);
     ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(20, 17.5, 8.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // 3. Heavy Black & Yellow-Checkered Tactical Blaster
+    ctx.fillStyle = '#1E293B';
+    ctx.strokeStyle = '#090D16';
+    ctx.lineWidth = 2.6;
+    ctx.beginPath();
+    ctx.roundRect(20, -8.5, 31, 17, 4.5);
+    ctx.fill();
+    ctx.stroke();
+
+    // Checkered tactical grip pattern on gun barrel
+    ctx.fillStyle = '#FACC15';
+    ctx.fillRect(25, -6.2, 5, 4.2);
+    ctx.fillRect(35, -6.2, 5, 4.2);
+    ctx.fillRect(30, 2, 5, 4.2);
+    ctx.fillRect(40, 2, 5, 4.2);
+
+    // Energized barrel core & luminous muzzle tip
+    ctx.fillStyle = player.ammo > 0 ? '#FDE047' : '#64748B';
+    ctx.fillRect(26, -2.2, 23, 4.4);
+    if (player.ammo > 0) {
+      ctx.fillStyle = '#FEF9C3';
+      ctx.beginPath();
+      ctx.arc(50, 0, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // 4. Glossy Candy-Colored Character Body (3-stop spherical shading + bright specular gloss)
+    const bodyR = 30.5;
+    const bodyGrad = ctx.createRadialGradient(-9, -10, 4, 0, 0, bodyR);
+    bodyGrad.addColorStop(0, '#FFFFFF');
+    bodyGrad.addColorStop(0.24, accentColor);
+    bodyGrad.addColorStop(0.7, skinColor);
+    bodyGrad.addColorStop(1, '#0F172A');
+
+    ctx.fillStyle = bodyGrad;
+    ctx.strokeStyle = '#090D16';
+    ctx.lineWidth = 3.4;
+    ctx.beginPath();
+    ctx.arc(0, 0, bodyR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Crisp glossy highlight crescent on upper-left crown
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
+    ctx.lineWidth = 3.2;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.arc(0, 0, bodyR - 6, -Math.PI * 0.85, -Math.PI * 0.35);
+    ctx.stroke();
     ctx.restore();
 
-    // Tiny forward-facing stickman eyes
-    ctx.fillStyle = '#0F172A';
+    // 5. Slot-distinct silhouette crest
+    if (player.id === 1) {
+      // Viper: Bold pointed cat/oni ears
+      ctx.fillStyle = skinColor;
+      ctx.strokeStyle = '#090D16';
+      ctx.lineWidth = 2.8;
+      ctx.beginPath();
+      ctx.moveTo(-6, -22);
+      ctx.lineTo(-22, -34);
+      ctx.lineTo(6, -27);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-6, 22);
+      ctx.lineTo(-22, 34);
+      ctx.lineTo(6, 27);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    } else if (player.id === 2) {
+      // Volt: Royal golden crown on back rim
+      ctx.fillStyle = '#FDE047';
+      ctx.strokeStyle = '#090D16';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(-17, -19);
+      ctx.lineTo(-30, -24);
+      ctx.lineTo(-24, -7);
+      ctx.lineTo(-34, 0);
+      ctx.lineTo(-24, 7);
+      ctx.lineTo(-30, 24);
+      ctx.lineTo(-17, 19);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    } else if (player.id === 0) {
+      // Cobalt: Sleek twin cyber fins
+      ctx.fillStyle = accentColor;
+      ctx.strokeStyle = '#090D16';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.roundRect(-21, -33, 18, 8, 4);
+      ctx.roundRect(-21, 25, 18, 8, 4);
+      ctx.fill();
+      ctx.stroke();
+    } else {
+      // Jade: Bright emerald scarf tails
+      ctx.fillStyle = '#15803D';
+      ctx.strokeStyle = '#090D16';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(-24, -10);
+      ctx.lineTo(-38, -17);
+      ctx.lineTo(-32, 0);
+      ctx.lineTo(-38, 17);
+      ctx.lineTo(-24, 10);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // 6. Dark Visor + Bright Expressive Eyes
+    ctx.fillStyle = '#090D16';
     ctx.beginPath();
-    ctx.arc(6.3, -2.4, 1.35, 0, Math.PI * 2);
-    ctx.arc(6.3, 2.4, 1.35, 0, Math.PI * 2);
+    ctx.ellipse(13, 0, 9.5, 17.5, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    const eyeColor =
+      player.id === 1 ? '#FCA5A5' : player.id === 2 ? '#FEF08A' : player.id === 3 ? '#86EFAC' : '#7DD3FC';
+    ctx.fillStyle = eyeColor;
+    ctx.beginPath();
+    ctx.arc(14.5, -7.2, 4.4, 0, Math.PI * 2);
+    ctx.arc(14.5, 7.2, 4.4, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#FFFFFF';
+    ctx.beginPath();
+    ctx.arc(16, -8.3, 1.7, 0, Math.PI * 2);
+    ctx.arc(16, 6.1, 1.7, 0, Math.PI * 2);
     ctx.fill();
 
     ctx.restore();
 
     if (player.ammo > 0) {
       for (let a = 0; a < player.ammo; a++) {
-        const pipAngle = -Math.PI / 2 + (a - (player.ammo - 1) / 2) * 0.42;
-        const px = Math.cos(pipAngle) * (PLAYER_RADIUS + 9);
-        const py = Math.sin(pipAngle) * (PLAYER_RADIUS + 9);
+        const pipAngle = -Math.PI / 2 + (a - (player.ammo - 1) / 2) * 0.28;
+        const px = Math.cos(pipAngle) * (PLAYER_RADIUS + 10);
+        const py = Math.sin(pipAngle) * (PLAYER_RADIUS + 10);
         ctx.fillStyle = '#FACC15';
-        ctx.strokeStyle = '#0F172A';
-        ctx.lineWidth = 1.2;
+        ctx.strokeStyle = '#090D16';
+        ctx.lineWidth = 1.6;
         ctx.beginPath();
-        ctx.arc(px, py, 3.5, 0, Math.PI * 2);
+        ctx.arc(px, py, 4.5, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
       }
     }
 
     if (player.stunTimer > 0) {
-      // Stunned players are temporarily protected until they get back up
       ctx.save();
-      ctx.strokeStyle = 'rgba(253, 224, 71, 0.45)';
-      ctx.lineWidth = 2;
-      ctx.setLineDash([5, 4]);
+      ctx.strokeStyle = 'rgba(253, 224, 71, 0.5)';
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([6, 4]);
       ctx.beginPath();
-      ctx.arc(0, 0, PLAYER_RADIUS + 10, 0, Math.PI * 2);
+      ctx.arc(0, 0, PLAYER_RADIUS + 11, 0, Math.PI * 2);
       ctx.stroke();
       ctx.restore();
 
       ctx.strokeStyle = '#FDE047';
-      ctx.lineWidth = 2.5;
+      ctx.lineWidth = 3;
       ctx.beginPath();
-      ctx.arc(0, 0, PLAYER_RADIUS + 5, world.elapsedTime * 7, world.elapsedTime * 7 + Math.PI * 1.35);
+      ctx.arc(0, 0, PLAYER_RADIUS + 6, world.elapsedTime * 7, world.elapsedTime * 7 + Math.PI * 1.35);
       ctx.stroke();
 
       for (let s = 0; s < 3; s++) {
         const sa = world.elapsedTime * 6 + (s * Math.PI * 2) / 3;
-        const sx = Math.cos(sa) * 14;
-        const sy = Math.sin(sa) * 6 - 24;
+        const sx = Math.cos(sa) * 24;
+        const sy = Math.sin(sa) * 8 - (PLAYER_RADIUS + 12);
         ctx.fillStyle = '#FEF08A';
         ctx.beginPath();
-        ctx.arc(sx, sy, 3, 0, Math.PI * 2);
+        ctx.arc(sx, sy, 4, 0, Math.PI * 2);
         ctx.fill();
       }
     }
 
     const hpRatio = player.hp / player.maxHp;
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
-    ctx.fillRect(-18, PLAYER_RADIUS + 10, 36, 5);
-    ctx.fillStyle = hpRatio > 0.5 ? '#34D399' : hpRatio > 0.25 ? '#FBBF24' : '#F43F5E';
-    ctx.fillRect(-17, PLAYER_RADIUS + 11, 34 * hpRatio, 3);
+    ctx.fillStyle = 'rgba(9, 13, 22, 0.88)';
+    ctx.fillRect(-28, PLAYER_RADIUS + 10, 56, 6);
+    ctx.fillStyle = hpRatio > 0.5 ? '#22C55E' : hpRatio > 0.25 ? '#FACC15' : '#EF4444';
+    ctx.fillRect(-26.5, PLAYER_RADIUS + 11.5, 53 * hpRatio, 3);
 
     ctx.fillStyle = '#F8FAFC';
-    ctx.font = '600 11px "Plus Jakarta Sans", sans-serif';
+    ctx.strokeStyle = 'rgba(9, 13, 22, 0.9)';
+    ctx.lineWidth = 3;
+    ctx.font = '700 13px "Plus Jakarta Sans", sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(player.name, 0, -PLAYER_RADIUS - 13);
+    ctx.strokeText(player.name, 0, -PLAYER_RADIUS - 16);
+    ctx.fillText(player.name, 0, -PLAYER_RADIUS - 16);
 
     ctx.restore();
   }
@@ -1561,14 +1737,14 @@ export function renderArena(
     ctx.translate(worldTx, worldTy);
     ctx.scale(scale, scale);
 
-    // Faintly visible stickman silhouettes & circle outline even inside dark surroundings!
+    // Faintly visible fighter silhouettes inside Extra Dark surroundings
     for (const player of world.players) {
       if (!player.alive || player.id === localPlayerId) continue;
       ctx.save();
       ctx.translate(player.x, player.y);
       ctx.globalAlpha = 0.28;
       ctx.strokeStyle = player.color;
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.arc(0, 0, PLAYER_RADIUS, 0, Math.PI * 2);
       ctx.stroke();
@@ -1576,16 +1752,18 @@ export function renderArena(
       ctx.rotate(player.angle);
       ctx.fillStyle = player.color;
       ctx.beginPath();
-      ctx.roundRect(-4.5, -11, 9, 22, 4.5);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(1.5, 0, 7.2, 0, Math.PI * 2);
+      ctx.arc(0, 0, 30, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = '#F8FAFC';
-      ctx.fillRect(11, -2, 12, 4);
+      ctx.beginPath();
+      ctx.roundRect(20, -8, 28, 16, 4);
+      ctx.fill();
       ctx.restore();
     }
   }
+
+  // 9b. Volumetric Light Rays & Perimeter Light Fixtures (Bright Wooden Lamps, Cargo Green Vents & Meadow Sunbeams)
+  drawVolumetricArenaLights(ctx, map, world.elapsedTime, isExtraDark);
 
   // 10. Glowing Bullets & Trails (always crisp & luminous in Immersive / Extra Dark!)
   for (const b of world.bullets) {
@@ -1802,4 +1980,185 @@ function hexWithAlpha(hex: string, alpha: number): string {
   const g = parseInt(clean.slice(2, 4), 16);
   const b = parseInt(clean.slice(4, 6), 16);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function drawAmbientArenaLights(ctx: CanvasRenderingContext2D, map: ArenaMap) {
+  ctx.save();
+  if (map.floorTheme === 'mansion_wood') {
+    // Warm golden floor light pools under ceiling lamps / foyer chandelier
+    const lampXs = map.immersive
+      ? [map.width * 0.25, map.width * 0.5, map.width * 0.75]
+      : [map.width * 0.3, map.width * 0.7];
+    for (const lx of lampXs) {
+      const topPool = ctx.createRadialGradient(lx, 130, 14, lx, 190, 320);
+      topPool.addColorStop(0, 'rgba(253, 224, 71, 0.24)');
+      topPool.addColorStop(0.55, 'rgba(250, 204, 21, 0.1)');
+      topPool.addColorStop(1, 'rgba(250, 204, 21, 0)');
+      ctx.fillStyle = topPool;
+      ctx.fillRect(lx - 320, 0, 640, 520);
+    }
+
+    const centerGlow = ctx.createRadialGradient(
+      map.width * 0.5,
+      map.height * 0.5,
+      20,
+      map.width * 0.5,
+      map.height * 0.5,
+      map.immersive ? 420 : 280
+    );
+    centerGlow.addColorStop(0, 'rgba(254, 240, 138, 0.16)');
+    centerGlow.addColorStop(1, 'rgba(254, 240, 138, 0)');
+    ctx.fillStyle = centerGlow;
+    ctx.beginPath();
+    ctx.arc(map.width * 0.5, map.height * 0.5, map.immersive ? 420 : 280, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (map.floorTheme === 'maple_cargo') {
+    // Industrial glowing green floor grates + emerald vent glow pools (matching reference aesthetic!)
+    const grates = [
+      { x: map.width * 0.32, y: map.height * 0.42 },
+      { x: map.width * 0.5, y: map.height * 0.5 },
+      { x: map.width * 0.68, y: map.height * 0.58 },
+    ];
+    for (const g of grates) {
+      const grad = ctx.createRadialGradient(g.x, g.y, 10, g.x, g.y, 175);
+      grad.addColorStop(0, 'rgba(74, 222, 128, 0.22)');
+      grad.addColorStop(1, 'rgba(34, 197, 94, 0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(g.x, g.y, 175, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Glowing perforated grate square
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.45)';
+      ctx.fillRect(g.x - 42, g.y - 42, 84, 84);
+      ctx.fillStyle = 'rgba(74, 222, 128, 0.48)';
+      for (let gx = -32; gx <= 24; gx += 14) {
+        for (let gy = -32; gy <= 24; gy += 14) {
+          ctx.fillRect(g.x + gx, g.y + gy, 8, 8);
+        }
+      }
+    }
+  }
+  ctx.restore();
+}
+
+function drawVolumetricArenaLights(
+  ctx: CanvasRenderingContext2D,
+  map: ArenaMap,
+  elapsedTime: number,
+  isExtraDark: boolean
+) {
+  if (isExtraDark) return;
+  ctx.save();
+
+  if (map.floorTheme === 'mansion_wood') {
+    // Glowing golden wall/ceiling lamps casting warm volumetric rays downward
+    const lampXs = map.immersive
+      ? [map.width * 0.25, map.width * 0.5, map.width * 0.75]
+      : [map.width * 0.3, map.width * 0.7];
+
+    for (let i = 0; i < lampXs.length; i++) {
+      const lx = lampXs[i];
+      const ly = 16;
+      const shimmer = 0.92 + 0.08 * Math.sin(elapsedTime * 2.2 + i * 1.4);
+
+      // Soft angled volumetric golden light rays
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const raySpread = 290;
+      const rayLen = 470;
+      const beamGrad = ctx.createLinearGradient(lx, ly, lx, ly + rayLen);
+      beamGrad.addColorStop(0, `rgba(254, 240, 138, ${0.24 * shimmer})`);
+      beamGrad.addColorStop(0.5, `rgba(253, 224, 71, ${0.1 * shimmer})`);
+      beamGrad.addColorStop(1, 'rgba(250, 204, 21, 0)');
+      ctx.fillStyle = beamGrad;
+      ctx.beginPath();
+      ctx.moveTo(lx - 42, ly + 8);
+      ctx.lineTo(lx + 42, ly + 8);
+      ctx.lineTo(lx + raySpread, ly + rayLen);
+      ctx.lineTo(lx - raySpread, ly + rayLen);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+
+      // Ornate golden wall lamp housing
+      ctx.fillStyle = '#78350F';
+      ctx.strokeStyle = '#1C1917';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(lx, ly, 24, 0, Math.PI, false);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#FEF08A';
+      ctx.beginPath();
+      ctx.arc(lx, ly + 4, 14, 0, Math.PI, false);
+      ctx.fill();
+    }
+  } else if (map.floorTheme === 'maple_cargo') {
+    // Glowing neon-green industrial ceiling vents casting volumetric beams
+    const vents = [
+      { x: map.width * 0.32, y: 16, dir: 1 },
+      { x: map.width * 0.68, y: 16, dir: 1 },
+      { x: map.width * 0.68, y: map.height - 16, dir: -1 },
+    ];
+
+    for (let i = 0; i < vents.length; i++) {
+      const v = vents[i];
+      const shimmer = 0.9 + 0.1 * Math.sin(elapsedTime * 3 + i * 2.1);
+
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const rayLen = 420;
+      const beamGrad = ctx.createLinearGradient(v.x, v.y, v.x, v.y + rayLen * v.dir);
+      beamGrad.addColorStop(0, `rgba(134, 239, 172, ${0.26 * shimmer})`);
+      beamGrad.addColorStop(0.55, `rgba(74, 222, 128, ${0.1 * shimmer})`);
+      beamGrad.addColorStop(1, 'rgba(34, 197, 94, 0)');
+      ctx.fillStyle = beamGrad;
+      ctx.beginPath();
+      ctx.moveTo(v.x - 46, v.y);
+      ctx.lineTo(v.x + 46, v.y);
+      ctx.lineTo(v.x + 260, v.y + rayLen * v.dir);
+      ctx.lineTo(v.x - 260, v.y + rayLen * v.dir);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+
+      // Industrial glowing green vent ring
+      ctx.fillStyle = '#1E293B';
+      ctx.strokeStyle = '#090D16';
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.arc(v.x, v.y, 28, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#4ADE80';
+      ctx.beginPath();
+      ctx.arc(v.x, v.y, 17, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  } else if (map.floorTheme === 'grass_outdoors') {
+    // Diagonal sunlit shafts streaming across the meadow
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const sunSpots = map.immersive ? [450, 1200, 1850] : [360, 980];
+    for (const sx of sunSpots) {
+      const sunGrad = ctx.createLinearGradient(sx, 0, sx + 260, 560);
+      sunGrad.addColorStop(0, 'rgba(254, 249, 195, 0.13)');
+      sunGrad.addColorStop(1, 'rgba(254, 249, 195, 0)');
+      ctx.fillStyle = sunGrad;
+      ctx.beginPath();
+      ctx.moveTo(sx - 70, 0);
+      ctx.lineTo(sx + 70, 0);
+      ctx.lineTo(sx + 340, 560);
+      ctx.lineTo(sx + 90, 560);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  ctx.restore();
 }

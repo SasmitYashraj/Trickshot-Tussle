@@ -294,37 +294,37 @@ export interface WorldSyncState {
 
 export const ARENA_WALL_THICKNESS = 24;
 
-export const IMMERSIVE_VIEW_WIDTH = 940;
-export const IMMERSIVE_VIEW_HEIGHT = 650;
+export const IMMERSIVE_VIEW_WIDTH = 1060;
+export const IMMERSIVE_VIEW_HEIGHT = 740;
 
-export const PLAYER_RADIUS = 18;
-export const PLAYER_MAX_SPEED = 205;
-export const PLAYER_MAX_ACCEL = 1650;
+export const PLAYER_RADIUS = 42;
+export const PLAYER_MAX_SPEED = 245;
+export const PLAYER_MAX_ACCEL = 1950;
 export const PLAYER_MAX_HP = 100;
 export const PLAYER_MAX_AMMO = 5;
 
-export const BULLET_SPEED = 495;
-export const BULLET_RADIUS = 7;
+export const BULLET_SPEED = 860;
+export const BULLET_RADIUS = 10;
 export const BULLET_DAMAGE = 33;
 export const BULLET_MAX_BOUNCES = 5;
-export const BULLET_MAX_AGE = 7.5;
-export const BULLET_SELF_GRACE = 0.18;
+export const BULLET_MAX_AGE = 5.0;
+export const BULLET_SELF_GRACE = 0.14;
 
-export const NITRO_RADIUS = 17;
-export const NITRO_BLAST_RADIUS = 108;
+export const NITRO_RADIUS = 26;
+export const NITRO_BLAST_RADIUS = 135;
 export const NITRO_DAMAGE = 33;
 
-export const TNT_RADIUS = 24; // Slightly bigger so players can shoot it!
-export const TNT_BLAST_RADIUS = 138;
+export const TNT_RADIUS = 32;
+export const TNT_BLAST_RADIUS = 170;
 export const TNT_COUNTDOWN = 3.0;
 export const TNT_DAMAGE = 45;
 
-export const MEDKIT_RADIUS = 15;
+export const MEDKIT_RADIUS = 22;
 export const MEDKIT_HEAL = 35;
 
-export const PICKUP_BULLET_RADIUS = 13;
+export const PICKUP_BULLET_RADIUS = 20;
 
-export const CARDBOARD_SIZE = 54;
+export const CARDBOARD_SIZE = 74;
 export const CARDBOARD_FADE_IN = 0.36;
 export const CARDBOARD_PUNCTURE_FRAME = 0.11;
 export const CARDBOARD_FADE_OUT = 0.34;

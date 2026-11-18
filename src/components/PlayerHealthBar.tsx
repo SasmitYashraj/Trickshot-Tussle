@@ -47,57 +47,44 @@ export function PlayerHealthBar({
   if (compact) {
     return (
       <div
-        className={`rounded-lg border px-2 py-1 backdrop-blur-[2px] transition-opacity duration-150 ${
-          player.alive
-            ? 'bg-slate-950/75 border-slate-700/75'
-            : 'bg-slate-950/55 border-slate-800/60 opacity-60'
+        className={`transition-opacity duration-150 ${
+          player.alive ? 'opacity-100' : 'opacity-45'
         }`}
       >
         <div
-          className={`flex items-center justify-between gap-1.5 text-[11px] leading-tight ${
+          className={`flex items-baseline justify-between gap-1.5 text-[11px] leading-none drop-shadow-[0_1px_2px_rgba(0,0,0,0.95)] ${
             align === 'right' ? 'flex-row-reverse' : ''
           }`}
         >
-          <div className={`flex items-center gap-1.5 min-w-0 ${align === 'right' ? 'flex-row-reverse' : ''}`}>
-            <span
-              className="h-2.5 w-2.5 shrink-0 rounded-sm border border-slate-950"
-              style={{ backgroundColor: player.color }}
-              aria-hidden="true"
-            />
-            <span className="font-display font-bold text-slate-100 truncate max-w-[68px]">
+          <div className={`flex items-center gap-1 min-w-0 ${align === 'right' ? 'flex-row-reverse' : ''}`}>
+            <span className="font-display font-bold text-white truncate max-w-[78px]">
               {player.name}
             </span>
+            {player.ammo > 0 && (
+              <span className="flex items-center gap-0.5 shrink-0">
+                {Array.from({ length: player.ammo }).map((_, i) => (
+                  <span key={i} className="h-1.5 w-1.5 rounded-full bg-yellow-300" />
+                ))}
+              </span>
+            )}
           </div>
-          <span className="font-mono-tabular text-[10px] font-bold text-slate-300 whitespace-nowrap">
-            {mode === 'BRAWL' ? `${player.kills}/${targetKills}` : `${player.kills}K`}
+          <span className="font-mono-tabular text-[10px] font-bold text-slate-200 whitespace-nowrap">
+            {!player.alive
+              ? statusLabel
+              : mode === 'BRAWL'
+                ? `${player.kills}/${targetKills}`
+                : `${player.kills}K`}
           </span>
         </div>
 
-        <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-900 border border-slate-800/80">
+        <div className="mt-0.5 h-2 w-full overflow-hidden rounded-full bg-white/15">
           <div
-            className={`h-full transition-all duration-150 ease-out ${barColor}`}
-            style={{ width: `${hpPct}%` }}
+            className="h-full transition-all duration-150 ease-out rounded-full"
+            style={{
+              width: `${hpPct}%`,
+              backgroundColor: player.alive ? player.color : '#64748B',
+            }}
           />
-        </div>
-
-        <div
-          className={`mt-1 flex items-center justify-between gap-1 text-[10px] leading-none ${
-            align === 'right' ? 'flex-row-reverse' : ''
-          }`}
-        >
-          <div className="flex items-center gap-1">
-            {Array.from({ length: player.maxAmmo }).map((_, i) => (
-              <span
-                key={i}
-                className={`h-1.5 w-1.5 rounded-full ${
-                  i < player.ammo ? 'bg-yellow-400' : 'bg-slate-800'
-                }`}
-              />
-            ))}
-          </div>
-          <span className={`font-mono-tabular font-semibold ${statusColor}`}>
-            {!player.alive || player.stunTimer > 0 || player.hp === 1 ? statusLabel : `${player.hp}HP`}
-          </span>
         </div>
       </div>
     );

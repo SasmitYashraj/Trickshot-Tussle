@@ -695,9 +695,9 @@ export default function App() {
 
   return (
     <div className="h-dvh w-screen flex flex-col bg-[#0B1120] overflow-hidden">
-      {/* Top Bar */}
-      <header className="h-11 sm:h-14 shrink-0 border-b border-slate-800/90 bg-[#0F172A] px-2.5 sm:px-6 flex items-center justify-between gap-2 sm:gap-3">
-        <span className="font-display text-sm sm:text-lg font-extrabold tracking-tight text-slate-50 whitespace-nowrap shrink-0">
+      {/* Desktop Top Bar (hidden on phone/tablet for full-screen landscape play) */}
+      <header className="hidden lg:flex h-14 shrink-0 border-b border-slate-800/90 bg-[#0F172A] px-6 items-center justify-between gap-3">
+        <span className="font-display text-lg font-extrabold tracking-tight text-slate-50 whitespace-nowrap shrink-0">
           Trickshot Tussle
         </span>
 
@@ -860,8 +860,59 @@ export default function App() {
             }`}
           />
 
-          {/* Compact Side-Corner Mini Health Bars for Phone/Tablet */}
-          <div className="pointer-events-none absolute top-2 left-2 right-2 flex items-start justify-between gap-2 lg:hidden z-10">
+          {/* Compact Floating Top-Center Utility Controls on Mobile/Landscape */}
+          <div className="absolute top-1.5 left-1/2 -translate-x-1/2 flex items-center gap-1.5 lg:hidden z-20">
+            <button
+              type="button"
+              onClick={toggleMute}
+              aria-label={muted ? 'Unmute sound' : 'Mute sound'}
+              className="h-8 w-8 inline-flex items-center justify-center rounded-lg bg-slate-950/55 text-slate-200 hover:bg-slate-900/80 transition-colors cursor-pointer"
+            >
+              {muted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+            </button>
+            {!isOnline ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => startSoloMatch()}
+                  aria-label="Restart match"
+                  className="h-8 w-8 inline-flex items-center justify-center rounded-lg bg-slate-950/55 text-slate-200 hover:bg-slate-900/80 transition-colors cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={togglePause}
+                  aria-label={gameState === 'PAUSED' ? 'Resume match' : 'Pause match'}
+                  className="h-8 w-8 inline-flex items-center justify-center rounded-lg bg-slate-950/55 text-slate-100 hover:bg-slate-900/80 transition-colors cursor-pointer"
+                >
+                  {gameState === 'PAUSED' ? (
+                    <Play className="w-3.5 h-3.5" />
+                  ) : (
+                    <Pause className="w-3.5 h-3.5" />
+                  )}
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={handleLeaveOnline}
+                className="h-8 px-2.5 inline-flex items-center rounded-lg bg-slate-950/55 text-[11px] font-semibold text-slate-200 hover:bg-slate-900/80 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                Leave
+              </button>
+            )}
+          </div>
+
+          {/* Borderless Thin Overlay Health Bars at Screen Edges for Phone/Landscape */}
+          <div
+            style={{
+              top: 'max(0.375rem, env(safe-area-inset-top))',
+              left: 'max(0.75rem, env(safe-area-inset-left))',
+              right: 'max(0.75rem, env(safe-area-inset-right))',
+            }}
+            className="pointer-events-none absolute flex items-start justify-between gap-2 lg:hidden z-10"
+          >
             <div className="flex flex-col gap-1.5 w-28 sm:w-36">
               {p0 && (
                 <PlayerHealthBar
@@ -960,7 +1011,7 @@ export default function App() {
               <span className="font-mono-tabular text-slate-300">-33 HP · Stun</span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-orange-400">Nitro Crate</span>
+              <span className="text-lime-400">Nitro Crate</span>
               <span className="font-mono-tabular text-slate-300">-33 HP · Blast</span>
             </div>
             <div className="flex items-center justify-between">
