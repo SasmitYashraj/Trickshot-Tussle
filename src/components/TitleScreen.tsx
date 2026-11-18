@@ -2,6 +2,7 @@ import { Globe, Play, User, Users } from 'lucide-react';
 import { useState } from 'react';
 import { SOLO_MAP_LIST } from '../game/maps';
 import type { BotDifficulty, MapId, MatchConfig, MatchMode } from '../game/types';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface TitleScreenProps {
   config: MatchConfig;
@@ -39,9 +40,12 @@ export function TitleScreen({
           <div className="flex flex-col md:flex-row md:items-start gap-6 md:gap-7">
             {/* Left column: Title & Arena Legend */}
             <div className="flex-1 min-w-0">
-              <h1 className="font-display text-2xl sm:text-3xl md:text-4xl font-extrabold tracking-tight text-slate-50 text-balance">
-                Trickshot Tussle
-              </h1>
+              <div className="flex items-center justify-between gap-3">
+                <h1 className="font-display text-2xl sm:text-3xl md:text-4xl font-extrabold tracking-tight text-slate-50 text-balance">
+                  Trickshot Tussle
+                </h1>
+                <PWAInstallButton />
+              </div>
               <p className="mt-2 text-xs sm:text-sm md:text-base text-slate-300 leading-relaxed max-w-xl">
                 Move with <span className="font-semibold text-slate-100">WASD</span> (hold <span className="font-semibold text-slate-100">Shift</span> to creep), aim 360° with your cursor, and press <span className="font-semibold text-slate-100">Spacebar</span> to fire on PC—or drag &amp; release on touchscreens.
               </p>
