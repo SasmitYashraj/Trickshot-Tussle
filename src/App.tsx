@@ -136,6 +136,7 @@ export default function App() {
   const [isOnline, setIsOnline] = useState(false);
   const [roomState, setRoomState] = useState<OnlineRoomState | null>(null);
   const [onlineError, setOnlineError] = useState<string | null>(null);
+  const [onlineConnecting, setOnlineConnecting] = useState(false);
 
   const engineRef = useRef<ArenaEngine>(new ArenaEngine(DEFAULT_SOLO_CONFIG));
   const [snapshot, setSnapshot] = useState<GameSnapshot>(() => engineRef.current.getSnapshot(0));
@@ -191,10 +192,11 @@ export default function App() {
     }
   }, [controlScheme]);
 
-  // Setup persistent WebSocket client instance
+  // Setup persistent PeerJS client instance
   useEffect(() => {
     const client = new MultiplayerClient({
       onRoom: (room) => {
+        setOnlineConnecting(false);
         setOnlineError(null);
         setRoomState(room);
         setIsOnline(true);
@@ -221,13 +223,34 @@ export default function App() {
         setSnapshot(worldToSnapshot(world, mySlot));
       },
       onError: (message) => {
+        setOnlineConnecting(false);
         setOnlineError(message);
+        if (
+          isOnlineRef.current &&
+          (gameStateRef.current === 'PLAYING' || gameStateRef.current === 'GAME_OVER')
+        ) {
+          onlineWorldRef.current = null;
+          onlineJoystickRef.current.active = false;
+          cursorScreenRef.current = null;
+          setRoomState(null);
+          setIsOnline(false);
+          setGameState('TITLE_MENU');
+        }
       },
-      onStatus: () => {},
+      onStatus: (connected) => {
+        if (!connected) {
+          setOnlineConnecting(false);
+        }
+      },
     });
 
     clientRef.current = client;
+    const handleUnload = () => {
+      client.disconnect();
+    };
+    window.addEventListener('beforeunload', handleUnload);
     return () => {
+      window.removeEventListener('beforeunload', handleUnload);
       client.disconnect();
     };
   }, []);
@@ -251,16 +274,20 @@ export default function App() {
   const handleCreateOnlineRoom = (name: string) => {
     sound.unlock();
     setOnlineError(null);
+    setOnlineConnecting(true);
     clientRef.current?.createRoom(name, DEFAULT_ONLINE_CONFIG);
   };
 
   const handleJoinOnlineRoom = (code: string, name: string) => {
     sound.unlock();
     setOnlineError(null);
+    setOnlineConnecting(true);
     clientRef.current?.joinRoom(code, name);
   };
 
   const handleLeaveOnline = () => {
+    setOnlineConnecting(false);
+    setOnlineError(null);
     clientRef.current?.leaveRoom();
     onlineWorldRef.current = null;
     onlineJoystickRef.current.active = false;
@@ -678,6 +705,7 @@ export default function App() {
         config={config}
         initialRoomCode={initialRoomCode}
         onlineError={onlineError}
+        onlineConnecting={onlineConnecting}
         onChangeConfig={setConfig}
         onStartSolo={() => startSoloMatch(config)}
         onCreateOnlineRoom={handleCreateOnlineRoom}

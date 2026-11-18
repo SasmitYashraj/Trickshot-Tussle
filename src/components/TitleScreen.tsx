@@ -7,6 +7,7 @@ interface TitleScreenProps {
   config: MatchConfig;
   initialRoomCode?: string;
   onlineError: string | null;
+  onlineConnecting?: boolean;
   onChangeConfig: (next: MatchConfig) => void;
   onStartSolo: () => void;
   onCreateOnlineRoom: (name: string) => void;
@@ -17,12 +18,13 @@ export function TitleScreen({
   config,
   initialRoomCode = '',
   onlineError,
+  onlineConnecting = false,
   onChangeConfig,
   onStartSolo,
   onCreateOnlineRoom,
   onJoinOnlineRoom,
 }: TitleScreenProps) {
-  const [tab, setTab] = useState<'SOLO' | 'ONLINE'>(initialRoomCode ? 'ONLINE' : 'SOLO');
+  const [tab, setTab] = useState<'SOLO' | 'ONLINE'>(initialRoomCode || onlineError ? 'ONLINE' : 'SOLO');
   const [nickname, setNickname] = useState('Player');
   const [joinCode, setJoinCode] = useState(initialRoomCode);
 
@@ -220,16 +222,17 @@ export function TitleScreen({
 
                 <button
                   type="button"
+                  disabled={onlineConnecting}
                   onClick={() => onCreateOnlineRoom(nickname)}
-                  className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-sky-400 hover:bg-sky-300 active:scale-[0.99] px-4 py-2.5 text-sm font-bold text-slate-950 transition-all cursor-pointer whitespace-nowrap"
+                  className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-sky-400 hover:bg-sky-300 disabled:opacity-60 active:scale-[0.99] px-4 py-2.5 text-sm font-bold text-slate-950 transition-all cursor-pointer whitespace-nowrap"
                 >
                   <Users className="w-4 h-4" />
-                  Create Online Lobby
+                  {onlineConnecting ? 'Connecting...' : 'Create Online Lobby'}
                 </button>
 
                 <div className="pt-3 border-t border-slate-800">
                   <label htmlFor="join-room-code" className="block text-xs font-semibold text-slate-400 mb-1.5">
-                    Or Join with Lobby Code
+                    Or Join with 4-Letter Code
                   </label>
                   <div className="flex items-center gap-2">
                     <input
@@ -243,11 +246,11 @@ export function TitleScreen({
                     />
                     <button
                       type="button"
-                      disabled={joinCode.trim().length < 3}
+                      disabled={onlineConnecting || joinCode.trim().length < 3}
                       onClick={() => onJoinOnlineRoom(joinCode, nickname)}
                       className="flex-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 px-4 py-2 text-sm font-semibold text-slate-100 transition-colors cursor-pointer whitespace-nowrap"
                     >
-                      Join Lobby
+                      {onlineConnecting ? 'Joining...' : 'Join Lobby'}
                     </button>
                   </div>
                 </div>

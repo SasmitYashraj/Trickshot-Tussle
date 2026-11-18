@@ -1,18 +1,98 @@
-import type { MatchConfig, OnlineRoomState, WorldSyncState } from '../game/types';
+import Peer, { type DataConnection } from 'peerjs';
+import { ArenaEngine, PLAYER_PRESETS, type SlotSetup } from '../game/engine';
+import { ARENA_MAPS } from '../game/maps';
+import type {
+  MatchConfig,
+  OnlineLobbySlot,
+  OnlineRoomState,
+  WorldSyncState,
+} from '../game/types';
 
 type RoomHandler = (room: OnlineRoomState) => void;
 type WorldHandler = (world: WorldSyncState) => void;
 type ErrorHandler = (message: string) => void;
 type StatusHandler = (connected: boolean) => void;
 
+const PEER_PREFIX = 'trickshot-tussle-room-';
+const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+
+const PEER_OPTIONS = {
+  debug: 0,
+  config: {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+    ],
+  },
+};
+
+function generateRoomCode(): string {
+  let code = '';
+  for (let i = 0; i < 4; i++) {
+    code += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)];
+  }
+  return code;
+}
+
+function sanitizeName(raw: unknown, fallback: string): string {
+  if (typeof raw !== 'string') return fallback;
+  const trimmed = raw.trim().slice(0, 14);
+  return trimmed.length > 0 ? trimmed : fallback;
+}
+
+function sanitizeConfig(raw: Partial<MatchConfig> | undefined): MatchConfig {
+  const map =
+    raw?.mapId && ARENA_MAPS[raw.mapId] ? ARENA_MAPS[raw.mapId] : ARENA_MAPS.immersive_mansion;
+  return {
+    mode: raw?.mode === 'ELIMINATION' ? 'ELIMINATION' : 'BRAWL',
+    mapId: map.id,
+    difficulty:
+      raw?.difficulty === 'CHILL' || raw?.difficulty === 'RUTHLESS' ? raw.difficulty : 'TACTICAL',
+    targetKills:
+      typeof raw?.targetKills === 'number' ? Math.max(3, Math.min(20, raw.targetKills)) : 8,
+    immersive: map.immersive,
+    extraDark: map.immersive ? Boolean(raw?.extraDark) : false,
+    fillBots: raw?.fillBots !== undefined ? Boolean(raw.fillBots) : true,
+  };
+}
+
+interface HostMember {
+  conn: DataConnection;
+  slot: number;
+  name: string;
+}
+
+interface HostRoom {
+  code: string;
+  hostSlot: number;
+  hostName: string;
+  phase: 'LOBBY' | 'PLAYING' | 'GAME_OVER';
+  config: MatchConfig;
+  members: Map<number, HostMember>;
+  engine: ArenaEngine | null;
+  tickTimer: ReturnType<typeof setInterval> | null;
+  tickCount: number;
+}
+
 export class MultiplayerClient {
-  private ws: WebSocket | null = null;
+  private peer: Peer | null = null;
+  private hostRoom: HostRoom | null = null;
+  private guestConn: DataConnection | null = null;
+  private role: 'idle' | 'host' | 'guest' = 'idle';
+  private guestJoined = false;
+  private intentionalClose = false;
+  private connectTimeout: ReturnType<typeof setTimeout> | null = null;
+  private sessionSeq = 0;
+
   private onRoom: RoomHandler;
   private onWorld: WorldHandler;
   private onError: ErrorHandler;
   private onStatus: StatusHandler;
-  private pendingQueue: unknown[] = [];
+
   private lastInputSentAt = 0;
+  private lastSentActive = false;
+  private lastSentMoveAngle: number | undefined = undefined;
 
   constructor(handlers: {
     onRoom: RoomHandler;
@@ -26,111 +106,603 @@ export class MultiplayerClient {
     this.onStatus = handlers.onStatus;
   }
 
-  public connect() {
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+  private clearConnectTimeout() {
+    if (this.connectTimeout) {
+      clearTimeout(this.connectTimeout);
+      this.connectTimeout = null;
+    }
+  }
+
+  private stopHostLoop() {
+    if (this.hostRoom?.tickTimer) {
+      clearInterval(this.hostRoom.tickTimer);
+      this.hostRoom.tickTimer = null;
+    }
+  }
+
+  private teardown(notifyClose = true) {
+    this.sessionSeq += 1;
+    this.intentionalClose = true;
+    this.clearConnectTimeout();
+    this.stopHostLoop();
+
+    if (this.hostRoom) {
+      for (const member of this.hostRoom.members.values()) {
+        try {
+          if (notifyClose && member.conn.open) {
+            member.conn.send({ type: 'error', message: 'Host left the room.' });
+          }
+          member.conn.close();
+        } catch {
+          // Ignore close errors
+        }
+      }
+      this.hostRoom.members.clear();
+      this.hostRoom.engine = null;
+      this.hostRoom = null;
+    }
+
+    if (this.guestConn) {
+      try {
+        if (notifyClose && this.guestConn.open) {
+          this.guestConn.send({ type: 'leave_room' });
+        }
+        this.guestConn.close();
+      } catch {
+        // Ignore close errors
+      }
+      this.guestConn = null;
+    }
+
+    if (this.peer) {
+      try {
+        this.peer.destroy();
+      } catch {
+        // Ignore destroy errors
+      }
+      this.peer = null;
+    }
+
+    this.role = 'idle';
+    this.guestJoined = false;
+    this.lastSentActive = false;
+    this.lastSentMoveAngle = undefined;
+    this.lastInputSentAt = 0;
+  }
+
+  public disconnect() {
+    this.teardown(true);
+    this.onStatus(false);
+  }
+
+  public leaveRoom() {
+    this.teardown(true);
+    this.onStatus(false);
+  }
+
+  public createRoom(name: string, config: MatchConfig) {
+    this.teardown(true);
+    this.intentionalClose = false;
+    this.role = 'host';
+    const seq = this.sessionSeq;
+    const hostName = sanitizeName(name, PLAYER_PRESETS[0].defaultName);
+    const cleanConfig = sanitizeConfig(config);
+
+    this.attemptHostPeer(hostName, cleanConfig, 0, seq);
+  }
+
+  private attemptHostPeer(hostName: string, config: MatchConfig, attempt: number, seq: number) {
+    if (seq !== this.sessionSeq) return;
+
+    const code = generateRoomCode();
+    const peer = new Peer(`${PEER_PREFIX}${code}`, PEER_OPTIONS);
+    this.peer = peer;
+
+    this.clearConnectTimeout();
+    this.connectTimeout = setTimeout(() => {
+      if (seq !== this.sessionSeq || this.hostRoom) return;
+      this.teardown(false);
+      this.onStatus(false);
+      this.onError('Could not reach the PeerJS room broker. Check your internet connection and try again.');
+    }, 12000);
+
+    peer.on('open', () => {
+      if (seq !== this.sessionSeq) return;
+      this.clearConnectTimeout();
+
+      this.hostRoom = {
+        code,
+        hostSlot: 0,
+        hostName,
+        phase: 'LOBBY',
+        config,
+        members: new Map(),
+        engine: null,
+        tickTimer: null,
+        tickCount: 0,
+      };
+      this.onStatus(true);
+      this.broadcastHostRoomState();
+    });
+
+    peer.on('connection', (conn) => {
+      if (seq !== this.sessionSeq || !this.hostRoom) {
+        conn.close();
+        return;
+      }
+      this.attachGuestConnectionToHost(conn, seq);
+    });
+
+    peer.on('error', (err) => {
+      if (seq !== this.sessionSeq) return;
+      const errType = (err as { type?: string }).type;
+
+      if (errType === 'unavailable-id' && !this.hostRoom && attempt < 5) {
+        this.clearConnectTimeout();
+        try {
+          peer.destroy();
+        } catch {
+          // Ignore
+        }
+        this.peer = null;
+        this.attemptHostPeer(hostName, config, attempt + 1, seq);
+        return;
+      }
+
+      if (!this.hostRoom) {
+        this.clearConnectTimeout();
+        this.teardown(false);
+        this.onStatus(false);
+        this.onError(
+          errType === 'network' || errType === 'server-error' || errType === 'socket-error'
+            ? 'Unable to connect to the PeerJS cloud broker.'
+            : err.message || 'PeerJS hosting error.'
+        );
+      }
+    });
+
+    peer.on('disconnected', () => {
+      if (seq !== this.sessionSeq || this.intentionalClose) return;
+      // Attempt silent reconnection to signaling server while keeping existing WebRTC channels alive
+      try {
+        if (!peer.destroyed) peer.reconnect();
+      } catch {
+        // Ignore
+      }
+    });
+  }
+
+  private attachGuestConnectionToHost(conn: DataConnection, seq: number) {
+    let assignedSlot: number | null = null;
+
+    const handleDisconnect = () => {
+      if (seq !== this.sessionSeq || !this.hostRoom || assignedSlot === null) return;
+      const slot = assignedSlot;
+      assignedSlot = null;
+      this.removeHostMember(slot);
+    };
+
+    conn.on('data', (raw) => {
+      if (seq !== this.sessionSeq || !this.hostRoom) return;
+      if (!raw || typeof raw !== 'object') return;
+      const msg = raw as Record<string, unknown>;
+      const type = msg.type;
+
+      if (type === 'join_request') {
+        if (assignedSlot !== null) return;
+        const room = this.hostRoom;
+
+        if (room.phase !== 'LOBBY') {
+          try {
+            conn.send({ type: 'error', message: 'Match already in progress in that lobby.' });
+          } catch {
+            // Ignore
+          }
+          setTimeout(() => {
+            try {
+              conn.close();
+            } catch {
+              // Ignore
+            }
+          }, 150);
+          return;
+        }
+
+        let freeSlot: number | null = null;
+        for (let s = 1; s < 4; s++) {
+          if (!room.members.has(s)) {
+            freeSlot = s;
+            break;
+          }
+        }
+
+        if (freeSlot === null) {
+          try {
+            conn.send({ type: 'error', message: 'Lobby is full (4/4 players).' });
+          } catch {
+            // Ignore
+          }
+          setTimeout(() => {
+            try {
+              conn.close();
+            } catch {
+              // Ignore
+            }
+          }, 150);
+          return;
+        }
+
+        assignedSlot = freeSlot;
+        const playerName = sanitizeName(msg.name, PLAYER_PRESETS[freeSlot].defaultName);
+        room.members.set(freeSlot, { conn, slot: freeSlot, name: playerName });
+        this.broadcastHostRoomState();
+        return;
+      }
+
+      if (assignedSlot === null) return;
+
+      if (type === 'leave_room') {
+        handleDisconnect();
+      } else if (type === 'joystick_input') {
+        const room = this.hostRoom;
+        if (!room.engine || room.phase !== 'PLAYING') return;
+        room.engine.setRemoteInput(
+          assignedSlot,
+          Boolean(msg.active),
+          Number(msg.angle ?? 0),
+          Number(msg.magnitude ?? 0),
+          msg.moveAngle !== undefined ? Number(msg.moveAngle) : undefined
+        );
+      } else if (type === 'joystick_release') {
+        const room = this.hostRoom;
+        if (!room.engine || room.phase !== 'PLAYING') return;
+        room.engine.releaseRemoteJoystick(assignedSlot);
+      } else if (type === 'shoot_action') {
+        const room = this.hostRoom;
+        if (!room.engine || room.phase !== 'PLAYING') return;
+        room.engine.firePlayerShot(assignedSlot);
+      }
+    });
+
+    conn.on('close', handleDisconnect);
+    conn.on('error', handleDisconnect);
+  }
+
+  private removeHostMember(slot: number) {
+    const room = this.hostRoom;
+    if (!room || !room.members.has(slot)) return;
+    room.members.delete(slot);
+
+    if (room.engine && room.phase === 'PLAYING') {
+      const player = room.engine.players.find((p) => p.id === slot);
+      if (player) {
+        player.isHuman = false;
+        player.isRemote = false;
+        player.name = `${PLAYER_PRESETS[slot].defaultName} (Bot)`;
+      }
+    }
+
+    this.broadcastHostRoomState();
+  }
+
+  private buildHostSlots(room: HostRoom): OnlineLobbySlot[] {
+    const fillBots = room.config.fillBots ?? true;
+    return PLAYER_PRESETS.map((preset) => {
+      if (preset.id === room.hostSlot) {
+        return {
+          slot: preset.id,
+          name: room.hostName,
+          color: preset.color,
+          occupied: true,
+          isBot: false,
+          isHost: true,
+        };
+      }
+      const member = room.members.get(preset.id);
+      return {
+        slot: preset.id,
+        name: member ? member.name : fillBots ? `${preset.defaultName} (Bot)` : 'Open Slot',
+        color: preset.color,
+        occupied: Boolean(member),
+        isBot: !member && fillBots,
+        isHost: false,
+      };
+    });
+  }
+
+  private broadcastHostRoomState() {
+    const room = this.hostRoom;
+    if (!room) return;
+
+    const slots = this.buildHostSlots(room);
+    const hostState: OnlineRoomState = {
+      code: room.code,
+      phase: room.phase,
+      mySlot: room.hostSlot,
+      hostSlot: room.hostSlot,
+      config: room.config,
+      slots,
+    };
+    this.onRoom(hostState);
+
+    for (const member of room.members.values()) {
+      if (!member.conn.open) continue;
+      const guestState: OnlineRoomState = {
+        code: room.code,
+        phase: room.phase,
+        mySlot: member.slot,
+        hostSlot: room.hostSlot,
+        config: room.config,
+        slots,
+      };
+      try {
+        member.conn.send({ type: 'room_state', room: guestState });
+      } catch {
+        // Ignore transient send errors
+      }
+    }
+  }
+
+  public joinRoom(code: string, name: string) {
+    const cleanCode = code.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (cleanCode.length < 3) {
+      this.onError('Please enter a valid 4-letter room code.');
       return;
     }
 
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = `${proto}//${window.location.host}/ws`;
-    const ws = new WebSocket(url);
-    this.ws = ws;
+    this.teardown(true);
+    this.intentionalClose = false;
+    this.role = 'guest';
+    this.guestJoined = false;
+    const seq = this.sessionSeq;
+    const cleanName = sanitizeName(name, 'Player');
 
-    ws.onopen = () => {
-      this.onStatus(true);
-      while (this.pendingQueue.length > 0) {
-        const msg = this.pendingQueue.shift();
-        this.send(msg);
-      }
-    };
+    const peer = new Peer(PEER_OPTIONS);
+    this.peer = peer;
 
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data as string);
+    this.clearConnectTimeout();
+    this.connectTimeout = setTimeout(() => {
+      if (seq !== this.sessionSeq || this.guestJoined) return;
+      this.teardown(false);
+      this.onStatus(false);
+      this.onError(`Could not connect to room "${cleanCode}". Verify the code and try again.`);
+    }, 12000);
+
+    peer.on('open', () => {
+      if (seq !== this.sessionSeq) return;
+      const conn = peer.connect(`${PEER_PREFIX}${cleanCode}`, { reliable: true });
+      this.guestConn = conn;
+
+      conn.on('open', () => {
+        if (seq !== this.sessionSeq) return;
+        this.onStatus(true);
+        try {
+          conn.send({ type: 'join_request', name: cleanName });
+        } catch {
+          this.clearConnectTimeout();
+          this.teardown(false);
+          this.onStatus(false);
+          this.onError(`Failed to send join request to room "${cleanCode}".`);
+        }
+      });
+
+      conn.on('data', (raw) => {
+        if (seq !== this.sessionSeq || !raw || typeof raw !== 'object') return;
+        const data = raw as Record<string, unknown>;
+
         if (data.type === 'room_state' && data.room) {
+          this.clearConnectTimeout();
+          this.guestJoined = true;
           this.onRoom(data.room as OnlineRoomState);
         } else if (data.type === 'game_state' && data.world) {
           this.onWorld(data.world as WorldSyncState);
         } else if (data.type === 'error' && data.message) {
-          this.onError(String(data.message));
+          const message = String(data.message);
+          this.clearConnectTimeout();
+          if (!this.guestJoined) {
+            this.teardown(false);
+            this.onStatus(false);
+          }
+          this.onError(message);
         }
-      } catch {
-        // Ignore malformed payloads
-      }
-    };
+      });
 
-    ws.onclose = () => {
+      conn.on('close', () => {
+        if (seq !== this.sessionSeq || this.intentionalClose) return;
+        this.clearConnectTimeout();
+        const wasJoined = this.guestJoined;
+        this.teardown(false);
+        this.onStatus(false);
+        if (wasJoined) {
+          this.onError('Connection to room host was lost.');
+        }
+      });
+
+      conn.on('error', () => {
+        if (seq !== this.sessionSeq || this.intentionalClose) return;
+        this.clearConnectTimeout();
+        this.teardown(false);
+        this.onStatus(false);
+        this.onError(`PeerJS connection to room "${cleanCode}" failed.`);
+      });
+    });
+
+    peer.on('error', (err) => {
+      if (seq !== this.sessionSeq || this.intentionalClose) return;
+      const errType = (err as { type?: string }).type;
+      this.clearConnectTimeout();
+      this.teardown(false);
       this.onStatus(false);
-    };
 
-    ws.onerror = () => {
-      this.onError('WebSocket connection error.');
-    };
-  }
-
-  public disconnect() {
-    if (this.ws) {
-      this.send({ type: 'leave_room' });
-      this.ws.close();
-      this.ws = null;
-    }
-    this.pendingQueue = [];
-  }
-
-  private send(payload: unknown) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(payload));
-    } else {
-      this.pendingQueue.push(payload);
-      this.connect();
-    }
-  }
-
-  public createRoom(name: string, config: MatchConfig) {
-    this.send({ type: 'create_room', name, config });
-  }
-
-  public joinRoom(code: string, name: string) {
-    this.send({ type: 'join_room', code: code.trim().toUpperCase(), name });
+      if (errType === 'peer-unavailable') {
+        this.onError(`Lobby "${cleanCode}" not found. Check the 4-letter room code.`);
+      } else if (errType === 'network' || errType === 'server-error' || errType === 'socket-error') {
+        this.onError('Unable to reach the PeerJS signaling server.');
+      } else {
+        this.onError(err.message || 'PeerJS connection error.');
+      }
+    });
   }
 
   public updateRoomConfig(config: MatchConfig) {
-    this.send({ type: 'update_room_config', config });
+    if (this.role !== 'host' || !this.hostRoom || this.hostRoom.phase !== 'LOBBY') return;
+    this.hostRoom.config = sanitizeConfig(config);
+    this.broadcastHostRoomState();
   }
 
   public startMatch() {
-    this.send({ type: 'start_match' });
+    if (this.role !== 'host' || !this.hostRoom) return;
+    const room = this.hostRoom;
+    this.stopHostLoop();
+
+    const fillBots = room.config.fillBots ?? true;
+    const slotSetups: SlotSetup[] = PLAYER_PRESETS.map((preset) => {
+      if (preset.id === room.hostSlot) {
+        return { slot: preset.id, name: room.hostName, isHuman: true, enabled: true };
+      }
+      const member = room.members.get(preset.id);
+      if (member) {
+        return { slot: preset.id, name: member.name, isHuman: true, enabled: true };
+      }
+      return {
+        slot: preset.id,
+        name: preset.defaultName,
+        isHuman: false,
+        enabled: fillBots,
+      };
+    });
+
+    const enabledCount = slotSetups.filter((s) => s.enabled).length;
+    if (enabledCount < 2) {
+      for (const s of slotSetups) {
+        if (!s.enabled) {
+          s.enabled = true;
+          break;
+        }
+      }
+    }
+
+    room.engine = new ArenaEngine(room.config, slotSetups);
+    room.phase = 'PLAYING';
+    room.tickCount = 0;
+    this.broadcastHostRoomState();
+
+    const initialWorld = room.engine.toWorldSyncState();
+    this.onWorld(initialWorld);
+    for (const member of room.members.values()) {
+      if (!member.conn.open) continue;
+      try {
+        member.conn.send({ type: 'game_state', world: initialWorld });
+      } catch {
+        // Ignore
+      }
+    }
+
+    const dt = 1 / 60;
+    room.tickTimer = setInterval(() => {
+      if (!this.hostRoom || this.hostRoom !== room || !room.engine || room.phase !== 'PLAYING') {
+        this.stopHostLoop();
+        return;
+      }
+
+      room.engine.update(dt);
+      room.tickCount += 1;
+
+      if (room.engine.winnerId !== null) {
+        const finalWorld = room.engine.toWorldSyncState();
+        this.onWorld(finalWorld);
+        for (const member of room.members.values()) {
+          if (!member.conn.open) continue;
+          try {
+            member.conn.send({ type: 'game_state', world: finalWorld });
+          } catch {
+            // Ignore
+          }
+        }
+        room.phase = 'GAME_OVER';
+        this.broadcastHostRoomState();
+        this.stopHostLoop();
+        return;
+      }
+
+      if (room.tickCount % 2 === 0) {
+        const world = room.engine.toWorldSyncState();
+        this.onWorld(world);
+        for (const member of room.members.values()) {
+          if (!member.conn.open) continue;
+          try {
+            member.conn.send({ type: 'game_state', world });
+          } catch {
+            // Ignore
+          }
+        }
+      }
+    }, 1000 / 60);
   }
 
   public returnToLobby() {
-    this.send({ type: 'return_to_lobby' });
+    if (this.role !== 'host' || !this.hostRoom) return;
+    this.stopHostLoop();
+    this.hostRoom.engine = null;
+    this.hostRoom.phase = 'LOBBY';
+    this.broadcastHostRoomState();
   }
-
-  public leaveRoom() {
-    this.send({ type: 'leave_room' });
-  }
-
-  private lastSentActive = false;
-  private lastSentMoveAngle: number | undefined = undefined;
 
   public sendJoystickInput(active: boolean, angle: number, magnitude: number, moveAngle?: number) {
+    if (this.role === 'host') {
+      const room = this.hostRoom;
+      if (!room?.engine || room.phase !== 'PLAYING') return;
+      room.engine.setRemoteInput(room.hostSlot, active, angle, magnitude, moveAngle);
+      return;
+    }
+
+    if (this.role !== 'guest' || !this.guestConn?.open) return;
     const now = performance.now();
     const stateChanged =
       active !== this.lastSentActive ||
       (moveAngle !== undefined &&
         (this.lastSentMoveAngle === undefined || Math.abs(moveAngle - this.lastSentMoveAngle) > 0.05));
-    if (!stateChanged && now - this.lastInputSentAt < 24) return; // ~42Hz cap while steady
+    if (!stateChanged && now - this.lastInputSentAt < 24) return;
     this.lastInputSentAt = now;
     this.lastSentActive = active;
     this.lastSentMoveAngle = moveAngle;
-    this.send({ type: 'joystick_input', active, angle, magnitude, moveAngle });
+
+    try {
+      this.guestConn.send({ type: 'joystick_input', active, angle, magnitude, moveAngle });
+    } catch {
+      // Ignore
+    }
   }
 
   public sendJoystickRelease() {
-    this.send({ type: 'joystick_release' });
+    if (this.role === 'host') {
+      const room = this.hostRoom;
+      if (!room?.engine || room.phase !== 'PLAYING') return;
+      room.engine.releaseRemoteJoystick(room.hostSlot);
+      return;
+    }
+
+    if (this.role !== 'guest' || !this.guestConn?.open) return;
+    try {
+      this.guestConn.send({ type: 'joystick_release' });
+    } catch {
+      // Ignore
+    }
   }
 
   public sendShootAction() {
-    this.send({ type: 'shoot_action' });
+    if (this.role === 'host') {
+      const room = this.hostRoom;
+      if (!room?.engine || room.phase !== 'PLAYING') return;
+      room.engine.firePlayerShot(room.hostSlot);
+      return;
+    }
+
+    if (this.role !== 'guest' || !this.guestConn?.open) return;
+    try {
+      this.guestConn.send({ type: 'shoot_action' });
+    } catch {
+      // Ignore
+    }
   }
 }
