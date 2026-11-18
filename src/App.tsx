@@ -4,6 +4,7 @@ import { GameOverModal } from './components/GameOverModal';
 import { OnlineLobbyScreen } from './components/OnlineLobbyScreen';
 import { PlayerHealthBar } from './components/PlayerHealthBar';
 import { TitleScreen } from './components/TitleScreen';
+import { TouchControls } from './components/TouchControls';
 import { ArenaEngine } from './game/engine';
 import { ARENA_MAPS } from './game/maps';
 import {
@@ -127,7 +128,11 @@ export default function App() {
   const [muted, setMuted] = useState(false);
   const [hasUsedJoystick, setHasUsedJoystick] = useState(false);
   const [controlScheme, setControlScheme] = useState<ControlScheme>(() => {
-    if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches) {
+    if (
+      typeof window !== 'undefined' &&
+      (window.matchMedia?.('(pointer: coarse)').matches ||
+        ('ontouchstart' in window && window.innerWidth < 1024))
+    ) {
       return 'DRAG_STICK';
     }
     return 'CURSOR_SPACE';
@@ -204,7 +209,9 @@ export default function App() {
         setOnlineConnecting(false);
         setOnlineError(null);
         setRoomState(room);
+        roomStateRef.current = room;
         setIsOnline(true);
+        isOnlineRef.current = true;
         if (room.phase === 'LOBBY') {
           onlineWorldRef.current = null;
           cameraRef.current.initialized = false;
@@ -396,8 +403,8 @@ export default function App() {
 
     const updateSize = () => {
       const rect = stage.getBoundingClientRect();
-      const width = Math.max(200, Math.floor(rect.width));
-      const height = Math.max(200, Math.floor(rect.height));
+      const width = Math.max(100, Math.floor(rect.width));
+      const height = Math.max(100, Math.floor(rect.height));
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
       canvas.width = Math.floor(width * dpr);
@@ -586,6 +593,7 @@ export default function App() {
             {
               controlScheme: controlSchemeRef.current,
               cursorScreen: cursorScreenRef.current,
+              hideJoystick: controlSchemeRef.current === 'DRAG_STICK',
             }
           );
           ctx.restore();
@@ -614,94 +622,33 @@ export default function App() {
     if (gameState !== 'PLAYING') return;
     sound.unlock();
 
-    // Auto-switch to Drag Stick if player taps with a touchscreen without wiping this drag
+    // Auto-switch to stationary TouchControls if user taps with a touchscreen
     if (e.pointerType === 'touch' && controlSchemeRef.current !== 'DRAG_STICK') {
       controlSchemeRef.current = 'DRAG_STICK';
       engineRef.current.setControlScheme('DRAG_STICK');
       cursorScreenRef.current = null;
       pressedKeysRef.current.clear();
       setControlScheme('DRAG_STICK');
+      return;
     }
 
     if (controlSchemeRef.current === 'CURSOR_SPACE') {
       const pt = getCanvasPoint(e);
       cursorScreenRef.current = pt;
       if (!hasUsedJoystick) setHasUsedJoystick(true);
-      return;
-    }
-
-    e.preventDefault();
-    e.currentTarget.setPointerCapture(e.pointerId);
-    const pt = getCanvasPoint(e);
-    if (!hasUsedJoystick) setHasUsedJoystick(true);
-    const stickRadius = e.pointerType === 'touch' ? 46 : 64;
-
-    if (isOnline) {
-      const j = onlineJoystickRef.current;
-      j.maxRadius = stickRadius;
-      j.active = true;
-      j.pointerId = e.pointerId;
-      j.originX = pt.x;
-      j.originY = pt.y;
-      j.currentX = pt.x;
-      j.currentY = pt.y;
-      j.magnitude = 0;
-      clientRef.current?.sendJoystickInput(true, j.angle, 0);
-    } else {
-      engineRef.current.joystick.maxRadius = stickRadius;
-      engineRef.current.startJoystick(e.pointerId, pt.x, pt.y);
     }
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (gameState !== 'PLAYING') return;
-    const pt = getCanvasPoint(e);
-
     if (controlSchemeRef.current === 'CURSOR_SPACE') {
-      cursorScreenRef.current = pt;
+      cursorScreenRef.current = getCanvasPoint(e);
       if (!hasUsedJoystick) setHasUsedJoystick(true);
-      return;
-    }
-
-    if (isOnline) {
-      const j = onlineJoystickRef.current;
-      if (!j.active || j.pointerId !== e.pointerId) return;
-      const rawDx = pt.x - j.originX;
-      const rawDy = pt.y - j.originY;
-      const rawDist = Math.hypot(rawDx, rawDy);
-      const clampedDist = Math.min(rawDist, j.maxRadius);
-      const angle = rawDist > 0.001 ? Math.atan2(rawDy, rawDx) : j.angle;
-
-      j.currentX = j.originX + Math.cos(angle) * clampedDist;
-      j.currentY = j.originY + Math.sin(angle) * clampedDist;
-      j.magnitude = clampedDist / j.maxRadius;
-      j.angle = angle;
-      j.dx = Math.cos(angle) * j.magnitude;
-      j.dy = Math.sin(angle) * j.magnitude;
-      clientRef.current?.sendJoystickInput(true, angle, j.magnitude);
-    } else {
-      engineRef.current.moveJoystick(e.pointerId, pt.x, pt.y);
     }
   };
 
-  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (controlSchemeRef.current === 'CURSOR_SPACE') return;
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    }
-
-    if (isOnline) {
-      const j = onlineJoystickRef.current;
-      if (!j.active || j.pointerId !== e.pointerId) return;
-      j.active = false;
-      j.pointerId = null;
-      j.magnitude = 0;
-      j.dx = 0;
-      j.dy = 0;
-      clientRef.current?.sendJoystickRelease();
-    } else {
-      engineRef.current.releaseJoystick(e.pointerId);
-    }
+  const handlePointerUp = () => {
+    // Stationary TouchControls handles its own pointer capture & release
   };
 
   const handlePointerLeave = () => {
@@ -738,6 +685,8 @@ export default function App() {
 
   const activeConfig = isOnline && roomState ? roomState.config : config;
   const isHost = isOnline && roomState ? roomState.mySlot === roomState.hostSlot : true;
+  const localSlot = isOnline && roomState ? roomState.mySlot : 0;
+  const localSnap = snapshot.players.find((p) => p.id === localSlot);
 
   const p0 = snapshot.players.find((p) => p.id === 0);
   const p1 = snapshot.players.find((p) => p.id === 1);
@@ -747,8 +696,8 @@ export default function App() {
   return (
     <div className="h-dvh w-screen flex flex-col bg-[#0B1120] overflow-hidden">
       {/* Top Bar */}
-      <header className="h-12 sm:h-14 shrink-0 border-b border-slate-800/90 bg-[#0F172A] px-3 sm:px-6 flex items-center justify-between gap-3">
-        <span className="font-display text-base sm:text-lg font-extrabold tracking-tight text-slate-50 whitespace-nowrap shrink-0">
+      <header className="h-11 sm:h-14 shrink-0 border-b border-slate-800/90 bg-[#0F172A] px-2.5 sm:px-6 flex items-center justify-between gap-2 sm:gap-3">
+        <span className="font-display text-sm sm:text-lg font-extrabold tracking-tight text-slate-50 whitespace-nowrap shrink-0">
           Trickshot Tussle
         </span>
 
@@ -845,27 +794,7 @@ export default function App() {
       </header>
 
       {/* Main Arena Stage with Side Health Bars */}
-      <main className="flex-1 min-h-0 flex flex-col lg:flex-row items-stretch gap-3 p-3 sm:p-4">
-        {/* Compact Top Strip on Mobile/Tablet */}
-        <div className="grid grid-cols-2 gap-2 lg:hidden shrink-0">
-          {p0 && (
-            <PlayerHealthBar
-              player={p0}
-              mode={activeConfig.mode}
-              targetKills={activeConfig.targetKills}
-              align="left"
-            />
-          )}
-          {p1 && (
-            <PlayerHealthBar
-              player={p1}
-              mode={activeConfig.mode}
-              targetKills={activeConfig.targetKills}
-              align="right"
-            />
-          )}
-        </div>
-
+      <main className="flex-1 min-h-0 flex flex-col lg:flex-row items-stretch p-0 lg:p-4 lg:gap-3">
         {/* Left Side Health Bars (Desktop) */}
         <aside className="hidden lg:flex w-56 shrink-0 flex-col justify-between gap-4 py-1">
           {p0 ? (
@@ -880,7 +809,7 @@ export default function App() {
           )}
           <div className="rounded-xl border border-slate-800/80 bg-[#0F172A]/80 p-3.5 text-xs text-slate-400 space-y-2">
             <div className="font-semibold text-slate-200">
-              {controlScheme === 'CURSOR_SPACE' ? 'WASD + Aim' : 'Drag Joystick'}
+              {controlScheme === 'CURSOR_SPACE' ? 'WASD + Aim' : 'Touch Stick'}
             </div>
             {controlScheme === 'CURSOR_SPACE' ? (
               <>
@@ -894,10 +823,10 @@ export default function App() {
             ) : (
               <>
                 <p className="leading-relaxed">
-                  Press and drag anywhere to steer. Speed scales smoothly from 0 to max by drag distance.
+                  Use the stationary left joystick to move &amp; aim. Speed scales smoothly by thumb distance.
                 </p>
                 <p className="leading-relaxed">
-                  Release the joystick to shoot in your facing direction.
+                  Release the joystick to shoot.
                 </p>
               </>
             )}
@@ -914,10 +843,10 @@ export default function App() {
           )}
         </aside>
 
-        {/* Center Game Canvas */}
+        {/* Center Game Canvas (Full-Screen on Mobile/Tablet) */}
         <div
           ref={stageRef}
-          className="relative flex-1 min-w-0 min-h-0 rounded-2xl border border-slate-800 bg-[#070B14] overflow-hidden"
+          className="relative flex-1 min-w-0 min-h-0 rounded-none lg:rounded-2xl border-0 lg:border border-slate-800 bg-[#070B14] overflow-hidden"
         >
           <canvas
             ref={canvasRef}
@@ -931,11 +860,83 @@ export default function App() {
             }`}
           />
 
-          {!hasUsedJoystick && gameState === 'PLAYING' && (
+          {/* Compact Side-Corner Mini Health Bars for Phone/Tablet */}
+          <div className="pointer-events-none absolute top-2 left-2 right-2 flex items-start justify-between gap-2 lg:hidden z-10">
+            <div className="flex flex-col gap-1.5 w-28 sm:w-36">
+              {p0 && (
+                <PlayerHealthBar
+                  player={p0}
+                  mode={activeConfig.mode}
+                  targetKills={activeConfig.targetKills}
+                  align="left"
+                  compact
+                />
+              )}
+              {p2 && (
+                <PlayerHealthBar
+                  player={p2}
+                  mode={activeConfig.mode}
+                  targetKills={activeConfig.targetKills}
+                  align="left"
+                  compact
+                />
+              )}
+            </div>
+            <div className="flex flex-col gap-1.5 w-28 sm:w-36">
+              {p1 && (
+                <PlayerHealthBar
+                  player={p1}
+                  mode={activeConfig.mode}
+                  targetKills={activeConfig.targetKills}
+                  align="right"
+                  compact
+                />
+              )}
+              {p3 && (
+                <PlayerHealthBar
+                  player={p3}
+                  mode={activeConfig.mode}
+                  targetKills={activeConfig.targetKills}
+                  align="right"
+                  compact
+                />
+              )}
+            </div>
+          </div>
+
+          {/* Stationary Left-Side Joystick (Release to Shoot) */}
+          {controlScheme === 'DRAG_STICK' && gameState === 'PLAYING' && (
+            <TouchControls
+              ammo={localSnap?.ammo ?? 0}
+              stunned={(localSnap?.stunTimer ?? 0) > 0}
+              alive={localSnap?.alive ?? true}
+              onStickChange={(active, angle, magnitude) => {
+                sound.unlock();
+                if (!hasUsedJoystick) setHasUsedJoystick(true);
+                if (isOnlineRef.current) {
+                  onlineJoystickRef.current.active = active;
+                  onlineJoystickRef.current.angle = angle;
+                  onlineJoystickRef.current.magnitude = magnitude;
+                  clientRef.current?.sendJoystickInput(active, angle, magnitude);
+                } else {
+                  engineRef.current.setJoystickVector(active, angle, magnitude);
+                }
+              }}
+              onStickRelease={() => {
+                sound.unlock();
+                if (!hasUsedJoystick) setHasUsedJoystick(true);
+                if (isOnlineRef.current) {
+                  clientRef.current?.sendJoystickRelease();
+                } else {
+                  engineRef.current.firePlayerShot(0);
+                }
+              }}
+            />
+          )}
+
+          {!hasUsedJoystick && gameState === 'PLAYING' && controlScheme === 'CURSOR_SPACE' && (
             <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 rounded-lg border border-slate-700/80 bg-slate-950/85 px-4 py-2 text-xs font-medium text-slate-200 whitespace-nowrap shadow-lg">
-              {controlScheme === 'CURSOR_SPACE'
-                ? 'WASD to move (Shift to creep) · Cursor to aim · Spacebar to shoot'
-                : 'Drag anywhere to move & aim · Release to shoot'}
+              WASD to move (Shift to creep) · Cursor to aim · Spacebar to shoot
             </div>
           )}
         </div>
@@ -986,28 +987,6 @@ export default function App() {
             <div />
           )}
         </aside>
-
-        {/* Compact Bottom Strip on Mobile/Tablet */}
-        {(p2 || p3) && (
-          <div className="grid grid-cols-2 gap-2 lg:hidden shrink-0">
-            {p2 && (
-              <PlayerHealthBar
-                player={p2}
-                mode={activeConfig.mode}
-                targetKills={activeConfig.targetKills}
-                align="left"
-              />
-            )}
-            {p3 && (
-              <PlayerHealthBar
-                player={p3}
-                mode={activeConfig.mode}
-                targetKills={activeConfig.targetKills}
-                align="right"
-              />
-            )}
-          </div>
-        )}
       </main>
 
       {/* Pause Overlay (Solo only) */}

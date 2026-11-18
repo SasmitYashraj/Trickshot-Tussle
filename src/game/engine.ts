@@ -276,6 +276,17 @@ export class ArenaEngine {
     this.joystick.dy = Math.sin(angle) * this.joystick.magnitude;
   }
 
+  public setJoystickVector(active: boolean, angle: number, magnitude: number, pointerId: number | null = null) {
+    this.joystick.active = active;
+    this.joystick.pointerId = active ? pointerId : null;
+    const mag = clamp(Number.isFinite(magnitude) ? magnitude : 0, 0, 1);
+    const safeAngle = Number.isFinite(angle) ? angle : this.joystick.angle;
+    this.joystick.angle = safeAngle;
+    this.joystick.magnitude = active ? mag : 0;
+    this.joystick.dx = active ? Math.cos(safeAngle) * mag : 0;
+    this.joystick.dy = active ? Math.sin(safeAngle) * mag : 0;
+  }
+
   public setControlScheme(scheme: ControlScheme) {
     this.controlScheme = scheme;
     this.joystick.active = false;
@@ -334,7 +345,7 @@ export class ArenaEngine {
     if (!player) return;
     player.remoteActive = active;
     if (Number.isFinite(angle)) player.remoteAngle = angle;
-    if (moveAngle !== undefined && Number.isFinite(moveAngle)) {
+    if (typeof moveAngle === 'number' && Number.isFinite(moveAngle)) {
       player.remoteMoveAngle = moveAngle;
       player.remoteAimActive = true;
     } else {

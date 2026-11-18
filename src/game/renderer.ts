@@ -67,6 +67,7 @@ export interface CameraState {
 export interface CursorOverlayState {
   controlScheme?: ControlScheme;
   cursorScreen?: { x: number; y: number } | null;
+  hideJoystick?: boolean;
 }
 
 export function getArenaViewTransform(
@@ -1740,7 +1741,7 @@ export function renderArena(
     ctx.arc(cxPt, cyPt, 2.2, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
-  } else if (joystick.active) {
+  } else if (joystick.active && !cursorOverlay?.hideJoystick) {
     ctx.save();
 
     ctx.fillStyle = 'rgba(15, 23, 42, 0.42)';

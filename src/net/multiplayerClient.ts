@@ -92,7 +92,16 @@ export class MultiplayerClient {
 
   private lastInputSentAt = 0;
   private lastSentActive = false;
+  private lastSentMagnitude = 0;
+  private lastSentAngle = 0;
   private lastSentMoveAngle: number | undefined = undefined;
+  private pendingInputTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingInput: {
+    active: boolean;
+    angle: number;
+    magnitude: number;
+    moveAngle?: number;
+  } | null = null;
 
   constructor(handlers: {
     onRoom: RoomHandler;
@@ -166,8 +175,15 @@ export class MultiplayerClient {
     this.role = 'idle';
     this.guestJoined = false;
     this.lastSentActive = false;
+    this.lastSentMagnitude = 0;
+    this.lastSentAngle = 0;
     this.lastSentMoveAngle = undefined;
     this.lastInputSentAt = 0;
+    this.pendingInput = null;
+    if (this.pendingInputTimer) {
+      clearTimeout(this.pendingInputTimer);
+      this.pendingInputTimer = null;
+    }
   }
 
   public disconnect() {
@@ -346,13 +362,15 @@ export class MultiplayerClient {
       } else if (type === 'joystick_input') {
         const room = this.hostRoom;
         if (!room.engine || room.phase !== 'PLAYING') return;
-        room.engine.setRemoteInput(
-          assignedSlot,
-          Boolean(msg.active),
-          Number(msg.angle ?? 0),
-          Number(msg.magnitude ?? 0),
-          msg.moveAngle !== undefined ? Number(msg.moveAngle) : undefined
-        );
+        const angle =
+          typeof msg.angle === 'number' && Number.isFinite(msg.angle) ? msg.angle : 0;
+        const magnitude =
+          typeof msg.magnitude === 'number' && Number.isFinite(msg.magnitude) ? msg.magnitude : 0;
+        const moveAngle =
+          typeof msg.moveAngle === 'number' && Number.isFinite(msg.moveAngle)
+            ? msg.moveAngle
+            : undefined;
+        room.engine.setRemoteInput(assignedSlot, Boolean(msg.active), angle, magnitude, moveAngle);
       } else if (type === 'joystick_release') {
         const room = this.hostRoom;
         if (!room.engine || room.phase !== 'PLAYING') return;
@@ -648,6 +666,45 @@ export class MultiplayerClient {
     this.broadcastHostRoomState();
   }
 
+  private transmitGuestJoystickInput(
+    active: boolean,
+    angle: number,
+    magnitude: number,
+    moveAngle?: number
+  ) {
+    if (!this.guestConn?.open) return;
+    this.lastInputSentAt = performance.now();
+    this.lastSentActive = active;
+    this.lastSentMagnitude = magnitude;
+    this.lastSentAngle = angle;
+    this.lastSentMoveAngle = moveAngle;
+    this.pendingInput = null;
+    if (this.pendingInputTimer) {
+      clearTimeout(this.pendingInputTimer);
+      this.pendingInputTimer = null;
+    }
+    try {
+      const payload: {
+        type: 'joystick_input';
+        active: boolean;
+        angle: number;
+        magnitude: number;
+        moveAngle?: number;
+      } = {
+        type: 'joystick_input',
+        active,
+        angle,
+        magnitude,
+      };
+      if (typeof moveAngle === 'number' && Number.isFinite(moveAngle)) {
+        payload.moveAngle = moveAngle;
+      }
+      this.guestConn.send(payload);
+    } catch {
+      // Ignore
+    }
+  }
+
   public sendJoystickInput(active: boolean, angle: number, magnitude: number, moveAngle?: number) {
     if (this.role === 'host') {
       const room = this.hostRoom;
@@ -658,23 +715,44 @@ export class MultiplayerClient {
 
     if (this.role !== 'guest' || !this.guestConn?.open) return;
     const now = performance.now();
-    const stateChanged =
+    const angleDelta = Math.abs(
+      Math.atan2(Math.sin(angle - this.lastSentAngle), Math.cos(angle - this.lastSentAngle))
+    );
+    const criticalChange =
       active !== this.lastSentActive ||
-      (moveAngle !== undefined &&
-        (this.lastSentMoveAngle === undefined || Math.abs(moveAngle - this.lastSentMoveAngle) > 0.05));
-    if (!stateChanged && now - this.lastInputSentAt < 24) return;
-    this.lastInputSentAt = now;
-    this.lastSentActive = active;
-    this.lastSentMoveAngle = moveAngle;
+      (this.lastSentMagnitude <= 0.08 && magnitude > 0.08) ||
+      (active && angleDelta > 0.35) ||
+      (typeof moveAngle === 'number' &&
+        (this.lastSentMoveAngle === undefined || Math.abs(moveAngle - this.lastSentMoveAngle) > 0.08));
 
-    try {
-      this.guestConn.send({ type: 'joystick_input', active, angle, magnitude, moveAngle });
-    } catch {
-      // Ignore
+    const elapsed = now - this.lastInputSentAt;
+    if (criticalChange || elapsed >= 22) {
+      this.transmitGuestJoystickInput(active, angle, magnitude, moveAngle);
+      return;
+    }
+
+    // Trailing flush guarantees final steady-hold magnitude/angle always reaches the host
+    this.pendingInput = { active, angle, magnitude, moveAngle };
+    if (!this.pendingInputTimer) {
+      this.pendingInputTimer = setTimeout(() => {
+        this.pendingInputTimer = null;
+        if (this.pendingInput && this.role === 'guest' && this.guestConn?.open) {
+          const next = this.pendingInput;
+          this.transmitGuestJoystickInput(next.active, next.angle, next.magnitude, next.moveAngle);
+        }
+      }, Math.max(4, 22 - elapsed));
     }
   }
 
   public sendJoystickRelease() {
+    this.pendingInput = null;
+    if (this.pendingInputTimer) {
+      clearTimeout(this.pendingInputTimer);
+      this.pendingInputTimer = null;
+    }
+    this.lastSentActive = false;
+    this.lastSentMagnitude = 0;
+
     if (this.role === 'host') {
       const room = this.hostRoom;
       if (!room?.engine || room.phase !== 'PLAYING') return;
