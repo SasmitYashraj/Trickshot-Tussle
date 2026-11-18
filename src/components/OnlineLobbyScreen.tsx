@@ -1,0 +1,336 @@
+import { Check, Copy, LogOut, Play, Users } from 'lucide-react';
+import { useState } from 'react';
+import { IMMERSIVE_MAP_LIST, SOLO_MAP_LIST } from '../game/maps';
+import type { BotDifficulty, MapId, MatchConfig, MatchMode, OnlineRoomState } from '../game/types';
+
+interface OnlineLobbyScreenProps {
+  room: OnlineRoomState;
+  errorMessage: string | null;
+  onUpdateConfig: (config: MatchConfig) => void;
+  onStartMatch: () => void;
+  onLeave: () => void;
+}
+
+export function OnlineLobbyScreen({
+  room,
+  errorMessage,
+  onUpdateConfig,
+  onStartMatch,
+  onLeave,
+}: OnlineLobbyScreenProps) {
+  const [copied, setCopied] = useState(false);
+  const isHost = room.mySlot === room.hostSlot;
+  const occupiedCount = room.slots.filter((s) => s.occupied).length;
+  const activePlayerCount = room.slots.filter((s) => s.occupied || s.isBot).length;
+
+  const copyInviteLink = async () => {
+    const url = `${window.location.origin}/?room=${room.code}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      // Fallback ignored in restricted clipboard contexts
+    }
+  };
+
+  const setMode = (mode: MatchMode) => onUpdateConfig({ ...room.config, mode });
+  const setArenaView = (immersive: boolean) => {
+    if (immersive === room.config.immersive) return;
+    const nextMapId = immersive ? IMMERSIVE_MAP_LIST[0].id : SOLO_MAP_LIST[0].id;
+    onUpdateConfig({
+      ...room.config,
+      immersive,
+      mapId: nextMapId,
+      extraDark: immersive ? room.config.extraDark : false,
+    });
+  };
+  const setMap = (mapId: MapId) => onUpdateConfig({ ...room.config, mapId });
+  const setDifficulty = (difficulty: BotDifficulty) => onUpdateConfig({ ...room.config, difficulty });
+  const toggleFillBots = () =>
+    onUpdateConfig({ ...room.config, fillBots: !(room.config.fillBots ?? true) });
+
+  const availableMaps = room.config.immersive ? IMMERSIVE_MAP_LIST : SOLO_MAP_LIST;
+
+  return (
+    <div className="h-full w-full overflow-y-auto flex items-center justify-center p-4 sm:p-6 bg-[#0B1120]">
+      <div className="w-full max-w-4xl rounded-2xl border border-slate-800 bg-[#111A2C] p-6 sm:p-8 shadow-2xl">
+        {/* Header Row */}
+        <div className="flex flex-wrap items-center justify-between gap-4 pb-5 border-b border-slate-800">
+          <div>
+            <div className="flex items-center gap-2.5 text-xs text-sky-400 font-semibold">
+              <Users className="w-4 h-4" />
+              <span>
+                Trickshot Tussle Online ·{' '}
+                {room.config.immersive ? 'Immersive Camera & Vignette' : 'Normal Full Arena'}
+              </span>
+            </div>
+            <div className="mt-1 flex items-baseline gap-3">
+              <h1 className="font-display text-2xl sm:text-3xl font-extrabold text-slate-50">
+                Room Code:{' '}
+                <span className="font-mono-tabular tracking-widest text-sky-400">{room.code}</span>
+              </h1>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={copyInviteLink}
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 px-3.5 py-2 text-xs font-semibold text-slate-100 transition-colors cursor-pointer whitespace-nowrap"
+            >
+              {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+              {copied ? 'Invite Link Copied' : 'Copy Invite Link'}
+            </button>
+            <button
+              type="button"
+              onClick={onLeave}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900 hover:bg-slate-800 px-3.5 py-2 text-xs font-semibold text-slate-300 transition-colors cursor-pointer whitespace-nowrap"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              Leave
+            </button>
+          </div>
+        </div>
+
+        {errorMessage && (
+          <div className="mt-4 rounded-xl border border-rose-500/40 bg-rose-950/40 px-4 py-2.5 text-xs text-rose-200">
+            {errorMessage}
+          </div>
+        )}
+
+        <div className="mt-6 flex flex-col lg:flex-row gap-7">
+          {/* Player Slots */}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-semibold text-slate-200">
+                Players ({occupiedCount}/4 Joined)
+              </h2>
+              <span className="text-xs text-slate-400">
+                Share the code or link for friends to join
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {room.slots.map((slot) => {
+                const isMe = slot.slot === room.mySlot;
+                return (
+                  <div
+                    key={slot.slot}
+                    className={`rounded-xl border p-3.5 transition-colors ${
+                      slot.occupied
+                        ? 'bg-[#152136] border-slate-700'
+                        : slot.isBot
+                          ? 'bg-slate-900/70 border-slate-800'
+                          : 'bg-slate-950/50 border-slate-800/60 opacity-60'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span
+                          className="h-3.5 w-3.5 rounded-sm shrink-0 border border-slate-950"
+                          style={{ backgroundColor: slot.color }}
+                        />
+                        <span className="font-display text-sm font-bold text-slate-100 truncate">
+                          {slot.name}
+                        </span>
+                      </div>
+                      <span className="text-[11px] font-medium text-slate-400 whitespace-nowrap">
+                        {isMe ? 'You' : slot.isHost ? 'Host' : slot.occupied ? 'Joined' : slot.isBot ? 'AI Bot' : 'Empty'}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="mt-5 rounded-xl border border-slate-800 bg-slate-900/60 p-4 text-xs text-slate-300 space-y-1.5">
+              <div className="font-semibold text-slate-100">
+                {room.config.immersive ? 'Immersive Mode Rules' : 'Normal Arena Rules'}
+              </div>
+              <p className="text-slate-400 leading-relaxed">
+                {room.config.immersive
+                  ? 'Explore a sprawling 2400×1680 Wooden Mansion or Emerald Grove while the camera tracks your fighter. In Extra Dark mode, sweep your forward flashlight past pushable cardboard cover and furniture while glowing bullets illuminate the floor.'
+                  : 'See the entire 1500×1050 arena at once for pure bank-shot geometry! Push cardboard cover boxes into lanes, shoot TNT or Nitro crates to detonate them early, and time shots carefully—stunned fighters are protected until they get back up.'}
+              </p>
+            </div>
+          </div>
+
+          {/* Match Configuration */}
+          <div className="w-full lg:w-80 shrink-0 flex flex-col gap-4 border-t lg:border-t-0 lg:border-l border-slate-800 pt-6 lg:pt-0 lg:pl-7">
+            <div>
+              <div className="text-xs font-semibold text-slate-400 mb-2">Arena View</div>
+              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-lg bg-slate-900 border border-slate-800">
+                <button
+                  type="button"
+                  disabled={!isHost}
+                  onClick={() => setArenaView(false)}
+                  className={`px-3 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                    !room.config.immersive
+                      ? 'bg-sky-500 text-slate-950'
+                      : 'text-slate-300 hover:text-white'
+                  } ${!isHost ? 'cursor-default' : 'cursor-pointer'}`}
+                >
+                  Normal (Full Map)
+                </button>
+                <button
+                  type="button"
+                  disabled={!isHost}
+                  onClick={() => setArenaView(true)}
+                  className={`px-3 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                    room.config.immersive
+                      ? 'bg-sky-500 text-slate-950'
+                      : 'text-slate-300 hover:text-white'
+                  } ${!isHost ? 'cursor-default' : 'cursor-pointer'}`}
+                >
+                  Immersive Camera
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <div className="text-xs font-semibold text-slate-400 mb-2">
+                {room.config.immersive ? 'Immersive Map' : 'Arena Map'}
+              </div>
+              <div className="flex flex-col gap-1.5">
+                {availableMaps.map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    disabled={!isHost}
+                    onClick={() => setMap(m.id)}
+                    className={`text-left px-3 py-2 rounded-lg border transition-colors ${
+                      room.config.mapId === m.id
+                        ? 'bg-slate-800 border-sky-500/70 text-slate-50'
+                        : 'bg-slate-900/60 border-slate-800 text-slate-300 hover:border-slate-700'
+                    } ${!isHost ? 'opacity-80 cursor-default' : 'cursor-pointer'}`}
+                  >
+                    <div className="text-xs font-semibold">{m.name}</div>
+                    <div className="text-[11px] text-slate-400 mt-0.5 line-clamp-1">{m.description}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {room.config.immersive && (
+              <div>
+                <div className="text-xs font-semibold text-slate-400 mb-2">Lighting Mode</div>
+                <div className="grid grid-cols-2 gap-1.5 p-1 rounded-lg bg-slate-900 border border-slate-800">
+                  <button
+                    type="button"
+                    disabled={!isHost}
+                    onClick={() => onUpdateConfig({ ...room.config, extraDark: false })}
+                    className={`px-3 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                      !room.config.extraDark
+                        ? 'bg-sky-500 text-slate-950'
+                        : 'text-slate-300 hover:text-white'
+                    } ${!isHost ? 'cursor-default' : 'cursor-pointer'}`}
+                  >
+                    Bright Immersive
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!isHost}
+                    onClick={() => onUpdateConfig({ ...room.config, extraDark: true })}
+                    className={`px-3 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                      room.config.extraDark
+                        ? 'bg-amber-400 text-slate-950'
+                        : 'text-slate-300 hover:text-white'
+                    } ${!isHost ? 'cursor-default' : 'cursor-pointer'}`}
+                  >
+                    Extra Dark · Torch
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div>
+              <div className="text-xs font-semibold text-slate-400 mb-2">Match Mode</div>
+              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-lg bg-slate-900 border border-slate-800">
+                <button
+                  type="button"
+                  disabled={!isHost}
+                  onClick={() => setMode('BRAWL')}
+                  className={`px-3 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                    room.config.mode === 'BRAWL'
+                      ? 'bg-sky-500 text-slate-950'
+                      : 'text-slate-300 hover:text-white'
+                  } ${!isHost ? 'cursor-default' : 'cursor-pointer'}`}
+                >
+                  Brawl (8 KOs)
+                </button>
+                <button
+                  type="button"
+                  disabled={!isHost}
+                  onClick={() => setMode('ELIMINATION')}
+                  className={`px-3 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                    room.config.mode === 'ELIMINATION'
+                      ? 'bg-sky-500 text-slate-950'
+                      : 'text-slate-300 hover:text-white'
+                  } ${!isHost ? 'cursor-default' : 'cursor-pointer'}`}
+                >
+                  Last Standing
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2.5">
+              <span className="text-xs font-medium text-slate-200">Fill empty slots with bots</span>
+              <button
+                type="button"
+                disabled={!isHost}
+                onClick={toggleFillBots}
+                className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${
+                  room.config.fillBots ?? true
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                    : 'bg-slate-800 text-slate-400 border border-slate-700'
+                } ${!isHost ? 'opacity-70 cursor-default' : 'cursor-pointer'}`}
+              >
+                {room.config.fillBots ?? true ? 'On' : 'Off'}
+              </button>
+            </div>
+
+            {(room.config.fillBots ?? true) && (
+              <div>
+                <div className="text-xs font-semibold text-slate-400 mb-2">Bot Skill</div>
+                <div className="grid grid-cols-3 gap-1.5 p-1 rounded-lg bg-slate-900 border border-slate-800">
+                  {(['CHILL', 'TACTICAL', 'RUTHLESS'] as BotDifficulty[]).map((level) => (
+                    <button
+                      key={level}
+                      type="button"
+                      disabled={!isHost}
+                      onClick={() => setDifficulty(level)}
+                      className={`px-2 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                        room.config.difficulty === level
+                          ? 'bg-slate-700 text-white'
+                          : 'text-slate-400 hover:text-slate-200'
+                      } ${!isHost ? 'cursor-default' : 'cursor-pointer'}`}
+                    >
+                      {level === 'CHILL' ? 'Chill' : level === 'TACTICAL' ? 'Tactical' : 'Ruthless'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {isHost ? (
+              <button
+                type="button"
+                disabled={activePlayerCount < 2}
+                onClick={onStartMatch}
+                className="mt-1 w-full inline-flex items-center justify-center gap-2 rounded-xl bg-sky-400 hover:bg-sky-300 disabled:opacity-50 px-5 py-3 text-sm font-bold text-slate-950 transition-all cursor-pointer whitespace-nowrap"
+              >
+                <Play className="w-4 h-4 fill-current" />
+                {room.config.immersive ? 'Start Immersive Match' : 'Start Arena Match'}
+              </button>
+            ) : (
+              <div className="mt-1 w-full rounded-xl border border-slate-800 bg-slate-900 px-4 py-3 text-center text-xs font-medium text-slate-300">
+                Waiting for host to start match...
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,8 @@
+{
+  "name": "Trickshot Tussle",
+  "description": "A fast-paced 4-player top-down arena shooter with one-thumb analog joystick movement, release-to-shoot ricochet bullets, volatile Nitros, 3-second TNT crates, and stun mechanics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

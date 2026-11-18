@@ -1,0 +1,149 @@
+import { RotateCcw, SlidersHorizontal, Trophy, Users } from 'lucide-react';
+import type { GameSnapshot } from '../game/types';
+
+interface GameOverModalProps {
+  snapshot: GameSnapshot;
+  isOnline: boolean;
+  isHost: boolean;
+  onPlayAgain: () => void;
+  onBackToMenu: () => void;
+  onReturnToLobby?: () => void;
+}
+
+export function GameOverModal({
+  snapshot,
+  isOnline,
+  isHost,
+  onPlayAgain,
+  onBackToMenu,
+  onReturnToLobby,
+}: GameOverModalProps) {
+  const ranked = [...snapshot.players].sort((a, b) => {
+    if (b.kills !== a.kills) return b.kills - a.kills;
+    if (a.alive !== b.alive) return a.alive ? -1 : 1;
+    return b.damageDealt - a.damageDealt;
+  });
+
+  const winner = snapshot.players.find((p) => p.id === snapshot.winnerId) ?? ranked[0];
+  const humanWon = winner?.isHuman;
+
+  return (
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-950/75 backdrop-blur-sm p-4">
+      <div className="w-full max-w-lg rounded-2xl border border-slate-700/80 bg-[#111A2C] p-6 shadow-2xl">
+        <div className="flex items-center gap-3">
+          <div
+            className="h-11 w-11 rounded-xl flex items-center justify-center border border-slate-700"
+            style={{ backgroundColor: `${winner?.color ?? '#38BDF8'}22` }}
+          >
+            <Trophy className="w-5 h-5" style={{ color: winner?.color ?? '#38BDF8' }} />
+          </div>
+          <div>
+            <h2 className="font-display text-2xl font-extrabold text-slate-50">
+              {humanWon ? 'Victory' : `${winner?.name ?? 'Rival'} Wins`}
+            </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              {snapshot.winnerReason} · {Math.floor(snapshot.elapsedTime)}s match
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-5 overflow-hidden rounded-xl border border-slate-800 bg-slate-900/70">
+          <table className="w-full text-left text-xs">
+            <thead className="border-b border-slate-800 text-slate-400">
+              <tr>
+                <th className="py-2.5 px-3 font-semibold">Player</th>
+                <th className="py-2.5 px-3 font-semibold text-right">KOs</th>
+                <th className="py-2.5 px-3 font-semibold text-right">Deaths</th>
+                <th className="py-2.5 px-3 font-semibold text-right">Damage</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/70">
+              {ranked.map((p) => (
+                <tr key={p.id} className={p.isHuman ? 'bg-sky-500/5' : ''}>
+                  <td className="py-2.5 px-3">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="h-2.5 w-2.5 rounded-sm shrink-0"
+                        style={{ backgroundColor: p.color }}
+                      />
+                      <span className="font-semibold text-slate-100">{p.name}</span>
+                    </div>
+                  </td>
+                  <td className="py-2.5 px-3 text-right font-mono-tabular font-bold text-slate-100">
+                    {p.kills}
+                  </td>
+                  <td className="py-2.5 px-3 text-right font-mono-tabular text-slate-400">
+                    {p.deaths}
+                  </td>
+                  <td className="py-2.5 px-3 text-right font-mono-tabular text-slate-300">
+                    {p.damageDealt}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="mt-6 flex items-center gap-3">
+          {isOnline ? (
+            <>
+              {isHost && (
+                <>
+                  <button
+                    type="button"
+                    onClick={onPlayAgain}
+                    className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl bg-sky-400 hover:bg-sky-300 px-4 py-2.5 text-sm font-bold text-slate-950 transition-colors cursor-pointer whitespace-nowrap"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    Rematch
+                  </button>
+                  {onReturnToLobby && (
+                    <button
+                      type="button"
+                      onClick={onReturnToLobby}
+                      className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-100 transition-colors cursor-pointer whitespace-nowrap"
+                    >
+                      <Users className="w-4 h-4" />
+                      Lobby
+                    </button>
+                  )}
+                </>
+              )}
+              {!isHost && (
+                <div className="flex-1 rounded-xl border border-slate-800 bg-slate-900 px-4 py-2.5 text-center text-xs font-medium text-slate-300">
+                  Waiting for host to start rematch or return to lobby...
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={onBackToMenu}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-800 bg-slate-900 hover:bg-slate-800 px-4 py-2.5 text-sm font-semibold text-slate-300 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                Leave
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={onPlayAgain}
+                className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl bg-sky-400 hover:bg-sky-300 px-4 py-2.5 text-sm font-bold text-slate-950 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <RotateCcw className="w-4 h-4" />
+                Play Again
+              </button>
+              <button
+                type="button"
+                onClick={onBackToMenu}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-800/80 hover:bg-slate-800 px-4 py-2.5 text-sm font-semibold text-slate-200 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <SlidersHorizontal className="w-4 h-4" />
+                Match Setup
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
