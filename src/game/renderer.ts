@@ -6,8 +6,13 @@ import type {
   ControlScheme,
   Explosion,
   FloatingText,
+  FloorLevel,
   IcePit,
   JoystickState,
+  LibraryBookSpot,
+  LibraryMatchState,
+  LibraryMonsterState,
+  LibraryShape,
   MapId,
   Particle,
   Pickup,
@@ -20,6 +25,7 @@ import {
   CARDBOARD_PUNCTURE_FRAME,
   IMMERSIVE_VIEW_HEIGHT,
   IMMERSIVE_VIEW_WIDTH,
+  MONSTER_RADIUS,
   NITRO_BLAST_RADIUS,
   PLAYER_RADIUS,
   TNT_BLAST_RADIUS,
@@ -36,6 +42,8 @@ export interface RenderPlayer {
   vx?: number;
   vy?: number;
   angle: number;
+  floor?: FloorLevel;
+  stairBlend?: number;
   hp: number;
   maxHp: number;
   ammo: number;
@@ -53,6 +61,7 @@ export interface RenderableWorld {
   teamMode?: TeamMode;
   elapsedTime: number;
   screenShake: number;
+  libraryState?: LibraryMatchState;
   players: RenderPlayer[];
   bullets: Bullet[];
   pickups: Pickup[];
@@ -628,6 +637,66 @@ function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
     ctx.beginPath();
     ctx.arc(map.width / 2, map.height / 2, 130, 0, Math.PI * 2);
     ctx.stroke();
+  } else if (map.floorTheme === 'library_wood') {
+    // Rich dark mahogany / walnut planks + olive-moss atrium rugs inspired by DOORS Library
+    ctx.fillStyle = '#241108';
+    ctx.fillRect(0, 0, map.width, map.height);
+
+    const plankH = 34;
+    const plankW = 152;
+    const tones = ['#2E160B', '#381B0D', '#261208', '#3F1E0F', '#2B1409'];
+
+    const rows = Math.ceil(map.height / plankH);
+    for (let r = 0; r < rows; r++) {
+      const y = r * plankH;
+      const rowOffset = (r % 2) * (plankW * 0.5) + (r % 3) * 28;
+      const cols = Math.ceil((map.width + plankW) / plankW) + 1;
+
+      for (let c = -1; c < cols; c++) {
+        const x = c * plankW - rowOffset;
+        const seed = r * 149 + c * 41;
+        const toneIdx = Math.floor(seededRand(seed) * tones.length);
+        ctx.fillStyle = tones[toneIdx];
+        ctx.fillRect(x, y, plankW, plankH);
+
+        // Deep mahogany grain
+        ctx.strokeStyle = 'rgba(14, 5, 2, 0.44)';
+        ctx.lineWidth = 1.1;
+        for (let g = 0; g < 3; g++) {
+          const gy = y + 6 + g * 9 + seededRand(seed + g) * 4;
+          ctx.beginPath();
+          ctx.moveTo(x + 4, gy);
+          ctx.bezierCurveTo(
+            x + plankW * 0.35,
+            gy + (seededRand(seed + g + 10) - 0.5) * 3,
+            x + plankW * 0.7,
+            gy + (seededRand(seed + g + 20) - 0.5) * 3,
+            x + plankW - 4,
+            gy
+          );
+          ctx.stroke();
+        }
+
+        // Warm amber wood sheen highlight
+        ctx.fillStyle = 'rgba(251, 191, 36, 0.045)';
+        ctx.fillRect(x + 1, y + 1, plankW - 2, 2);
+
+        ctx.strokeStyle = 'rgba(10, 4, 1, 0.72)';
+        ctx.lineWidth = 1.3;
+        ctx.strokeRect(x, y, plankW, plankH);
+      }
+    }
+
+    // Muted olive-moss atrium carpets around central reading hall & stair approaches
+    drawPersianRug(ctx, map.width / 2 - 280, map.height / 2 - 220, 560, 440, '#4A562B', '#8E9C52');
+    drawPersianRug(ctx, 735, 620, 260, 145, '#434F27', '#82904A');
+    drawPersianRug(ctx, map.width - 995, 620, 260, 145, '#434F27', '#82904A');
+    drawPersianRug(ctx, 735, map.height - 765, 260, 145, '#434F27', '#82904A');
+    drawPersianRug(ctx, map.width - 995, map.height - 765, 260, 145, '#434F27', '#82904A');
+
+    // Subtle olive-moss side hall runners on Ground Floor
+    drawPersianRug(ctx, 110, map.height / 2 - 140, 260, 280, '#4A562B', '#8E9C52');
+    drawPersianRug(ctx, map.width - 370, map.height / 2 - 140, 260, 280, '#4A562B', '#8E9C52');
   } else {
     // Rich dark espresso/walnut hardwood planks for Manor Foyer & Wooden Mansion
     ctx.fillStyle = '#331A0D';
@@ -702,7 +771,75 @@ function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
   return off;
 }
 
-function drawObstacle(ctx: CanvasRenderingContext2D, wall: WallRect) {
+function getLibraryUpperFloorCanvas(map: ArenaMap): HTMLCanvasElement {
+  const key = `${map.id}_upper_${map.width}x${map.height}_v1`;
+  const existing = floorCache.get(key);
+  if (existing) return existing;
+
+  const off = document.createElement('canvas');
+  off.width = map.width;
+  off.height = map.height;
+  const ctx = off.getContext('2d');
+  if (!ctx) return off;
+
+  const zones = map.upperZones ?? [];
+  ctx.save();
+  ctx.beginPath();
+  for (const z of zones) {
+    ctx.rect(z.x, z.y, z.w, z.h);
+  }
+  ctx.clip();
+
+  // Slightly warmer lit mahogany balcony boards for Upper Mezzanine
+  ctx.fillStyle = '#2B150A';
+  ctx.fillRect(0, 0, map.width, map.height);
+
+  const plankH = 34;
+  const plankW = 152;
+  const tones = ['#361B0D', '#412110', '#2E170B', '#482513', '#32190D'];
+  const rows = Math.ceil(map.height / plankH);
+  for (let r = 0; r < rows; r++) {
+    const y = r * plankH;
+    const rowOffset = (r % 2) * (plankW * 0.5) + (r % 3) * 24;
+    const cols = Math.ceil((map.width + plankW) / plankW) + 1;
+    for (let c = -1; c < cols; c++) {
+      const x = c * plankW - rowOffset;
+      const seed = r * 173 + c * 53;
+      ctx.fillStyle = tones[Math.floor(seededRand(seed) * tones.length)];
+      ctx.fillRect(x, y, plankW, plankH);
+
+      ctx.strokeStyle = 'rgba(14, 5, 2, 0.42)';
+      ctx.lineWidth = 1.1;
+      for (let g = 0; g < 2; g++) {
+        const gy = y + 9 + g * 12;
+        ctx.beginPath();
+        ctx.moveTo(x + 4, gy);
+        ctx.lineTo(x + plankW - 4, gy);
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = 'rgba(253, 224, 71, 0.05)';
+      ctx.fillRect(x + 1, y + 1, plankW - 2, 2);
+
+      ctx.strokeStyle = 'rgba(10, 4, 1, 0.68)';
+      ctx.lineWidth = 1.3;
+      ctx.strokeRect(x, y, plankW, plankH);
+    }
+  }
+
+  // Olive-moss gallery runners along the top/bottom upper bridges & side mezzanine galleries
+  drawPersianRug(ctx, 1180, 72, 640, 104, '#4A562B', '#8E9C52');
+  drawPersianRug(ctx, 1180, map.height - 176, 640, 104, '#4A562B', '#8E9C52');
+  drawPersianRug(ctx, 84, map.height / 2 - 220, 74, 440, '#434F27', '#82904A');
+  drawPersianRug(ctx, map.width - 158, map.height / 2 - 220, 74, 440, '#434F27', '#82904A');
+
+  ctx.restore();
+
+  floorCache.set(key, off);
+  return off;
+}
+
+function drawObstacle(ctx: CanvasRenderingContext2D, wall: WallRect, world?: RenderableWorld) {
   const kind = wall.kind ?? 'metal';
 
   if (
@@ -865,26 +1002,80 @@ function drawObstacle(ctx: CanvasRenderingContext2D, wall: WallRect) {
 
   if (kind === 'bookshelf') {
     ctx.save();
-    ctx.fillStyle = '#451A03';
-    ctx.strokeStyle = '#78350F';
-    ctx.lineWidth = 2;
+    // Deep dark mahogany carved bookcase matching DOORS Library mood
+    ctx.fillStyle = '#1E0C05';
+    ctx.strokeStyle = '#3F1B0B';
+    ctx.lineWidth = 2.2;
     ctx.beginPath();
-    ctx.roundRect(wall.x, wall.y, wall.w, wall.h, 4);
+    ctx.roundRect(wall.x, wall.y, wall.w, wall.h, 3);
     ctx.fill();
     ctx.stroke();
 
-    // Colorful book spines arranged neatly
-    const bookColors = ['#DC2626', '#2563EB', '#059669', '#D97706', '#7C3AED', '#E11D48'];
+    // Recessed dark shadow interior well
+    ctx.fillStyle = '#110602';
+    ctx.fillRect(wall.x + 4, wall.y + 4, wall.w - 8, wall.h - 8);
+
+    // Subtle warm sconce edge catch on top-left mahogany moulding
+    ctx.fillStyle = 'rgba(217, 119, 6, 0.14)';
+    ctx.fillRect(wall.x + 2, wall.y + 1.5, wall.w - 4, 2);
+
+    // Dark antique leather & cloth book spines (low-contrast, atmospheric)
+    const darkBooks = [
+      '#3D1614',
+      '#2C1C14',
+      '#1C2536',
+      '#1B2D22',
+      '#2C192E',
+      '#25201D',
+      '#351D13',
+      '#1E1A18',
+    ];
     const vertical = wall.h > wall.w;
+    const shelfSeed = Math.round(wall.x * 13 + wall.y * 29);
+
     if (vertical) {
-      for (let by = wall.y + 8, idx = 0; by < wall.y + wall.h - 12; by += 11, idx++) {
-        ctx.fillStyle = bookColors[idx % bookColors.length];
-        ctx.fillRect(wall.x + 8, by, wall.w - 16, 8);
+      for (let by = wall.y + 6, idx = 0; by < wall.y + wall.h - 10; by += 8, idx++) {
+        const rnd = seededRand(shelfSeed + idx * 17);
+        const thickness = 5 + Math.floor(rnd * 2.5);
+        const depth = Math.max(8, wall.w - 10 - Math.floor(seededRand(shelfSeed + idx * 31) * 5));
+        // Occasional unpickable dark tome nudged slightly out of the shelf edge
+        const protrude = rnd > 0.87 ? (idx % 2 === 0 ? -3 : 3) : 0;
+        const bx = wall.x + (wall.w - depth) * 0.5 + protrude;
+
+        ctx.fillStyle = darkBooks[(idx + Math.floor(rnd * 5)) % darkBooks.length];
+        ctx.fillRect(bx, by, depth, thickness);
+
+        // Faint tarnished spine band
+        if (idx % 4 === 0) {
+          ctx.fillStyle = 'rgba(217, 179, 108, 0.14)';
+          ctx.fillRect(bx + 2, by + 1, 2, thickness - 2);
+        }
+      }
+      // Carved horizontal shelf dividers
+      ctx.fillStyle = '#2B1207';
+      for (let dy = wall.y + 88; dy < wall.y + wall.h - 28; dy += 90) {
+        ctx.fillRect(wall.x + 2, dy, wall.w - 4, 4);
       }
     } else {
-      for (let bx = wall.x + 8, idx = 0; bx < wall.x + wall.w - 12; bx += 11, idx++) {
-        ctx.fillStyle = bookColors[idx % bookColors.length];
-        ctx.fillRect(bx, wall.y + 8, 8, wall.h - 16);
+      for (let bx = wall.x + 6, idx = 0; bx < wall.x + wall.w - 10; bx += 8, idx++) {
+        const rnd = seededRand(shelfSeed + idx * 19);
+        const thickness = 5 + Math.floor(rnd * 2.5);
+        const depth = Math.max(8, wall.h - 10 - Math.floor(seededRand(shelfSeed + idx * 37) * 5));
+        const protrude = rnd > 0.87 ? (idx % 2 === 0 ? -3 : 3) : 0;
+        const by = wall.y + (wall.h - depth) * 0.5 + protrude;
+
+        ctx.fillStyle = darkBooks[(idx + Math.floor(rnd * 5)) % darkBooks.length];
+        ctx.fillRect(bx, by, thickness, depth);
+
+        if (idx % 4 === 0) {
+          ctx.fillStyle = 'rgba(217, 179, 108, 0.14)';
+          ctx.fillRect(bx + 1, by + 2, thickness - 2, 2);
+        }
+      }
+      // Carved vertical shelf dividers
+      ctx.fillStyle = '#2B1207';
+      for (let dx = wall.x + 88; dx < wall.x + wall.w - 28; dx += 90) {
+        ctx.fillRect(dx, wall.y + 2, 4, wall.h - 4);
       }
     }
     ctx.restore();
@@ -1059,6 +1250,55 @@ function drawObstacle(ctx: CanvasRenderingContext2D, wall: WallRect) {
     return;
   }
 
+  if (kind === 'mezzanine_rail' || kind === 'stair_rail') {
+    ctx.save();
+    // Carved mahogany balustrade matching DOORS Library photo
+    const isVert = wall.h > wall.w;
+    ctx.fillStyle = '#2B1206';
+    ctx.strokeStyle = '#78350F';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.roundRect(wall.x, wall.y, wall.w, wall.h, 3);
+    ctx.fill();
+    ctx.stroke();
+
+    // Brass / warm wood top handrail highlight
+    ctx.fillStyle = '#9A5423';
+    if (isVert) {
+      ctx.fillRect(wall.x + 4, wall.y + 3, wall.w - 8, wall.h - 6);
+    } else {
+      ctx.fillRect(wall.x + 3, wall.y + 4, wall.w - 6, wall.h - 8);
+    }
+
+    // Carved wooden newel posts spaced neatly along rail
+    ctx.fillStyle = '#D97706';
+    ctx.strokeStyle = '#1E0B03';
+    ctx.lineWidth = 1.2;
+    const step = 46;
+    if (isVert) {
+      for (let py = wall.y + 8; py <= wall.y + wall.h - 6; py += step) {
+        ctx.beginPath();
+        ctx.arc(wall.x + wall.w * 0.5, py, 4.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+    } else {
+      for (let px = wall.x + 8; px <= wall.x + wall.w - 6; px += step) {
+        ctx.beginPath();
+        ctx.arc(px, wall.y + wall.h * 0.5, 4.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+    return;
+  }
+
+  if (kind === 'library_pillar') {
+    drawLibraryPillar(ctx, wall, world);
+    return;
+  }
+
   // Default: Brushed steel metal crate / safe
   const grad = ctx.createLinearGradient(wall.x, wall.y, wall.x + wall.w, wall.y + wall.h);
   grad.addColorStop(0, '#64748B');
@@ -1192,6 +1432,802 @@ function tracePoly(ctx: CanvasRenderingContext2D, pts: Array<{ x: number; y: num
     ctx.lineTo(pts[i].x, pts[i].y);
   }
   ctx.closePath();
+}
+
+function drawLibraryShapeGlyph(
+  ctx: CanvasRenderingContext2D,
+  shape: LibraryShape,
+  cx: number,
+  cy: number,
+  r: number,
+  fill: string
+) {
+  ctx.save();
+  ctx.fillStyle = fill;
+  ctx.strokeStyle = '#120702';
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+
+  switch (shape) {
+    case 'circle':
+      ctx.arc(cx, cy, r * 0.85, 0, Math.PI * 2);
+      break;
+    case 'triangle':
+      ctx.moveTo(cx, cy - r * 0.9);
+      ctx.lineTo(cx + r * 0.88, cy + r * 0.78);
+      ctx.lineTo(cx - r * 0.88, cy + r * 0.78);
+      ctx.closePath();
+      break;
+    case 'square':
+      ctx.roundRect(cx - r * 0.78, cy - r * 0.78, r * 1.56, r * 1.56, 2);
+      break;
+    case 'diamond':
+      ctx.moveTo(cx, cy - r * 0.95);
+      ctx.lineTo(cx + r * 0.9, cy);
+      ctx.lineTo(cx, cy + r * 0.95);
+      ctx.lineTo(cx - r * 0.9, cy);
+      ctx.closePath();
+      break;
+    case 'star':
+      for (let i = 0; i < 10; i++) {
+        const a = -Math.PI / 2 + (i * Math.PI) / 5;
+        const rad = i % 2 === 0 ? r * 0.96 : r * 0.44;
+        const px = cx + Math.cos(a) * rad;
+        const py = cy + Math.sin(a) * rad;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      break;
+    case 'pentagon':
+      for (let i = 0; i < 5; i++) {
+        const a = -Math.PI / 2 + (i * Math.PI * 2) / 5;
+        const px = cx + Math.cos(a) * r * 0.92;
+        const py = cy + Math.sin(a) * r * 0.92;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      break;
+    case 'hexagon':
+      for (let i = 0; i < 6; i++) {
+        const a = -Math.PI / 2 + (i * Math.PI) / 3;
+        const px = cx + Math.cos(a) * r * 0.9;
+        const py = cy + Math.sin(a) * r * 0.9;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      break;
+    case 'cross': {
+      const a = r * 0.34;
+      const b = r * 0.88;
+      ctx.moveTo(cx - a, cy - b);
+      ctx.lineTo(cx + a, cy - b);
+      ctx.lineTo(cx + a, cy - a);
+      ctx.lineTo(cx + b, cy - a);
+      ctx.lineTo(cx + b, cy + a);
+      ctx.lineTo(cx + a, cy + a);
+      ctx.lineTo(cx + a, cy + b);
+      ctx.lineTo(cx - a, cy + b);
+      ctx.lineTo(cx - a, cy + a);
+      ctx.lineTo(cx - b, cy + a);
+      ctx.lineTo(cx - b, cy - a);
+      ctx.lineTo(cx - a, cy - a);
+      ctx.closePath();
+      break;
+    }
+  }
+
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawLibraryPillar(ctx: CanvasRenderingContext2D, wall: WallRect, world?: RenderableWorld) {
+  ctx.save();
+  const cx = wall.x + wall.w * 0.5;
+  const cy = wall.y + wall.h * 0.5;
+
+  // Heavy mahogany architectural stone-trimmed monolith
+  const bodyGrad = ctx.createLinearGradient(wall.x, wall.y, wall.x + wall.w, wall.y + wall.h);
+  bodyGrad.addColorStop(0, '#4A1E0D');
+  bodyGrad.addColorStop(0.5, '#2E1107');
+  bodyGrad.addColorStop(1, '#1A0803');
+  ctx.fillStyle = bodyGrad;
+  ctx.strokeStyle = '#9A5B25';
+  ctx.lineWidth = 3.5;
+  ctx.beginPath();
+  ctx.roundRect(wall.x, wall.y, wall.w, wall.h, 12);
+  ctx.fill();
+  ctx.stroke();
+
+  // Molded cornice ledge
+  ctx.fillStyle = '#3B180A';
+  ctx.strokeStyle = 'rgba(245, 158, 11, 0.35)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.roundRect(wall.x + 12, wall.y + 12, wall.w - 24, wall.h - 24, 8);
+  ctx.fill();
+  ctx.stroke();
+
+  // Warm brass corner finials
+  for (const [fx, fy] of [
+    [wall.x + 16, wall.y + 16],
+    [wall.x + wall.w - 16, wall.y + 16],
+    [wall.x + 16, wall.y + wall.h - 16],
+    [wall.x + wall.w - 16, wall.y + wall.h - 16],
+  ]) {
+    const glow = ctx.createRadialGradient(fx, fy, 1, fx, fy, 16);
+    glow.addColorStop(0, 'rgba(253, 224, 71, 0.7)');
+    glow.addColorStop(1, 'rgba(245, 158, 11, 0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(fx, fy, 16, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#F59E0B';
+    ctx.beginPath();
+    ctx.arc(fx, fy, 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 4 Player Escape Doors recessed on N, E, S, W faces of the central pillar
+  const libState = world?.libraryState;
+  const fallbackColors = ['#0EA5E9', '#EF4444', '#FACC15', '#22C55E'];
+  const doors = libState?.doors ?? [
+    { playerId: 0, side: 'W' as const, x: wall.x, y: cy },
+    { playerId: 1, side: 'E' as const, x: wall.x + wall.w, y: cy },
+    { playerId: 2, side: 'N' as const, x: cx, y: wall.y },
+    { playerId: 3, side: 'S' as const, x: cx, y: wall.y + wall.h },
+  ];
+
+  for (const door of doors) {
+    const owner = world?.players.find((p) => p.id === door.playerId);
+    const prog = libState?.playerProgress.find((pp) => pp.playerId === door.playerId);
+    const trimColor = owner?.color ?? fallbackColors[door.playerId % fallbackColors.length];
+    const unlocked = Boolean(prog?.unlocked);
+
+    ctx.save();
+    if (door.side === 'W' || door.side === 'E') {
+      const dx = door.side === 'W' ? wall.x - 4 : wall.x + wall.w - 10;
+      ctx.fillStyle = unlocked ? '#10B981' : '#5C2912';
+      ctx.strokeStyle = trimColor;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.roundRect(dx, cy - 34, 14, 68, 3);
+      ctx.fill();
+      ctx.stroke();
+
+      // Door brass lock plate
+      ctx.fillStyle = unlocked ? '#A7F3D0' : '#FBBF24';
+      ctx.beginPath();
+      ctx.arc(dx + 7, cy + 16, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      const dy = door.side === 'N' ? wall.y - 4 : wall.y + wall.h - 10;
+      ctx.fillStyle = unlocked ? '#10B981' : '#5C2912';
+      ctx.strokeStyle = trimColor;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.roundRect(cx - 34, dy, 68, 14, 3);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = unlocked ? '#A7F3D0' : '#FBBF24';
+      ctx.beginPath();
+      ctx.arc(cx + 16, dy + 7, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // Top Parchment Tablet displaying the 1..5 Cipher Sequence visible from all sides
+  ctx.fillStyle = '#140804';
+  ctx.strokeStyle = 'rgba(251, 191, 36, 0.45)';
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.roundRect(cx - 72, cy - 78, 144, 156, 7);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = '#FCD34D';
+  ctx.font = '800 11px "Outfit", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('CIPHER', cx, cy - 64);
+
+  const seq = libState?.pillarSequence ?? ['square', 'circle', 'triangle', 'diamond', 'star'];
+  for (let i = 0; i < Math.min(5, seq.length); i++) {
+    const rowY = cy - 42 + i * 26;
+    ctx.fillStyle = 'rgba(251, 191, 36, 0.1)';
+    ctx.beginPath();
+    ctx.roundRect(cx - 58, rowY - 11, 116, 22, 4);
+    ctx.fill();
+
+    ctx.fillStyle = '#FDE68A';
+    ctx.font = '800 13px "JetBrains Mono", monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${i + 1}.`, cx - 44, rowY + 0.5);
+
+    drawLibraryShapeGlyph(ctx, seq[i], cx + 22, rowY, 9.5, '#FACC15');
+  }
+
+  ctx.restore();
+}
+
+function drawLibraryStairs(
+  ctx: CanvasRenderingContext2D,
+  map: ArenaMap,
+  world: RenderableWorld,
+  libraryBlend: number
+) {
+  const stairs = map.stairs ?? [];
+  if (stairs.length === 0) return;
+
+  const lights = getConeLightSources(map);
+
+  ctx.save();
+  for (const st of stairs) {
+    // Deep recessed stairwell pit backdrop
+    ctx.fillStyle = '#070302';
+    ctx.strokeStyle = '#4F240D';
+    ctx.lineWidth = 2.6;
+    ctx.fillRect(st.x, st.y, st.w, st.h);
+    ctx.strokeRect(st.x, st.y, st.w, st.h);
+
+    const vertical = st.upDir === 'up' || st.upDir === 'down';
+    const steps = 11;
+
+    if (vertical) {
+      const stepH = st.h / steps;
+      for (let i = 0; i < steps; i++) {
+        // elev = 0 at Ground Floor, 1 at Upper Mezzanine
+        const t = (i + 0.5) / steps;
+        const elev = st.upDir === 'up' ? 1 - t : t;
+        // Perspective depth: steps farther from viewer's current floor appear narrower & recessed
+        const depthFromViewer = Math.abs(elev - libraryBlend);
+        const sideInset = 6 + depthFromViewer * 14;
+        const sy = st.y + i * stepH;
+
+        // Sconce lighting intensity on this step
+        const sxCenter = st.x + st.w * 0.5;
+        const syCenter = sy + stepH * 0.5;
+        let lampWarmth = 0;
+        for (const l of lights) {
+          const d = Math.hypot(sxCenter - l.x, syCenter - l.y);
+          if (d < 520) lampWarmth = Math.max(lampWarmth, 1 - d / 520);
+        }
+
+        const lightLevel = Math.max(0.08, (1 - depthFromViewer * 0.86) * (0.68 + lampWarmth * 0.45));
+        const r = Math.round(14 + lightLevel * 86);
+        const g = Math.round(6 + lightLevel * 44);
+        const b = Math.round(3 + lightLevel * 18);
+
+        // Recessed side shadow walls (staircase cheeks)
+        ctx.fillStyle = '#0C0502';
+        ctx.fillRect(st.x + 2, sy, sideInset - 2, stepH + 0.5);
+        ctx.fillRect(st.x + st.w - sideInset, sy, sideInset - 2, stepH + 0.5);
+
+        // Step wooden tread with subtle gradient across tread depth
+        const treadW = st.w - sideInset * 2;
+        const treadGrad = ctx.createLinearGradient(0, sy, 0, sy + stepH);
+        const riserTopDark = `rgb(${Math.round(r * 0.45)}, ${Math.round(g * 0.45)}, ${Math.round(b * 0.45)})`;
+        const treadMain = `rgb(${r}, ${g}, ${b})`;
+        if (st.upDir === 'up') {
+          treadGrad.addColorStop(0, riserTopDark);
+          treadGrad.addColorStop(0.28, treadMain);
+          treadGrad.addColorStop(1, treadMain);
+        } else {
+          treadGrad.addColorStop(0, treadMain);
+          treadGrad.addColorStop(0.72, treadMain);
+          treadGrad.addColorStop(1, riserTopDark);
+        }
+        ctx.fillStyle = treadGrad;
+        ctx.fillRect(st.x + sideInset, sy, treadW, stepH);
+
+        // Riser shadow cast from step above downward + warm nosing highlight
+        const lipY = st.upDir === 'up' ? sy + stepH - 2.6 : sy + 0.6;
+        ctx.fillStyle = `rgba(245, 178, 95, ${0.06 + lightLevel * 0.24})`;
+        ctx.fillRect(st.x + sideInset + 1, lipY, treadW - 2, 2.2);
+
+        const riserShadowY = st.upDir === 'up' ? sy : sy + stepH - 3.8;
+        ctx.fillStyle = `rgba(0, 0, 0, ${0.42 + depthFromViewer * 0.35})`;
+        ctx.fillRect(st.x + sideInset, riserShadowY, treadW, 3.8);
+      }
+
+      // Dynamic cast shadow on steps if any entity stands on or right above this stairwell
+      for (const p of world.players) {
+        if (!p.alive) continue;
+        if (p.x >= st.x - 16 && p.x <= st.x + st.w + 16 && p.y >= st.y - 24 && p.y <= st.y + st.h + 24) {
+          const sg = ctx.createRadialGradient(p.x, p.y + 6, 4, p.x, p.y + 6, 36);
+          sg.addColorStop(0, 'rgba(0, 0, 0, 0.52)');
+          sg.addColorStop(1, 'rgba(0, 0, 0, 0)');
+          ctx.fillStyle = sg;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y + 6, 36, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // Directional floor depth darkness curtain:
+      // On Ground (blend=0): top/upper end fades into deep darkness
+      // On Upper (blend=1): bottom/ground end fades steeply into pitch black chasm
+      const gY = st.upDir === 'up' ? st.y + st.h : st.y;
+      const uY = st.upDir === 'up' ? st.y : st.y + st.h;
+      const depthGrad = ctx.createLinearGradient(0, gY, 0, uY);
+      const groundAlpha = Math.max(0.02, libraryBlend * 0.94);
+      const upperAlpha = Math.max(0.02, (1 - libraryBlend) * 0.88);
+      depthGrad.addColorStop(0, `rgba(4, 2, 1, ${groundAlpha})`);
+      depthGrad.addColorStop(0.42, `rgba(4, 2, 1, ${groundAlpha * 0.45 + upperAlpha * 0.16})`);
+      depthGrad.addColorStop(0.62, `rgba(4, 2, 1, ${upperAlpha * 0.48 + groundAlpha * 0.12})`);
+      depthGrad.addColorStop(1, `rgba(4, 2, 1, ${upperAlpha})`);
+      ctx.fillStyle = depthGrad;
+      ctx.fillRect(st.x + 2, st.y + 2, st.w - 4, st.h - 4);
+
+      // Faint carved chevron arrow toward destination floor
+      const midX = st.x + st.w * 0.5;
+      const midY = st.y + st.h * 0.5;
+      const arrowDir =
+        libraryBlend >= 0.5 ? (st.upDir === 'up' ? 1 : -1) : st.upDir === 'up' ? -1 : 1;
+      ctx.strokeStyle = 'rgba(245, 194, 112, 0.28)';
+      ctx.lineWidth = 2.2;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(midX - 14, midY - arrowDir * 5);
+      ctx.lineTo(midX, midY + arrowDir * 8);
+      ctx.lineTo(midX + 14, midY - arrowDir * 5);
+      ctx.stroke();
+    } else {
+      const stepW = st.w / steps;
+      for (let i = 0; i < steps; i++) {
+        const elev = st.upDir === 'left' ? 1 - (i + 0.5) / steps : (i + 0.5) / steps;
+        const depthFromViewer = Math.abs(elev - libraryBlend);
+        const lightLevel = Math.max(0.1, 1 - depthFromViewer * 0.85);
+        const sx = st.x + i * stepW;
+        ctx.fillStyle = `rgb(${Math.round(18 + lightLevel * 76)}, ${Math.round(8 + lightLevel * 38)}, ${Math.round(4 + lightLevel * 16)})`;
+        ctx.fillRect(sx + 1, st.y + 6, stepW - 2, st.h - 12);
+      }
+    }
+  }
+  ctx.restore();
+}
+
+function drawLibraryBooks(
+  ctx: CanvasRenderingContext2D,
+  books: LibraryBookSpot[],
+  floor: FloorLevel,
+  elapsedTime: number
+) {
+  ctx.save();
+  for (const book of books) {
+    if (book.collected || book.floor !== floor) continue;
+    const tilt = ((book.id % 5) - 2) * 0.11;
+    const subtlePulse = 0.5 + 0.5 * Math.sin(elapsedTime * 2.2 + book.id);
+
+    ctx.save();
+    ctx.translate(book.x, book.y);
+    ctx.rotate(tilt);
+
+    // Subtle ground contact shadow matching shelf edge
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+    ctx.fillRect(-10, -6, 21, 16);
+
+    // Dark antique hardcover that blends naturally into the dark Library shelves
+    ctx.fillStyle = '#4A1B14';
+    ctx.strokeStyle = '#1B0A04';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.roundRect(-11, -8, 22, 16, 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Aged muted parchment page edge
+    ctx.fillStyle = '#9C8D74';
+    ctx.fillRect(-8, -6.5, 16, 2.2);
+
+    // Slightly tarnished leather spine
+    ctx.fillStyle = '#6A2A1B';
+    ctx.fillRect(-10.5, -8, 3.6, 16);
+
+    // Subtle antique pale crescent MOON sign (only sign separating it from regular dark books)
+    const moonAlpha = 0.66 + subtlePulse * 0.16;
+    ctx.fillStyle = `rgba(214, 195, 165, ${moonAlpha})`;
+    ctx.beginPath();
+    ctx.arc(1.5, 0.6, 4.1, 0, Math.PI * 2);
+    ctx.fill();
+    // Cutout circle in cover color to form crisp crescent moon
+    ctx.fillStyle = '#4A1B14';
+    ctx.beginPath();
+    ctx.arc(3.3, -0.3, 3.3, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function drawLibraryMonster(
+  ctx: CanvasRenderingContext2D,
+  monster: LibraryMonsterState,
+  elapsedTime: number
+) {
+  const r = monster.radius || MONSTER_RADIUS;
+  const speed = Math.hypot(monster.vx, monster.vy);
+  const strideFreq = monster.mode === 'rage' ? 13.5 : 7.2;
+  const strideAmp = Math.min(1, speed / 95);
+  const phase = elapsedTime * strideFreq;
+  const strideL = Math.sin(phase) * strideAmp;
+  const strideR = Math.sin(phase + Math.PI) * strideAmp;
+  const liftL = Math.max(0, Math.cos(phase)) * strideAmp;
+  const liftR = Math.max(0, Math.cos(phase + Math.PI)) * strideAmp;
+  const stunned = monster.stunTimer > 0;
+  const raging = !stunned && monster.mode === 'rage';
+
+  // Matte bright orange sculpted flesh palette (rough, zero gloss)
+  const orangeBright = stunned ? '#EA580C' : raging ? '#FF6B1A' : '#F97316';
+  const orangeMid = stunned ? '#C2410C' : '#EA580C';
+  const orangeDark = '#9A3412';
+  const orangeDeep = '#431407';
+
+  ctx.save();
+  ctx.translate(monster.x, monster.y);
+
+  // Heavy irregular ground shadow
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.64)';
+  ctx.beginPath();
+  ctx.moveTo(-36, -24);
+  ctx.lineTo(12, -38);
+  ctx.lineTo(48, -14);
+  ctx.lineTo(44, 24);
+  ctx.lineTo(-10, 42);
+  ctx.lineTo(-42, 22);
+  ctx.closePath();
+  ctx.fill();
+
+  // Alternating foot-stomp dust impact rings when actively walking
+  if (strideAmp > 0.25) {
+    const drawPlantDust = (footX: number, footY: number, lift: number) => {
+      if (lift > 0.22) return;
+      const a = (1 - lift / 0.22) * 0.28;
+      ctx.strokeStyle = `rgba(251, 146, 60, ${a})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(footX, footY, 16 + (0.22 - lift) * 28, 0, Math.PI * 2);
+      ctx.stroke();
+    };
+    ctx.save();
+    ctx.rotate(monster.angle);
+    drawPlantDust(strideL * 28 - 4, -22, liftL);
+    drawPlantDust(strideR * 28 - 4, 22, liftR);
+    ctx.restore();
+  }
+
+  ctx.save();
+  ctx.rotate(monster.angle);
+
+  // Slight hunched shoulder roll synced to stride
+  const torsoTwist = strideL * 0.09;
+
+  // 1. Heavy Animated Alternating Legs & 3-Clawed Stomping Feet (clearly visible front & back!)
+  const drawLegAndFoot = (stride: number, lift: number, side: -1 | 1) => {
+    const hipX = -14;
+    const hipY = side * 14;
+    const kneeX = hipX + 6 + stride * 15;
+    const kneeY = side * 22;
+    const footX = hipX + 12 + stride * 30;
+    const footY = side * (23 - lift * 2);
+    const footScale = 1 + lift * 0.14;
+
+    // Rough angular leg segment
+    ctx.strokeStyle = '#1C0B04';
+    ctx.lineWidth = 14;
+    ctx.lineCap = 'butt';
+    ctx.lineJoin = 'miter';
+    ctx.beginPath();
+    ctx.moveTo(hipX, hipY);
+    ctx.lineTo(kneeX, kneeY);
+    ctx.lineTo(footX, footY);
+    ctx.stroke();
+
+    ctx.strokeStyle = lift > 0.25 ? orangeBright : orangeMid;
+    ctx.lineWidth = 9.5;
+    ctx.stroke();
+
+    // Sculpted clawed foot silhouette extending outward cleanly
+    ctx.save();
+    ctx.translate(footX, footY);
+    ctx.scale(footScale, footScale);
+    ctx.fillStyle = orangeDark;
+    ctx.strokeStyle = '#140702';
+    ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    ctx.moveTo(-12, side * -6);
+    ctx.lineTo(4, side * -8);
+    ctx.lineTo(17, side * -4);
+    ctx.lineTo(13, 0);
+    ctx.lineTo(19, side * 3);
+    ctx.lineTo(11, side * 6);
+    ctx.lineTo(16, side * 9);
+    ctx.lineTo(-4, side * 8);
+    ctx.lineTo(-14, side * 4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Rough chiseled top plane on planted foot
+    ctx.fillStyle = orangeBright;
+    ctx.beginPath();
+    ctx.moveTo(-8, side * -3);
+    ctx.lineTo(7, side * -3);
+    ctx.lineTo(9, side * 3);
+    ctx.lineTo(-8, side * 3);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  };
+
+  drawLegAndFoot(strideL, liftL, -1);
+  drawLegAndFoot(strideR, liftR, 1);
+
+  ctx.save();
+  ctx.rotate(torsoTwist);
+
+  // 2. Long Gangly Articulated Humanoid Arms + Jagged Claws
+  const reachL = 14 + strideR * 18;
+  const reachR = 14 + strideL * 18;
+  for (const [side, reach] of [
+    [-1, reachL],
+    [1, reachR],
+  ] as const) {
+    const shX = 4;
+    const shY = side * 34;
+    const elX = -4 + reach * 0.45;
+    const elY = side * 52;
+    const hdX = 24 + reach;
+    const hdY = side * 40;
+
+    // Dark rough outline
+    ctx.strokeStyle = '#140702';
+    ctx.lineWidth = 14;
+    ctx.lineCap = 'butt';
+    ctx.lineJoin = 'bevel';
+    ctx.beginPath();
+    ctx.moveTo(shX, shY);
+    ctx.lineTo(elX, elY);
+    ctx.lineTo(hdX, hdY);
+    ctx.stroke();
+
+    // Matte bright-orange upper arm & darker forearm
+    ctx.strokeStyle = orangeMid;
+    ctx.lineWidth = 9.5;
+    ctx.beginPath();
+    ctx.moveTo(shX, shY);
+    ctx.lineTo(elX, elY);
+    ctx.stroke();
+
+    ctx.strokeStyle = orangeBright;
+    ctx.lineWidth = 8.5;
+    ctx.beginPath();
+    ctx.moveTo(elX, elY);
+    ctx.lineTo(hdX, hdY);
+    ctx.stroke();
+
+    // Angular elbow joint cap & rough chiseled hand with 2 hooked claws
+    ctx.fillStyle = orangeDark;
+    ctx.strokeStyle = '#140702';
+    ctx.lineWidth = 2;
+    ctx.fillRect(elX - 5, elY - 5, 10, 10);
+
+    ctx.fillStyle = '#1C0D06';
+    ctx.beginPath();
+    ctx.moveTo(hdX - 4, hdY - side * 5);
+    ctx.lineTo(hdX + 12, hdY - side * 8);
+    ctx.lineTo(hdX + 18, hdY);
+    ctx.lineTo(hdX + 11, hdY + side * 12);
+    ctx.lineTo(hdX + 3, hdY + side * 6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  // 3. Top-Down Humanoid Torso (broad hunched shoulders, tapered back & waist, narrow pelvis — NOT a circle!)
+  ctx.fillStyle = orangeMid;
+  ctx.strokeStyle = '#140702';
+  ctx.lineWidth = 3.2;
+  ctx.lineJoin = 'bevel';
+  ctx.beginPath();
+  // Broad angular left shoulder
+  ctx.moveTo(18, -38);
+  ctx.lineTo(2, -41);
+  // Tapers sharply inward at ribcage/waist toward back pelvis
+  ctx.lineTo(-14, -24);
+  ctx.lineTo(-27, -21);
+  ctx.lineTo(-32, -8);
+  ctx.lineTo(-32, 8);
+  ctx.lineTo(-27, 21);
+  ctx.lineTo(-14, 24);
+  // Broad angular right shoulder
+  ctx.lineTo(2, 41);
+  ctx.lineTo(18, 38);
+  // Hunched collar/neck bridge
+  ctx.lineTo(24, 18);
+  ctx.lineTo(24, -18);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Rough chiseled matte bright-orange facets across shoulders, spine & lower back (matte low-poly look!)
+  ctx.fillStyle = orangeBright;
+  // Left deltoid/shoulder slab
+  ctx.beginPath();
+  ctx.moveTo(15, -34);
+  ctx.lineTo(2, -36);
+  ctx.lineTo(-8, -22);
+  ctx.lineTo(16, -18);
+  ctx.closePath();
+  ctx.fill();
+  // Right deltoid/shoulder slab
+  ctx.beginPath();
+  ctx.moveTo(15, 34);
+  ctx.lineTo(2, 36);
+  ctx.lineTo(-8, 22);
+  ctx.lineTo(16, 18);
+  ctx.closePath();
+  ctx.fill();
+  // Central back/trapezius wedge
+  ctx.beginPath();
+  ctx.moveTo(16, -15);
+  ctx.lineTo(16, 15);
+  ctx.lineTo(-10, 10);
+  ctx.lineTo(-14, 0);
+  ctx.lineTo(-10, -10);
+  ctx.closePath();
+  ctx.fill();
+
+  // Darker burnt-orange shadow crevasses & rough vertebral ridge
+  ctx.fillStyle = orangeDark;
+  ctx.beginPath();
+  ctx.moveTo(-12, -18);
+  ctx.lineTo(-26, -16);
+  ctx.lineTo(-28, 16);
+  ctx.lineTo(-12, 18);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = orangeDeep;
+  for (let vx = -22; vx <= 12; vx += 8) {
+    ctx.fillRect(vx, -2.5, 5, 5);
+  }
+
+  // Exposed rough bone ribcage shards jutting from sides of torso
+  ctx.fillStyle = '#D6C3A5';
+  ctx.strokeStyle = '#2A1810';
+  ctx.lineWidth = 1.6;
+  for (const rx of [-6, 4, 13]) {
+    for (const sgn of [-1, 1] as const) {
+      ctx.beginPath();
+      ctx.moveTo(rx - 2, sgn * 16);
+      ctx.lineTo(rx + 4, sgn * 31);
+      ctx.lineTo(rx + 8, sgn * 28);
+      ctx.lineTo(rx + 3, sgn * 14);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+
+  // 4. Forward-Jutting Faceted Figure Head & Toothy Maw (angular matte octagon, no smooth orb)
+  const headX = 33;
+  ctx.fillStyle = orangeDark;
+  ctx.strokeStyle = '#140702';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  for (let i = 0; i < 9; i++) {
+    const a = (i / 9) * Math.PI * 2;
+    const hr = i % 2 === 0 ? 25 : 22.5;
+    const hx = headX + Math.cos(a) * hr;
+    const hy = Math.sin(a) * hr;
+    if (i === 0) ctx.moveTo(hx, hy);
+    else ctx.lineTo(hx, hy);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Matte bright-orange brow crown ridge
+  ctx.fillStyle = orangeBright;
+  ctx.beginPath();
+  ctx.moveTo(headX - 18, -14);
+  ctx.lineTo(headX + 2, -20);
+  ctx.lineTo(headX + 8, -12);
+  ctx.lineTo(headX - 12, -4);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(headX - 18, 14);
+  ctx.lineTo(headX + 2, 20);
+  ctx.lineTo(headX + 8, 12);
+  ctx.lineTo(headX - 12, 4);
+  ctx.closePath();
+  ctx.fill();
+
+  // Rough matte circular-polygon gaping mouth cavity facing forward
+  const mawX = headX + 8;
+  const mawR = 16;
+  ctx.fillStyle = stunned ? '#7C2D12' : '#FB923C';
+  ctx.strokeStyle = '#140702';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 2;
+    const mx = mawX + Math.cos(a) * mawR;
+    const my = Math.sin(a) * mawR;
+    if (i === 0) ctx.moveTo(mx, my);
+    else ctx.lineTo(mx, my);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = stunned ? '#431407' : '#FDBA74';
+  ctx.beginPath();
+  ctx.arc(mawX, 0, 7.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Ring of jagged sharp pale teeth lining the mouth
+  ctx.fillStyle = stunned ? '#D6C7B2' : '#FFF7ED';
+  const teeth = 12;
+  for (let i = 0; i < teeth; i++) {
+    const a = (i / teeth) * Math.PI * 2 + (raging ? elapsedTime * 1.8 : 0);
+    const outerX = mawX + Math.cos(a) * (mawR + 0.5);
+    const outerY = Math.sin(a) * (mawR + 0.5);
+    const sideX = mawX + Math.cos(a + 0.24) * (mawR - 1);
+    const sideY = Math.sin(a + 0.24) * (mawR - 1);
+    const tipX = mawX + Math.cos(a + 0.12) * (mawR * 0.45);
+    const tipY = Math.sin(a + 0.12) * (mawR * 0.45);
+    ctx.beginPath();
+    ctx.moveTo(outerX, outerY);
+    ctx.lineTo(tipX, tipY);
+    ctx.lineTo(sideX, sideY);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  ctx.restore(); // torsoTwist
+  ctx.restore(); // monster.angle
+
+  // Stun indicator when hit by Nitro/TNT blast
+  if (stunned) {
+    ctx.strokeStyle = 'rgba(253, 224, 71, 0.72)';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([8, 5]);
+    ctx.beginPath();
+    ctx.arc(0, 0, r + 10, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    for (let s = 0; s < 4; s++) {
+      const sa = elapsedTime * 5.2 + (s * Math.PI * 2) / 4;
+      ctx.fillStyle = '#FEF08A';
+      ctx.beginPath();
+      ctx.arc(Math.cos(sa) * 34, Math.sin(sa) * 12 - (r + 12), 4.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // Name tag
+  ctx.fillStyle = stunned ? '#FEF08A' : raging ? '#FB923C' : '#FDBA74';
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.92)';
+  ctx.lineWidth = 3.2;
+  ctx.font = '800 13px "Outfit", sans-serif';
+  ctx.textAlign = 'center';
+  const label = stunned ? `THE FIGURE · STUN ${Math.ceil(monster.stunTimer)}s` : raging ? 'THE FIGURE · RAGE!' : 'THE FIGURE';
+  ctx.strokeText(label, 0, -r - 16);
+  ctx.fillText(label, 0, -r - 16);
+
+  ctx.restore();
 }
 
 function drawCardboardBox(ctx: CanvasRenderingContext2D, box: CardboardBox) {
@@ -1335,7 +2371,31 @@ export function renderArena(
   const map = ARENA_MAPS[world.mapId];
   const isImmersive = world.immersive || map.immersive;
   const isExtraDark = isImmersive && Boolean(world.extraDark);
+  const isLibrary = map.id === 'library' && Boolean(world.libraryState);
   const localPlayer = world.players.find((p) => p.id === localPlayerId) ?? world.players[0];
+  const localFloor: FloorLevel = isLibrary ? (localPlayer?.floor ?? 0) : 0;
+  const libraryBlend = isLibrary
+    ? Math.max(0, Math.min(1, localPlayer?.stairBlend ?? (localFloor === 1 ? 1 : 0)))
+    : 0;
+
+  const isWallOnFloor = (wall: WallRect, target: FloorLevel): boolean => {
+    if (!isLibrary) return true;
+    if (wall.kind?.startsWith('perimeter')) return true;
+    return (wall.floor ?? 0) === target;
+  };
+  const isPlayerMidStair = (p: RenderPlayer): boolean => {
+    if (!isLibrary) return false;
+    const sb = p.stairBlend ?? (p.floor === 1 ? 1 : 0);
+    return sb > 0.02 && sb < 0.98;
+  };
+  const isMonsterOnStair = (m: LibraryMonsterState): boolean => {
+    for (const st of map.stairs ?? []) {
+      if (m.x >= st.x && m.x <= st.x + st.w && m.y >= st.y && m.y <= st.y + st.h) {
+        return true;
+      }
+    }
+    return false;
+  };
 
   ctx.save();
   ctx.fillStyle = '#070B14';
@@ -1364,274 +2424,7 @@ export function renderArena(
   ctx.translate(worldTx, worldTy);
   ctx.scale(scale, scale);
 
-  // 1. Lively Wooden / Marble / Snow / Meadow Floor + Ambient Light Pools + Light-Cast Shadows + Ice/Water Pits
-  const floorCanvas = getFloorCanvas(map);
-  ctx.drawImage(floorCanvas, 0, 0);
-  drawAmbientArenaLights(ctx, map, world);
-  if (!isExtraDark) {
-    drawDynamicLightShadows(ctx, map, world);
-  }
-  drawIcePits(ctx, world, map);
-
-  // 2. Spawn Pads
-  map.spawns.forEach((sp, idx) => {
-    const p = world.players.find((pl) => pl.id === idx);
-    ctx.save();
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.25)';
-    ctx.beginPath();
-    ctx.arc(sp.x, sp.y, 28, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.strokeStyle = p ? `${p.color}66` : 'rgba(248,250,252,0.28)';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([6, 5]);
-    ctx.beginPath();
-    ctx.arc(sp.x, sp.y, 26, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-  });
-
-  // 3. TNT blast warning zones (shown once shot & armed for 3s countdown)
-  for (const item of world.pickups) {
-    if (item.kind === 'tnt' && item.armed && item.countdown !== undefined) {
-      const progress = 1 - Math.max(0, item.countdown) / (item.maxCountdown || 3);
-      const pulse = 0.5 + 0.5 * Math.sin(world.elapsedTime * (8 + progress * 16));
-      ctx.save();
-      ctx.fillStyle = `rgba(239, 68, 68, ${0.11 + progress * 0.16})`;
-      ctx.beginPath();
-      ctx.arc(item.x, item.y, TNT_BLAST_RADIUS, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.strokeStyle = `rgba(254, 202, 202, ${0.5 + pulse * 0.45})`;
-      ctx.lineWidth = 2.5;
-      ctx.setLineDash([8, 6]);
-      ctx.beginPath();
-      ctx.arc(item.x, item.y, TNT_BLAST_RADIUS, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.restore();
-    }
-  }
-
-  // 4. Pickups (Vibrant Arcade Bullets, Neon Green NITRO, Cherry-Red TNT & Medkits)
-  for (const item of world.pickups) {
-    const isCratePickup = item.kind === 'tnt' || item.kind === 'nitro';
-    const bob = isCratePickup ? 0 : Math.sin(item.age * 4.2 + item.id) * 2.5;
-    ctx.save();
-
-    if (item.kind === 'tnt') {
-      const s = 29;
-      ctx.fillStyle = 'rgba(4, 3, 8, 0.56)';
-      ctx.beginPath();
-      ctx.roundRect(item.x - s + 9, item.y - s + 13, s * 2, s * 2, 6);
-      ctx.fill();
-    } else if (item.kind === 'nitro') {
-      const s = 24;
-      ctx.fillStyle = 'rgba(4, 3, 8, 0.56)';
-      ctx.beginPath();
-      ctx.roundRect(item.x - s + 8, item.y - s + 12, s * 2, s * 2, 6);
-      ctx.fill();
-    } else {
-      ctx.fillStyle = 'rgba(4, 3, 8, 0.48)';
-      ctx.beginPath();
-      ctx.ellipse(item.x + 5, item.y + 11, item.radius * 0.95, item.radius * 0.56, 0, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    ctx.translate(item.x, item.y + bob);
-
-    if (item.kind === 'bullet') {
-      // Glowing cyan-blue energy bubble orb around bright red/white shell
-      const glow = ctx.createRadialGradient(0, 0, 4, 0, 0, item.radius + 7);
-      glow.addColorStop(0, 'rgba(56, 189, 248, 0.32)');
-      glow.addColorStop(0.75, 'rgba(56, 189, 248, 0.14)');
-      glow.addColorStop(1, 'rgba(56, 189, 248, 0)');
-      ctx.fillStyle = glow;
-      ctx.beginPath();
-      ctx.arc(0, 0, item.radius + 7, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.fillStyle = 'rgba(14, 165, 233, 0.16)';
-      ctx.strokeStyle = '#38BDF8';
-      ctx.lineWidth = 2.4;
-      ctx.beginPath();
-      ctx.arc(0, 0, item.radius, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-
-      // Tilted crisp red-and-white cartridge shell
-      ctx.save();
-      ctx.rotate(-0.62);
-      ctx.fillStyle = '#EF4444';
-      ctx.strokeStyle = '#090D16';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.roundRect(-11, -6, 14, 12, 3);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.fillStyle = '#F8FAFC';
-      ctx.beginPath();
-      ctx.roundRect(1, -5.5, 10, 11, [1, 5, 5, 1]);
-      ctx.fill();
-      ctx.stroke();
-
-      // Brass shell rim
-      ctx.fillStyle = '#FACC15';
-      ctx.fillRect(-12, -5.5, 3, 11);
-      ctx.restore();
-    } else if (item.kind === 'nitro') {
-      // Vivid toxic neon-green wooden NITRO crate (high shadow/highlight contrast, exact green hue)
-      const s = 24;
-      const pulse = 0.5 + 0.5 * Math.sin(world.elapsedTime * 5 + item.id);
-      const aura = ctx.createRadialGradient(0, 0, 12, 0, 0, 48);
-      aura.addColorStop(0, `rgba(74, 222, 128, ${0.38 + pulse * 0.18})`);
-      aura.addColorStop(1, 'rgba(34, 197, 94, 0)');
-      ctx.fillStyle = aura;
-      ctx.beginPath();
-      ctx.arc(0, 0, 48, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.fillStyle = '#15803D';
-      ctx.strokeStyle = '#031F0E';
-      ctx.lineWidth = 2.8;
-      ctx.beginPath();
-      ctx.roundRect(-s, -s, s * 2, s * 2, 5);
-      ctx.fill();
-      ctx.stroke();
-
-      // Bright neon lime wooden center planks + crisp bevel contrast
-      ctx.fillStyle = '#2EE86B';
-      ctx.fillRect(-s + 5, -s + 5, s * 2 - 10, s * 2 - 10);
-      ctx.fillStyle = '#86EFAC';
-      ctx.fillRect(-s + 4, -s + 3, s * 2 - 8, 4);
-      ctx.fillStyle = 'rgba(5, 46, 22, 0.45)';
-      ctx.fillRect(-s + 4, s - 7, s * 2 - 8, 4);
-
-      ctx.strokeStyle = '#14532D';
-      ctx.lineWidth = 1.6;
-      ctx.strokeRect(-s + 5, -s + 5, s * 2 - 10, s * 2 - 10);
-
-      // Bold stenciled NITRO badge
-      ctx.fillStyle = '#F0FDF4';
-      ctx.strokeStyle = '#031F0E';
-      ctx.lineWidth = 2.8;
-      ctx.font = '900 12px "Outfit", sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.strokeText('NITRO', 0, 1);
-      ctx.fillText('NITRO', 0, 1);
-    } else if (item.kind === 'tnt') {
-      const armed = Boolean(item.armed);
-      const cd = Math.max(0, item.countdown ?? 3);
-      const secText = Math.ceil(cd).toString();
-      const flash = armed && cd < 1.0 && Math.floor(cd * 10) % 2 === 0;
-      const s = 29;
-
-      // Bright cherry-red wooden TNT crate (higher shadow & bevel contrast, same vibrant red)
-      ctx.fillStyle = flash ? '#FCA5A5' : '#991B1B';
-      ctx.strokeStyle = '#120303';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.roundRect(-s, -s, s * 2, s * 2, 5);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.fillStyle = flash ? '#FECACA' : '#FF2E22';
-      ctx.fillRect(-s + 6, -s + 6, s * 2 - 12, s * 2 - 12);
-
-      // Plank dividers
-      ctx.strokeStyle = 'rgba(105, 16, 16, 0.6)';
-      ctx.lineWidth = 1.7;
-      ctx.beginPath();
-      ctx.moveTo(-s + 6, -9);
-      ctx.lineTo(s - 6, -9);
-      ctx.moveTo(-s + 6, 9);
-      ctx.lineTo(s - 6, 9);
-      ctx.stroke();
-
-      // Top highlight & deep bottom edge shade
-      ctx.fillStyle = 'rgba(255, 235, 235, 0.38)';
-      ctx.fillRect(-s + 3, -s + 2.5, s * 2 - 6, 4.5);
-      ctx.fillStyle = 'rgba(40, 4, 4, 0.45)';
-      ctx.fillRect(-s + 3, s - 6.5, s * 2 - 6, 4);
-
-      // Corner nails
-      ctx.fillStyle = '#FECACA';
-      for (const [rx, ry] of [
-        [-s + 4, -s + 4],
-        [s - 4, -s + 4],
-        [-s + 4, s - 4],
-        [s - 4, s - 4],
-      ]) {
-        ctx.beginPath();
-        ctx.arc(rx, ry, 1.8, 0, Math.PI * 2);
-        ctx.fill();
-      }
-
-      if (armed) {
-        // Countdown progress ring around armed TNT
-        ctx.strokeStyle = '#FEF08A';
-        ctx.lineWidth = 3.2;
-        ctx.beginPath();
-        ctx.arc(0, 0, s + 8, -Math.PI / 2, -Math.PI / 2 + (cd / 3) * Math.PI * 2);
-        ctx.stroke();
-
-        ctx.fillStyle = flash ? '#7F1D1D' : '#FEF08A';
-        ctx.strokeStyle = '#450A0A';
-        ctx.lineWidth = 3;
-        ctx.font = '900 16px "Outfit", sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.strokeText('TNT', 0, -4);
-        ctx.fillText('TNT', 0, -4);
-
-        ctx.fillStyle = '#FFFFFF';
-        ctx.font = '800 12px "JetBrains Mono", monospace';
-        ctx.strokeText(`${secText}s`, 0, 12);
-        ctx.fillText(`${secText}s`, 0, 12);
-      } else {
-        // Unlit movable TNT crate (pushable, shoot to ignite 3s countdown)
-        ctx.fillStyle = '#FEF08A';
-        ctx.strokeStyle = '#450A0A';
-        ctx.lineWidth = 3.2;
-        ctx.font = '900 18px "Outfit", sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.strokeText('TNT', 0, 1);
-        ctx.fillText('TNT', 0, 1);
-      }
-    } else if (item.kind === 'medkit') {
-      const s = 20;
-      ctx.fillStyle = 'rgba(16, 185, 129, 0.25)';
-      ctx.beginPath();
-      ctx.arc(0, 0, item.radius + 7, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.fillStyle = '#FFFFFF';
-      ctx.strokeStyle = '#065F46';
-      ctx.lineWidth = 2.6;
-      ctx.beginPath();
-      ctx.roundRect(-s, -s, s * 2, s * 2, 7);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.fillStyle = '#10B981';
-      ctx.fillRect(-4, -12, 8, 24);
-      ctx.fillRect(-12, -4, 24, 8);
-    }
-    ctx.restore();
-  }
-
-  // 5. Themed Obstacles + Movable Cardboard Cover Boxes
-  for (const wall of map.walls) {
-    drawObstacle(ctx, wall);
-  }
-  for (const box of world.boxes) {
-    drawCardboardBox(ctx, box);
-  }
-
-  // 6. Players (drawn before Extra Dark darkness mask so distant enemies hide in darkness, then illuminated by flashlights & bullet glow!)
-  for (const player of world.players) {
+  const drawSinglePlayer = (player: RenderPlayer) => {
     const isLocal = player.id === localPlayerId;
     if (!player.alive) {
       if (player.respawnTimer > 0 && player.respawnTimer < 1.0) {
@@ -1647,7 +2440,7 @@ export function renderArena(
           ctx.restore();
         }
       }
-      continue;
+      return;
     }
 
     ctx.save();
@@ -1697,7 +2490,6 @@ export function renderArena(
     const skinColor = player.hurtFlashTimer > 0 ? '#FFFFFF' : player.color;
     const accentColor = player.hurtFlashTimer > 0 ? '#FFFFFF' : player.accentColor;
 
-    // Crisp outer hitbox ring
     ctx.fillStyle = hexWithAlpha(skinColor, 0.14);
     ctx.strokeStyle = hexWithAlpha(skinColor, 0.52);
     ctx.lineWidth = 2;
@@ -1706,7 +2498,6 @@ export function renderArena(
     ctx.fill();
     ctx.stroke();
 
-    // Chunky bright candy-arcade mascot fighter + checkered tactical blaster
     const moveSpeed = Math.hypot(player.vx ?? 0, player.vy ?? 0);
     const moveBlend = Math.min(1, moveSpeed / 160);
     const stride = Math.sin(world.elapsedTime * 15 + player.id * 1.7) * moveBlend;
@@ -1714,7 +2505,6 @@ export function renderArena(
     ctx.save();
     ctx.rotate(player.angle);
 
-    // 1. Animated striding boots
     ctx.fillStyle = '#0F172A';
     ctx.strokeStyle = skinColor;
     ctx.lineWidth = 2.2;
@@ -1727,7 +2517,6 @@ export function renderArena(
     ctx.fill();
     ctx.stroke();
 
-    // 2. Rounded gloves gripping forward blaster
     ctx.fillStyle = skinColor;
     ctx.strokeStyle = '#090D16';
     ctx.lineWidth = 2.8;
@@ -1740,7 +2529,6 @@ export function renderArena(
     ctx.fill();
     ctx.stroke();
 
-    // 3. Heavy Black & Yellow-Checkered Tactical Blaster
     ctx.fillStyle = '#1E293B';
     ctx.strokeStyle = '#090D16';
     ctx.lineWidth = 2.6;
@@ -1749,14 +2537,12 @@ export function renderArena(
     ctx.fill();
     ctx.stroke();
 
-    // Checkered tactical grip pattern on gun barrel
     ctx.fillStyle = '#FACC15';
     ctx.fillRect(25, -6.2, 5, 4.2);
     ctx.fillRect(35, -6.2, 5, 4.2);
     ctx.fillRect(30, 2, 5, 4.2);
     ctx.fillRect(40, 2, 5, 4.2);
 
-    // Energized barrel core & luminous muzzle tip
     ctx.fillStyle = player.ammo > 0 ? '#FDE047' : '#64748B';
     ctx.fillRect(26, -2.2, 23, 4.4);
     if (player.ammo > 0) {
@@ -1766,7 +2552,6 @@ export function renderArena(
       ctx.fill();
     }
 
-    // 4. Glossy Candy-Colored Character Body (3-stop spherical shading + bright specular gloss)
     const bodyR = 30.5;
     const bodyGrad = ctx.createRadialGradient(-9, -10, 4, 0, 0, bodyR);
     bodyGrad.addColorStop(0, '#FFFFFF');
@@ -1782,7 +2567,6 @@ export function renderArena(
     ctx.fill();
     ctx.stroke();
 
-    // Crisp glossy highlight crescent on upper-left crown
     ctx.save();
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
     ctx.lineWidth = 3.2;
@@ -1792,9 +2576,7 @@ export function renderArena(
     ctx.stroke();
     ctx.restore();
 
-    // 5. Slot-distinct silhouette crest
     if (player.id === 1) {
-      // Viper: Bold pointed cat/oni ears
       ctx.fillStyle = skinColor;
       ctx.strokeStyle = '#090D16';
       ctx.lineWidth = 2.8;
@@ -1813,7 +2595,6 @@ export function renderArena(
       ctx.fill();
       ctx.stroke();
     } else if (player.id === 2) {
-      // Volt: Royal golden crown on back rim
       ctx.fillStyle = '#FDE047';
       ctx.strokeStyle = '#090D16';
       ctx.lineWidth = 2.5;
@@ -1829,7 +2610,6 @@ export function renderArena(
       ctx.fill();
       ctx.stroke();
     } else if (player.id === 0) {
-      // Cobalt: Sleek twin cyber fins
       ctx.fillStyle = accentColor;
       ctx.strokeStyle = '#090D16';
       ctx.lineWidth = 2.5;
@@ -1839,7 +2619,6 @@ export function renderArena(
       ctx.fill();
       ctx.stroke();
     } else {
-      // Jade / Slot 4: Bright emerald-or-chosen scarf tails
       ctx.fillStyle = skinColor;
       ctx.strokeStyle = '#090D16';
       ctx.lineWidth = 2.5;
@@ -1854,7 +2633,6 @@ export function renderArena(
       ctx.stroke();
     }
 
-    // 6. Dark Visor + Bright Expressive Eyes
     ctx.fillStyle = '#090D16';
     ctx.beginPath();
     ctx.ellipse(13, 0, 9.5, 17.5, 0, 0, Math.PI * 2);
@@ -1940,6 +2718,353 @@ export function renderArena(
     ctx.fillText(labelText, 0, -PLAYER_RADIUS - 16);
 
     ctx.restore();
+  };
+
+  const drawPickupsOnFloor = (targetFloor?: FloorLevel) => {
+    for (const item of world.pickups) {
+      if (targetFloor !== undefined && (item.floor ?? 0) !== targetFloor) continue;
+      if (item.kind === 'tnt' && item.armed && item.countdown !== undefined) {
+        const progress = 1 - Math.max(0, item.countdown) / (item.maxCountdown || 3);
+        const pulse = 0.5 + 0.5 * Math.sin(world.elapsedTime * (8 + progress * 16));
+        ctx.save();
+        ctx.fillStyle = `rgba(239, 68, 68, ${0.11 + progress * 0.16})`;
+        ctx.beginPath();
+        ctx.arc(item.x, item.y, TNT_BLAST_RADIUS, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = `rgba(254, 202, 202, ${0.5 + pulse * 0.45})`;
+        ctx.lineWidth = 2.5;
+        ctx.setLineDash([8, 6]);
+        ctx.beginPath();
+        ctx.arc(item.x, item.y, TNT_BLAST_RADIUS, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    for (const item of world.pickups) {
+      if (targetFloor !== undefined && (item.floor ?? 0) !== targetFloor) continue;
+      const isCratePickup = item.kind === 'tnt' || item.kind === 'nitro';
+      const bob = isCratePickup ? 0 : Math.sin(item.age * 4.2 + item.id) * 2.5;
+      ctx.save();
+
+      if (item.kind === 'tnt') {
+        const s = 29;
+        ctx.fillStyle = 'rgba(4, 3, 8, 0.56)';
+        ctx.beginPath();
+        ctx.roundRect(item.x - s + 9, item.y - s + 13, s * 2, s * 2, 6);
+        ctx.fill();
+      } else if (item.kind === 'nitro') {
+        const s = 24;
+        ctx.fillStyle = 'rgba(4, 3, 8, 0.56)';
+        ctx.beginPath();
+        ctx.roundRect(item.x - s + 8, item.y - s + 12, s * 2, s * 2, 6);
+        ctx.fill();
+      } else {
+        ctx.fillStyle = 'rgba(4, 3, 8, 0.48)';
+        ctx.beginPath();
+        ctx.ellipse(item.x + 5, item.y + 11, item.radius * 0.95, item.radius * 0.56, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.translate(item.x, item.y + bob);
+
+      if (item.kind === 'bullet') {
+        const glow = ctx.createRadialGradient(0, 0, 4, 0, 0, item.radius + 7);
+        glow.addColorStop(0, 'rgba(56, 189, 248, 0.32)');
+        glow.addColorStop(0.75, 'rgba(56, 189, 248, 0.14)');
+        glow.addColorStop(1, 'rgba(56, 189, 248, 0)');
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(0, 0, item.radius + 7, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = 'rgba(14, 165, 233, 0.16)';
+        ctx.strokeStyle = '#38BDF8';
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.arc(0, 0, item.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.rotate(-0.62);
+        ctx.fillStyle = '#EF4444';
+        ctx.strokeStyle = '#090D16';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(-11, -6, 14, 12, 3);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#F8FAFC';
+        ctx.beginPath();
+        ctx.roundRect(1, -5.5, 10, 11, [1, 5, 5, 1]);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#FACC15';
+        ctx.fillRect(-12, -5.5, 3, 11);
+        ctx.restore();
+      } else if (item.kind === 'nitro') {
+        const s = 24;
+        const pulse = 0.5 + 0.5 * Math.sin(world.elapsedTime * 5 + item.id);
+        const aura = ctx.createRadialGradient(0, 0, 12, 0, 0, 48);
+        aura.addColorStop(0, `rgba(74, 222, 128, ${0.38 + pulse * 0.18})`);
+        aura.addColorStop(1, 'rgba(34, 197, 94, 0)');
+        ctx.fillStyle = aura;
+        ctx.beginPath();
+        ctx.arc(0, 0, 48, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#15803D';
+        ctx.strokeStyle = '#031F0E';
+        ctx.lineWidth = 2.8;
+        ctx.beginPath();
+        ctx.roundRect(-s, -s, s * 2, s * 2, 5);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#2EE86B';
+        ctx.fillRect(-s + 5, -s + 5, s * 2 - 10, s * 2 - 10);
+        ctx.fillStyle = '#86EFAC';
+        ctx.fillRect(-s + 4, -s + 3, s * 2 - 8, 4);
+        ctx.fillStyle = 'rgba(5, 46, 22, 0.45)';
+        ctx.fillRect(-s + 4, s - 7, s * 2 - 8, 4);
+
+        ctx.strokeStyle = '#14532D';
+        ctx.lineWidth = 1.6;
+        ctx.strokeRect(-s + 5, -s + 5, s * 2 - 10, s * 2 - 10);
+
+        ctx.fillStyle = '#F0FDF4';
+        ctx.strokeStyle = '#031F0E';
+        ctx.lineWidth = 2.8;
+        ctx.font = '900 12px "Outfit", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.strokeText('NITRO', 0, 1);
+        ctx.fillText('NITRO', 0, 1);
+      } else if (item.kind === 'tnt') {
+        const armed = Boolean(item.armed);
+        const cd = Math.max(0, item.countdown ?? 3);
+        const secText = Math.ceil(cd).toString();
+        const flash = armed && cd < 1.0 && Math.floor(cd * 10) % 2 === 0;
+        const s = 29;
+
+        ctx.fillStyle = flash ? '#FCA5A5' : '#991B1B';
+        ctx.strokeStyle = '#120303';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.roundRect(-s, -s, s * 2, s * 2, 5);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = flash ? '#FECACA' : '#FF2E22';
+        ctx.fillRect(-s + 6, -s + 6, s * 2 - 12, s * 2 - 12);
+
+        ctx.strokeStyle = 'rgba(105, 16, 16, 0.6)';
+        ctx.lineWidth = 1.7;
+        ctx.beginPath();
+        ctx.moveTo(-s + 6, -9);
+        ctx.lineTo(s - 6, -9);
+        ctx.moveTo(-s + 6, 9);
+        ctx.lineTo(s - 6, 9);
+        ctx.stroke();
+
+        ctx.fillStyle = 'rgba(255, 235, 235, 0.38)';
+        ctx.fillRect(-s + 3, -s + 2.5, s * 2 - 6, 4.5);
+        ctx.fillStyle = 'rgba(40, 4, 4, 0.45)';
+        ctx.fillRect(-s + 3, s - 6.5, s * 2 - 6, 4);
+
+        ctx.fillStyle = '#FECACA';
+        for (const [rx, ry] of [
+          [-s + 4, -s + 4],
+          [s - 4, -s + 4],
+          [-s + 4, s - 4],
+          [s - 4, s - 4],
+        ]) {
+          ctx.beginPath();
+          ctx.arc(rx, ry, 1.8, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        if (armed) {
+          ctx.strokeStyle = '#FEF08A';
+          ctx.lineWidth = 3.2;
+          ctx.beginPath();
+          ctx.arc(0, 0, s + 8, -Math.PI / 2, -Math.PI / 2 + (cd / 3) * Math.PI * 2);
+          ctx.stroke();
+
+          ctx.fillStyle = flash ? '#7F1D1D' : '#FEF08A';
+          ctx.strokeStyle = '#450A0A';
+          ctx.lineWidth = 3;
+          ctx.font = '900 16px "Outfit", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.strokeText('TNT', 0, -4);
+          ctx.fillText('TNT', 0, -4);
+
+          ctx.fillStyle = '#FFFFFF';
+          ctx.font = '800 12px "JetBrains Mono", monospace';
+          ctx.strokeText(`${secText}s`, 0, 12);
+          ctx.fillText(`${secText}s`, 0, 12);
+        } else {
+          ctx.fillStyle = '#FEF08A';
+          ctx.strokeStyle = '#450A0A';
+          ctx.lineWidth = 3.2;
+          ctx.font = '900 18px "Outfit", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.strokeText('TNT', 0, 1);
+          ctx.fillText('TNT', 0, 1);
+        }
+      } else if (item.kind === 'medkit') {
+        const s = 20;
+        ctx.fillStyle = 'rgba(16, 185, 129, 0.25)';
+        ctx.beginPath();
+        ctx.arc(0, 0, item.radius + 7, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#FFFFFF';
+        ctx.strokeStyle = '#065F46';
+        ctx.lineWidth = 2.6;
+        ctx.beginPath();
+        ctx.roundRect(-s, -s, s * 2, s * 2, 7);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#10B981';
+        ctx.fillRect(-4, -12, 8, 24);
+        ctx.fillRect(-12, -4, 24, 8);
+      }
+      ctx.restore();
+    }
+  };
+
+  const drawSpawnPads = () => {
+    map.spawns.forEach((sp, idx) => {
+      const p = world.players.find((pl) => pl.id === idx);
+      ctx.save();
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.25)';
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, 28, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = p ? `${p.color}66` : 'rgba(248,250,252,0.28)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 5]);
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, 26, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    });
+  };
+
+  const localProg = isLibrary
+    ? world.libraryState?.playerProgress.find((pp) => pp.playerId === localPlayerId)
+    : undefined;
+
+  if (isLibrary && world.libraryState) {
+    const monster = world.libraryState.monster;
+    const monsterOnStair = isMonsterOnStair(monster);
+
+    // 1A. Ground Floor (fades smoothly to pitch black as stairBlend -> 1)
+    if (libraryBlend < 0.99) {
+      const floorCanvas = getFloorCanvas(map);
+      ctx.drawImage(floorCanvas, 0, 0);
+      drawAmbientArenaLights(ctx, map, world, 0);
+      if (!isExtraDark) {
+        drawDynamicLightShadows(ctx, map, world, 0);
+      }
+      drawPickupsOnFloor(0);
+      for (const wall of map.walls) {
+        if (isWallOnFloor(wall, 0)) drawObstacle(ctx, wall, world);
+      }
+      for (const box of world.boxes) {
+        if ((box.floor ?? 0) === 0) drawCardboardBox(ctx, box);
+      }
+      if (localProg) {
+        drawLibraryBooks(ctx, localProg.books, 0, world.elapsedTime);
+      }
+      for (const player of world.players) {
+        if ((player.floor ?? 0) === 0 && !isPlayerMidStair(player)) {
+          drawSinglePlayer(player);
+        }
+      }
+      if (monster.floor === 0 && !monsterOnStair) {
+        drawLibraryMonster(ctx, monster, world.elapsedTime);
+      }
+    }
+
+    // 1B. Smooth staircase transition darkness curtain obscuring Ground Floor up to pitch black
+    if (libraryBlend > 0.01) {
+      ctx.fillStyle = `rgba(0, 0, 0, ${Math.min(1, libraryBlend * 1.05)})`;
+      ctx.fillRect(0, 0, map.width, map.height);
+    }
+
+    // 1C. Staircases + any entities currently walking on stairs
+    drawLibraryStairs(ctx, map, world, libraryBlend);
+    for (const player of world.players) {
+      if (isPlayerMidStair(player)) {
+        drawSinglePlayer(player);
+      }
+    }
+    if (monsterOnStair && ((monster.floor === localFloor) || (libraryBlend > 0.05 && libraryBlend < 0.95))) {
+      drawLibraryMonster(ctx, monster, world.elapsedTime);
+    }
+
+    // 1D. Upper Mezzanine Floor (revealed smoothly only while on/past stairs)
+    if (libraryBlend > 0.01) {
+      ctx.save();
+      ctx.globalAlpha = libraryBlend;
+      const upperFloorCanvas = getLibraryUpperFloorCanvas(map);
+      ctx.drawImage(upperFloorCanvas, 0, 0);
+      drawAmbientArenaLights(ctx, map, world, 1);
+      if (!isExtraDark) {
+        drawDynamicLightShadows(ctx, map, world, 1);
+      }
+      drawSpawnPads();
+      drawPickupsOnFloor(1);
+      for (const wall of map.walls) {
+        if (isWallOnFloor(wall, 1)) drawObstacle(ctx, wall, world);
+      }
+      for (const box of world.boxes) {
+        if ((box.floor ?? 0) === 1) drawCardboardBox(ctx, box);
+      }
+      if (localProg) {
+        drawLibraryBooks(ctx, localProg.books, 1, world.elapsedTime);
+      }
+      for (const player of world.players) {
+        if ((player.floor ?? 0) === 1 && !isPlayerMidStair(player)) {
+          drawSinglePlayer(player);
+        }
+      }
+      if (monster.floor === 1 && !monsterOnStair) {
+        drawLibraryMonster(ctx, monster, world.elapsedTime);
+      }
+      ctx.restore();
+    }
+  } else {
+    // 1. Standard Single-Floor Rendering
+    const floorCanvas = getFloorCanvas(map);
+    ctx.drawImage(floorCanvas, 0, 0);
+    drawAmbientArenaLights(ctx, map, world);
+    if (!isExtraDark) {
+      drawDynamicLightShadows(ctx, map, world);
+    }
+    drawIcePits(ctx, world, map);
+    drawSpawnPads();
+    drawPickupsOnFloor();
+
+    for (const wall of map.walls) {
+      drawObstacle(ctx, wall, world);
+    }
+    for (const box of world.boxes) {
+      drawCardboardBox(ctx, box);
+    }
+    for (const player of world.players) {
+      drawSinglePlayer(player);
+    }
   }
 
   // 7. Compute Multi-Tier Feathered Flashlight Raycast Polygons in Extra Dark Mode
@@ -1954,17 +3079,17 @@ export function renderArena(
 
   if (isExtraDark) {
     const shadowWalls: WallRect[] = [
-      ...map.walls,
+      ...map.walls.filter((w) => isWallOnFloor(w, localFloor)),
       ...world.boxes
-        .filter((b) => b.state === 'active')
+        .filter((b) => b.state === 'active' && (!isLibrary || (b.floor ?? 0) === localFloor))
         .map((b) => ({ x: b.x - b.w * 0.5, y: b.y - b.h * 0.5, w: b.w, h: b.h })),
     ];
     for (const p of world.players) {
       if (!p.alive) continue;
+      if (isLibrary && (p.floor ?? 0) !== localFloor && !isPlayerMidStair(p)) continue;
       const isLocal = p.id === localPlayerId;
       const range = isLocal ? 490 : 360;
       const baseFov = isLocal ? 1.32 : 1.08;
-      // 3 nested cones so side edges feather smoothly instead of cutting off as a hard line
       const outerPoly = computeFlashlightPolygon(p.x, p.y, p.angle, baseFov * 1.45, range, shadowWalls);
       const midPoly = computeFlashlightPolygon(p.x, p.y, p.angle, baseFov * 0.96, range * 0.96, shadowWalls);
       const corePoly = computeFlashlightPolygon(p.x, p.y, p.angle, baseFov * 0.54, range * 0.9, shadowWalls);
@@ -2011,9 +3136,9 @@ export function renderArena(
       }
     }
 
-    // Bullet floor illumination + object rim light interaction!
     const bulletGlowRadius = isExtraDark ? 82 : 52;
     for (const b of world.bullets) {
+      if (isLibrary && (b.floor ?? 0) !== localFloor) continue;
       const grad = ctx.createRadialGradient(b.x, b.y, 2, b.x, b.y, bulletGlowRadius);
       grad.addColorStop(0, hexWithAlpha(b.color, isExtraDark ? 0.48 : 0.3));
       grad.addColorStop(0.45, hexWithAlpha(b.color, isExtraDark ? 0.2 : 0.12));
@@ -2023,7 +3148,6 @@ export function renderArena(
       ctx.arc(b.x, b.y, bulletGlowRadius, 0, Math.PI * 2);
       ctx.fill();
 
-      // Brief warm muzzle flash on fresh shots
       if (b.age < 0.2) {
         const flashA = (1 - b.age / 0.2) * 0.45;
         const mg = ctx.createRadialGradient(b.x, b.y, 2, b.x, b.y, 95);
@@ -2035,9 +3159,9 @@ export function renderArena(
         ctx.fill();
       }
 
-      // Cinematic rim-light reflection onto nearby obstacles
       for (const wall of map.walls) {
         if (wall.kind?.startsWith('perimeter')) continue;
+        if (!isWallOnFloor(wall, localFloor)) continue;
         const cx = Math.max(wall.x, Math.min(b.x, wall.x + wall.w));
         const cy = Math.max(wall.y, Math.min(b.y, wall.y + wall.h));
         const d = Math.hypot(b.x - cx, b.y - cy);
@@ -2052,8 +3176,8 @@ export function renderArena(
       }
     }
 
-    // Ticking TNT & Explosion floor light bursts
     for (const item of world.pickups) {
+      if (isLibrary && (item.floor ?? 0) !== localFloor) continue;
       if (item.kind === 'tnt' && item.armed) {
         const pulse = 0.5 + 0.5 * Math.sin(world.elapsedTime * 14);
         const r = 64 + pulse * 18;
@@ -2068,6 +3192,7 @@ export function renderArena(
     }
 
     for (const ex of world.explosions) {
+      if (isLibrary && (ex.floor ?? 0) !== localFloor) continue;
       const t = ex.age / ex.duration;
       const r = ex.radius * 1.25;
       const g = ctx.createRadialGradient(ex.x, ex.y, 6, ex.x, ex.y, r);
@@ -2096,7 +3221,6 @@ export function renderArena(
       lctx.save();
       lctx.clearRect(0, 0, lw, lh);
 
-      // Darker moody surroundings (~86% dark) while faint player silhouettes remain readable
       lctx.fillStyle = 'rgba(3, 6, 13, 0.86)';
       lctx.fillRect(0, 0, lw, lh);
 
@@ -2105,7 +3229,6 @@ export function renderArena(
       lctx.scale(scale, scale);
       lctx.globalCompositeOperation = 'destination-out';
 
-      // Wider soft personal close-range aura around local player so nearby obstacles are navigable
       if (localPlayer && localPlayer.alive) {
         const auraR = 215;
         const aura = lctx.createRadialGradient(
@@ -2126,7 +3249,6 @@ export function renderArena(
         lctx.fill();
       }
 
-      // Multi-layered feathered flashlight cones (gradual outer edge fade!)
       for (const fl of flashlightPolys) {
         const peak = fl.isLocal ? 1.0 : 0.6;
         const tiers: Array<{ poly: Array<{ x: number; y: number }>; weight: number }> = [
@@ -2161,8 +3283,8 @@ export function renderArena(
         }
       }
 
-      // Bullets punch subtle warning light pools through darkness
       for (const b of world.bullets) {
+        if (isLibrary && (b.floor ?? 0) !== localFloor) continue;
         const br = b.age < 0.2 ? 125 : 88;
         const bg = lctx.createRadialGradient(b.x, b.y, 4, b.x, b.y, br);
         bg.addColorStop(0, 'rgba(0, 0, 0, 0.94)');
@@ -2174,8 +3296,8 @@ export function renderArena(
         lctx.fill();
       }
 
-      // Subtle pickup glints so bullets, medkits & nitros are spottable without lighting up rooms
       for (const item of world.pickups) {
+        if (isLibrary && (item.floor ?? 0) !== localFloor) continue;
         const pr = item.kind === 'tnt' ? 84 : 44;
         const strength = item.kind === 'tnt' ? 0.88 : 0.56;
         const pg = lctx.createRadialGradient(item.x, item.y, 2, item.x, item.y, pr);
@@ -2187,8 +3309,21 @@ export function renderArena(
         lctx.fill();
       }
 
-      // Explosions cut light through darkness
+      if (localProg) {
+        for (const b of localProg.books) {
+          if (b.collected || b.floor !== localFloor) continue;
+          const bg = lctx.createRadialGradient(b.x, b.y, 2, b.x, b.y, 64);
+          bg.addColorStop(0, 'rgba(0, 0, 0, 0.72)');
+          bg.addColorStop(1, 'rgba(0, 0, 0, 0)');
+          lctx.fillStyle = bg;
+          lctx.beginPath();
+          lctx.arc(b.x, b.y, 64, 0, Math.PI * 2);
+          lctx.fill();
+        }
+      }
+
       for (const ex of world.explosions) {
+        if (isLibrary && (ex.floor ?? 0) !== localFloor) continue;
         const t = ex.age / ex.duration;
         const r = ex.radius * 1.35;
         const eg = lctx.createRadialGradient(ex.x, ex.y, 8, ex.x, ex.y, r);
@@ -2202,21 +3337,19 @@ export function renderArena(
 
       lctx.restore();
 
-      // Soft blur when scaling half-res lightCanvas back up for butter-smooth feathered edges
       ctx.save();
       ctx.filter = 'blur(8px)';
       ctx.drawImage(lightCanvas, -12, -12, canvasWidth + 24, canvasHeight + 24);
       ctx.restore();
     }
 
-    // Re-enter world transform for faint dark silhouettes, glowing bullets, particles & texts
     ctx.save();
     ctx.translate(worldTx, worldTy);
     ctx.scale(scale, scale);
 
-    // Faintly visible fighter silhouettes inside Extra Dark surroundings
     for (const player of world.players) {
       if (!player.alive || player.id === localPlayerId) continue;
+      if (isLibrary && (player.floor ?? 0) !== localFloor && !isPlayerMidStair(player)) continue;
       ctx.save();
       ctx.translate(player.x, player.y);
       ctx.globalAlpha = 0.28;
@@ -2237,6 +3370,24 @@ export function renderArena(
       ctx.fill();
       ctx.restore();
     }
+
+    if (isLibrary && world.libraryState) {
+      const m = world.libraryState.monster;
+      if (m.floor === localFloor || (libraryBlend > 0.05 && libraryBlend < 0.95 && isMonsterOnStair(m))) {
+        ctx.save();
+        ctx.translate(m.x, m.y);
+        ctx.rotate(m.angle);
+        ctx.globalAlpha = m.mode === 'rage' ? 0.58 : 0.34;
+        const glow = ctx.createRadialGradient(18, 0, 2, 18, 0, 28);
+        glow.addColorStop(0, m.mode === 'rage' ? '#FB923C' : '#F97316');
+        glow.addColorStop(1, 'rgba(249, 115, 22, 0)');
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(18, 0, 28, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
   }
 
   // 9b. Volumetric Light Rays & Perimeter Light Fixtures (with Real Cast Shadow Occlusion!)
@@ -2249,7 +3400,8 @@ export function renderArena(
     canvasHeight,
     worldTx,
     worldTy,
-    scale
+    scale,
+    isLibrary ? localFloor : undefined
   );
 
   // 9c. Realistic Moving White Fog & Illuminated Fog-Shadow Scattering (Winter Tussle)
@@ -2266,8 +3418,9 @@ export function renderArena(
     );
   }
 
-  // 10. Glowing Bullets & Trails (always crisp & luminous in Immersive / Extra Dark!)
+  // 10. Glowing Bullets & Trails (floor-filtered on Library)
   for (const b of world.bullets) {
+    if (isLibrary && (b.floor ?? 0) !== localFloor) continue;
     if (b.trail && b.trail.length > 1) {
       for (let t = 0; t < b.trail.length - 1; t++) {
         const pt = b.trail[t];
@@ -2306,6 +3459,7 @@ export function renderArena(
 
   // 11. Explosions, Particles & Floating Texts
   for (const ex of world.explosions) {
+    if (isLibrary && (ex.floor ?? 0) !== localFloor) continue;
     const t = ex.age / ex.duration;
     const r = ex.radius * (0.35 + 0.65 * Math.pow(t, 0.45));
     ctx.save();
@@ -2324,6 +3478,7 @@ export function renderArena(
   }
 
   for (const pt of world.particles) {
+    if (isLibrary && (pt.floor ?? 0) !== localFloor) continue;
     const t = pt.age / pt.duration;
     ctx.save();
     ctx.globalAlpha = Math.max(0, 1 - t);
@@ -2335,6 +3490,7 @@ export function renderArena(
   }
 
   for (const ft of world.floatingTexts) {
+    if (isLibrary && (ft.floor ?? 0) !== localFloor) continue;
     const t = ft.age / ft.duration;
     ctx.save();
     ctx.globalAlpha = Math.max(0, 1 - Math.pow(t, 1.5));
@@ -2609,6 +3765,36 @@ function getConeLightSources(map: ArenaMap): ConeLightSource[] {
     ];
   }
 
+  if (map.floorTheme === 'library_wood') {
+    const sconceXs = [map.width * 0.16, map.width * 0.38, map.width * 0.62, map.width * 0.84];
+    const lights: ConeLightSource[] = [];
+    for (const x of sconceXs) {
+      lights.push({
+        x,
+        y: 26,
+        dirY: 1,
+        range: 640,
+        beamLen: 520,
+        beamHalfBase: 46,
+        beamHalfEnd: 295,
+        coneMaxHalfAngle: Math.atan2(295, 520) + 0.18,
+        colorRgb: '251, 191, 36',
+      });
+      lights.push({
+        x,
+        y: map.height - 26,
+        dirY: -1,
+        range: 640,
+        beamLen: 520,
+        beamHalfBase: 46,
+        beamHalfEnd: 295,
+        coneMaxHalfAngle: Math.atan2(295, 520) + 0.18,
+        colorRgb: '251, 191, 36',
+      });
+    }
+    return lights;
+  }
+
   return [];
 }
 
@@ -2756,12 +3942,14 @@ function collectLightShadowPolys(
   map: ArenaMap,
   world: RenderableWorld,
   shadowLen: number,
-  includeWalls: boolean
+  includeWalls: boolean,
+  floorFilter?: FloorLevel
 ): ShadowPolygon[] {
   const out: ShadowPolygon[] = [];
 
   for (const p of world.players) {
     if (!p.alive) continue;
+    if (floorFilter !== undefined && (p.floor ?? 0) !== floorFilter) continue;
     const poly = buildCircleShadowFromPoint(
       light.x,
       light.y,
@@ -2778,6 +3966,7 @@ function collectLightShadowPolys(
 
   for (const box of world.boxes) {
     if (box.state !== 'active' && box.state !== 'spawning') continue;
+    if (floorFilter !== undefined && (box.floor ?? 0) !== floorFilter) continue;
     const poly = buildRectShadowFromPoint(
       light.x,
       light.y,
@@ -2795,6 +3984,7 @@ function collectLightShadowPolys(
 
   for (const item of world.pickups) {
     if (item.kind !== 'tnt' && item.kind !== 'nitro') continue;
+    if (floorFilter !== undefined && (item.floor ?? 0) !== floorFilter) continue;
     const s = item.kind === 'tnt' ? 29 : 24;
     const poly = buildRectShadowFromPoint(
       light.x,
@@ -2814,6 +4004,7 @@ function collectLightShadowPolys(
   if (includeWalls) {
     for (const wall of map.walls) {
       if (wall.kind?.startsWith('perimeter')) continue;
+      if (floorFilter !== undefined && (wall.floor ?? 0) !== floorFilter) continue;
       const poly = buildRectShadowFromPoint(
         light.x,
         light.y,
@@ -2836,7 +4027,8 @@ function collectLightShadowPolys(
 function drawDynamicLightShadows(
   ctx: CanvasRenderingContext2D,
   map: ArenaMap,
-  world: RenderableWorld
+  world: RenderableWorld,
+  floorFilter?: FloorLevel
 ) {
   ctx.save();
 
@@ -2905,7 +4097,7 @@ function drawDynamicLightShadows(
   const midShadow = isWinter ? 0.15 : 0.2;
   const lights = getConeLightSources(map);
   for (const light of lights) {
-    const polys = collectLightShadowPolys(light, map, world, isWinter ? 250 : 220, true);
+    const polys = collectLightShadowPolys(light, map, world, isWinter ? 250 : 220, true, floorFilter);
     for (const poly of polys) {
       const mx = (poly.x0 + poly.x1) * 0.5;
       const my = (poly.y0 + poly.y1) * 0.5;
@@ -2930,11 +4122,11 @@ function drawDynamicLightShadows(
 function drawAmbientArenaLights(
   ctx: CanvasRenderingContext2D,
   map: ArenaMap,
-  world: RenderableWorld
+  world: RenderableWorld,
+  floorFilter?: FloorLevel
 ) {
   ctx.save();
   if (map.floorTheme === 'mansion_wood') {
-    // Warm golden floor light pools under ceiling lamps / foyer chandelier
     const lights = getConeLightSources(map);
     for (const l of lights) {
       const py = l.y + l.dirY * 145;
@@ -2962,8 +4154,43 @@ function drawAmbientArenaLights(
     ctx.beginPath();
     ctx.arc(map.width * 0.5, map.height * 0.5, map.immersive ? 420 : 280, 0, Math.PI * 2);
     ctx.fill();
+  } else if (map.floorTheme === 'library_wood') {
+    // Warm amber wall-sconce pools + candlelit atrium/staircase glow matching DOORS Library photo
+    const lights = getConeLightSources(map);
+    for (const l of lights) {
+      const py = l.y + l.dirY * 140;
+      const pool = ctx.createRadialGradient(l.x, l.y + l.dirY * 60, 14, l.x, py, 340);
+      pool.addColorStop(0, 'rgba(251, 191, 36, 0.25)');
+      pool.addColorStop(0.55, 'rgba(245, 158, 11, 0.10)');
+      pool.addColorStop(1, 'rgba(245, 158, 11, 0)');
+      ctx.fillStyle = pool;
+      ctx.beginPath();
+      ctx.arc(l.x, py, 340, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    if ((floorFilter ?? 0) === 0) {
+      const centerGlow = ctx.createRadialGradient(map.width * 0.5, map.height * 0.5, 40, map.width * 0.5, map.height * 0.5, 520);
+      centerGlow.addColorStop(0, 'rgba(251, 191, 36, 0.18)');
+      centerGlow.addColorStop(1, 'rgba(245, 158, 11, 0)');
+      ctx.fillStyle = centerGlow;
+      ctx.beginPath();
+      ctx.arc(map.width * 0.5, map.height * 0.5, 520, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    for (const st of map.stairs ?? []) {
+      const sx = st.x + st.w * 0.5;
+      const sy = st.upDir === 'up' ? st.y + 32 : st.y + st.h - 32;
+      const sg = ctx.createRadialGradient(sx, sy, 12, sx, sy, 230);
+      sg.addColorStop(0, 'rgba(253, 224, 71, 0.22)');
+      sg.addColorStop(1, 'rgba(245, 158, 11, 0)');
+      ctx.fillStyle = sg;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 230, 0, Math.PI * 2);
+      ctx.fill();
+    }
   } else if (map.floorTheme === 'maple_cargo') {
-    // Industrial glowing green floor grates + emerald vent glow pools
     const grates = [
       { x: map.width * 0.32, y: map.height * 0.42 },
       { x: map.width * 0.5, y: map.height * 0.5 },
@@ -2988,7 +4215,6 @@ function drawAmbientArenaLights(
       }
     }
   } else if (map.floorTheme === 'winter_snow') {
-    // Cool arctic ground mist & subtle atmospheric twilight color-temperature veil
     const t = world.elapsedTime;
     const coolWash = ctx.createRadialGradient(
       map.width * 0.5,
@@ -3004,7 +4230,6 @@ function drawAmbientArenaLights(
     ctx.fillStyle = coolWash;
     ctx.fillRect(0, 0, map.width, map.height);
 
-    // Drifting low ground-hugging fog banks
     const fogBanks = [
       { bx: map.width * 0.28, by: map.height * 0.3, r: 320, spd: 0.28, amp: 55 },
       { bx: map.width * 0.72, by: map.height * 0.65, r: 350, spd: 0.22, amp: 65 },
@@ -3036,7 +4261,8 @@ function drawVolumetricArenaLights(
   canvasHeight: number,
   worldTx: number,
   worldTy: number,
-  scale: number
+  scale: number,
+  floorFilter?: FloorLevel
 ) {
   if (isExtraDark) return;
   const elapsedTime = world.elapsedTime;
@@ -3044,13 +4270,13 @@ function drawVolumetricArenaLights(
 
   if (
     map.floorTheme === 'mansion_wood' ||
+    map.floorTheme === 'library_wood' ||
     map.floorTheme === 'maple_cargo' ||
     map.floorTheme === 'winter_snow'
   ) {
     const isWinter = map.floorTheme === 'winter_snow';
     const lights = getConeLightSources(map);
 
-    // Render occluded volumetric beams on offscreen lightCanvas so players, TNT, Nitro, boxes & walls cut visible shadows through the light rays!
     const lightScale = 0.5;
     const lw = Math.max(1, Math.ceil(canvasWidth * lightScale));
     const lh = Math.max(1, Math.ceil(canvasHeight * lightScale));
@@ -3068,7 +4294,6 @@ function drawVolumetricArenaLights(
         const shimmer = 0.91 + 0.09 * Math.sin(elapsedTime * (isWinter ? 1.6 : 2.5) + i * 1.6);
 
         if (isWinter) {
-          // Soft feathered radial-cone beam in fog (zero hard straight trapezoid edges!)
           lctx.save();
           const cx = l.x;
           const cy = l.y + l.dirY * (l.beamLen * 0.45);
@@ -3105,10 +4330,9 @@ function drawVolumetricArenaLights(
         }
       }
 
-      // Punch out shadow silhouettes for players, boxes, TNT, Nitro & obstacles inside the volumetric rays
       lctx.globalCompositeOperation = 'destination-out';
       for (const l of lights) {
-        const polys = collectLightShadowPolys(l, map, world, l.range + 160, true);
+        const polys = collectLightShadowPolys(l, map, world, l.range + 160, true, floorFilter);
         for (const poly of polys) {
           lctx.fillStyle = `rgba(0, 0, 0, ${(isWinter ? 0.72 : 0.82) * Math.min(1, poly.strength + 0.18)})`;
           lctx.beginPath();
@@ -3125,8 +4349,9 @@ function drawVolumetricArenaLights(
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
       if (isWinter) {
-        // Soft atmospheric scattering blur softens beam edges and shadow trails naturally through fog
         ctx.filter = 'blur(14px)';
+      } else if (map.floorTheme === 'library_wood') {
+        ctx.filter = 'blur(5px)';
       }
       ctx.drawImage(
         lightCanvas,
@@ -3138,9 +4363,8 @@ function drawVolumetricArenaLights(
       ctx.restore();
     }
 
-    // Draw physical wall lamp / green vent / frost-lantern housings on top
     for (const l of lights) {
-      if (map.floorTheme === 'mansion_wood') {
+      if (map.floorTheme === 'mansion_wood' || map.floorTheme === 'library_wood') {
         ctx.fillStyle = '#78350F';
         ctx.strokeStyle = '#1C1917';
         ctx.lineWidth = 2;
@@ -3150,7 +4374,7 @@ function drawVolumetricArenaLights(
         ctx.fill();
         ctx.stroke();
 
-        ctx.fillStyle = '#FEF08A';
+        ctx.fillStyle = map.floorTheme === 'library_wood' ? '#FDE047' : '#FEF08A';
         ctx.beginPath();
         ctx.arc(l.x, l.y + l.dirY * 4, 14, l.dirY > 0 ? 0 : Math.PI, l.dirY > 0 ? Math.PI : Math.PI * 2, false);
         ctx.fill();

@@ -474,6 +474,25 @@ export class MultiplayerClient {
         const room = this.hostRoom;
         if (!room.engine || room.phase !== 'PLAYING') return;
         room.engine.firePlayerShot(currentSlot);
+      } else if (type === 'collect_book') {
+        const room = this.hostRoom;
+        if (!room.engine || room.phase !== 'PLAYING') return;
+        room.engine.collectNearbyBook(currentSlot);
+      } else if (type === 'lock_dial') {
+        const room = this.hostRoom;
+        if (!room.engine || room.phase !== 'PLAYING') return;
+        if (typeof msg.index === 'number' && typeof msg.digit === 'number') {
+          room.engine.setDoorDialDigit(currentSlot, msg.index, msg.digit);
+        }
+      } else if (type === 'submit_door_code') {
+        const room = this.hostRoom;
+        if (!room.engine || room.phase !== 'PLAYING') return;
+        if (Array.isArray(msg.digits)) {
+          room.engine.submitDoorCode(
+            currentSlot,
+            msg.digits.map((d) => (typeof d === 'number' ? d : 0))
+          );
+        }
       }
     });
 
@@ -947,6 +966,54 @@ export class MultiplayerClient {
     if (this.role !== 'guest' || !this.guestConn?.open) return;
     try {
       this.guestConn.send({ type: 'shoot_action' });
+    } catch {
+      // Ignore
+    }
+  }
+
+  public sendCollectBook() {
+    if (this.role === 'host') {
+      const room = this.hostRoom;
+      if (!room?.engine || room.phase !== 'PLAYING') return;
+      room.engine.collectNearbyBook(room.hostSlot);
+      return;
+    }
+
+    if (this.role !== 'guest' || !this.guestConn?.open) return;
+    try {
+      this.guestConn.send({ type: 'collect_book' });
+    } catch {
+      // Ignore
+    }
+  }
+
+  public sendLockDial(index: number, digit: number) {
+    if (this.role === 'host') {
+      const room = this.hostRoom;
+      if (!room?.engine || room.phase !== 'PLAYING') return;
+      room.engine.setDoorDialDigit(room.hostSlot, index, digit);
+      return;
+    }
+
+    if (this.role !== 'guest' || !this.guestConn?.open) return;
+    try {
+      this.guestConn.send({ type: 'lock_dial', index, digit });
+    } catch {
+      // Ignore
+    }
+  }
+
+  public sendSubmitDoorCode(digits: number[]) {
+    if (this.role === 'host') {
+      const room = this.hostRoom;
+      if (!room?.engine || room.phase !== 'PLAYING') return;
+      room.engine.submitDoorCode(room.hostSlot, digits);
+      return;
+    }
+
+    if (this.role !== 'guest' || !this.guestConn?.open) return;
+    try {
+      this.guestConn.send({ type: 'submit_door_code', digits });
     } catch {
       // Ignore
     }

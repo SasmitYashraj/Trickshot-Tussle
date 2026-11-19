@@ -57,6 +57,144 @@ function makeIcePit(x: number, y: number, rx: number, ry: number, seed: number) 
   };
 }
 
+function buildLibraryMap(): ArenaMap {
+  const W = 3000;
+  const H = 2120;
+  const T = ARENA_WALL_THICKNESS; // 24
+
+  // Mezzanine inner opening bounds (Ground-only central atrium = x: 590..2410, y: 410..1710)
+  const wingX = 590;
+  const wingR = W - wingX; // 2410
+  const wingY = 410;
+  const wingB = H - wingY; // 1710
+
+  // 4 symmetrical stairs connecting Ground (floor 0) <-> Upper Mezzanine (floor 1)
+  const stairW = 196;
+  const stairH = 155;
+  const stairLX = 769;
+  const stairRX = W - stairLX - stairW; // 2035
+  const topStairY = wingY; // 410..565
+  const botStairY = wingB - stairH; // 1555..1710
+
+  const stairs = [
+    { id: 0, x: stairLX, y: topStairY, w: stairW, h: stairH, upDir: 'up' as const },
+    { id: 1, x: stairRX, y: topStairY, w: stairW, h: stairH, upDir: 'up' as const },
+    { id: 2, x: stairLX, y: botStairY, w: stairW, h: stairH, upDir: 'down' as const },
+    { id: 3, x: stairRX, y: botStairY, w: stairW, h: stairH, upDir: 'down' as const },
+  ];
+
+  const walls: WallRect[] = [
+    // Outer library perimeter (applies to BOTH floor 0 and floor 1)
+    ...makeOuterWalls(W, H, 'perimeter_wood'),
+
+    // Central dark-brown 4-door pillar monolith on Ground Floor (floor 0)
+    { x: W / 2 - 110, y: H / 2 - 110, w: 220, h: 220, kind: 'library_pillar', floor: 0 },
+  ];
+
+  // Staircase side borders (balustrades blocking entry from the sides on BOTH floors)
+  const railT = 18;
+  for (const st of stairs) {
+    walls.push({ x: st.x - railT, y: st.y, w: railT, h: st.h, kind: 'stair_rail', floor: 0 });
+    walls.push({ x: st.x + st.w, y: st.y, w: railT, h: st.h, kind: 'stair_rail', floor: 0 });
+    walls.push({ x: st.x - railT, y: st.y, w: railT, h: st.h, kind: 'stair_rail', floor: 1 });
+    walls.push({ x: st.x + st.w, y: st.y, w: railT, h: st.h, kind: 'stair_rail', floor: 1 });
+  }
+
+  // Upper Mezzanine inner guardrails (floor: 1) sealing the balcony except at the 4 stair tops
+  walls.push(
+    { x: wingX, y: wingY, w: railT, h: wingB - wingY, kind: 'mezzanine_rail', floor: 1 },
+    { x: wingR - railT, y: wingY, w: railT, h: wingB - wingY, kind: 'mezzanine_rail', floor: 1 },
+    // Top edge segments
+    { x: wingX, y: wingY, w: stairLX - railT - wingX, h: railT, kind: 'mezzanine_rail', floor: 1 },
+    {
+      x: stairLX + stairW + railT,
+      y: wingY,
+      w: stairRX - railT - (stairLX + stairW + railT),
+      h: railT,
+      kind: 'mezzanine_rail',
+      floor: 1,
+    },
+    { x: stairRX + stairW + railT, y: wingY, w: wingR - (stairRX + stairW + railT), h: railT, kind: 'mezzanine_rail', floor: 1 },
+    // Bottom edge segments
+    { x: wingX, y: wingB - railT, w: stairLX - railT - wingX, h: railT, kind: 'mezzanine_rail', floor: 1 },
+    {
+      x: stairLX + stairW + railT,
+      y: wingB - railT,
+      w: stairRX - railT - (stairLX + stairW + railT),
+      h: railT,
+      kind: 'mezzanine_rail',
+      floor: 1,
+    },
+    { x: stairRX + stairW + railT, y: wingB - railT, w: wingR - (stairRX + stairW + railT), h: railT, kind: 'mezzanine_rail', floor: 1 }
+  );
+
+  // Helper to mirror bookshelf rects 4-ways symmetrically around (W/2, H/2)
+  const addQuadShelf = (x: number, y: number, w: number, h: number, floor: 0 | 1) => {
+    const mx = W - x - w;
+    const my = H - y - h;
+    walls.push({ x, y, w, h, kind: 'bookshelf', floor });
+    walls.push({ x: mx, y, w, h, kind: 'bookshelf', floor });
+    walls.push({ x, y: my, w, h, kind: 'bookshelf', floor });
+    walls.push({ x: mx, y: my, w, h, kind: 'bookshelf', floor });
+  };
+
+  // Helper to mirror top-bottom only (for spans centered on X=W/2)
+  const addTopBotShelf = (x: number, y: number, w: number, h: number, floor: 0 | 1) => {
+    const my = H - y - h;
+    walls.push({ x, y, w, h, kind: 'bookshelf', floor });
+    walls.push({ x, y: my, w, h, kind: 'bookshelf', floor });
+  };
+
+  // === UPPER FLOOR BOOKSHELVES (floor: 1) ===
+  // Left & Right side wing vertical shelves (2 per quadrant -> 8 total)
+  addQuadShelf(185, 290, 34, 540, 1);
+  addQuadShelf(380, 290, 34, 540, 1);
+  // Top & Bottom wing horizontal shelves (corner-wing + center-bridge)
+  addQuadShelf(670, 192, 345, 32, 1);
+  addTopBotShelf(1195, 192, 610, 32, 1);
+
+  // === GROUND FLOOR BOOKSHELVES (floor: 0) ===
+  // Side wing alternating vertical shelves (interleaved horizontally with Upper shelves above)
+  addQuadShelf(282, 290, 34, 540, 0);
+  addQuadShelf(475, 290, 34, 540, 0);
+  // Top & Bottom edge horizontal shelves
+  addQuadShelf(670, 188, 345, 32, 0);
+  addTopBotShelf(1195, 188, 610, 32, 0);
+  // Mid-Atrium 2 horizontal shelves below stairs (4 pairs mirrored = 8 shelves)
+  addQuadShelf(670, 720, 168, 32, 0);
+  addQuadShelf(670, 920, 168, 32, 0);
+  // Central reading-hall 3 vertical shelves north & south of central pillar (12 shelves)
+  addQuadShelf(998, 570, 30, 180, 0);
+  addQuadShelf(1190, 570, 30, 180, 0);
+  addQuadShelf(1382, 570, 30, 180, 0);
+
+  return {
+    id: 'library',
+    name: 'The Library',
+    description:
+      'Two-floor haunted archive with 8 hidden books, a central 4-door cipher pillar, and the sound-hunting Figure.',
+    width: W,
+    height: H,
+    immersive: true,
+    floorTheme: 'library_wood',
+    walls,
+    upperZones: [
+      { x: T, y: T, w: wingX - T, h: H - T * 2 },
+      { x: wingR, y: T, w: W - T - wingR, h: H - T * 2 },
+      { x: wingX, y: T, w: wingR - wingX, h: wingY - T },
+      { x: wingX, y: wingB, w: wingR - wingX, h: H - T - wingB },
+    ],
+    stairs,
+    pillarCenter: { x: W / 2, y: H / 2 },
+    spawns: [
+      { x: 112, y: 1995 }, // SW upper corner
+      { x: 2888, y: 125 }, // NE upper corner
+      { x: 112, y: 125 },  // NW upper corner
+      { x: 2888, y: 1995 }, // SE upper corner
+    ],
+  };
+}
+
 export const ARENA_MAPS: Record<MapId, ArenaMap> = {
   crossroads: {
     id: 'crossroads',
@@ -253,6 +391,7 @@ export const ARENA_MAPS: Record<MapId, ArenaMap> = {
       { x: 1200, y: 1530 },
     ],
   },
+  library: buildLibraryMap(),
 };
 
 export const SOLO_MAP_LIST: ArenaMap[] = [
@@ -265,4 +404,5 @@ export const SOLO_MAP_LIST: ArenaMap[] = [
 export const IMMERSIVE_MAP_LIST: ArenaMap[] = [
   ARENA_MAPS.immersive_mansion,
   ARENA_MAPS.immersive_outdoors,
+  ARENA_MAPS.library,
 ];

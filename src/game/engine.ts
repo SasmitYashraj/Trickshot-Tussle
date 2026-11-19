@@ -19,12 +19,26 @@ import {
   type EngineEvent,
   type Explosion,
   type FloatingText,
+  type FloorLevel,
   type GameSnapshot,
   type IcePit,
   type JoystickState,
   KILL_STREAK_WINDOW,
+  LIBRARY_BOOKS_PER_PLAYER,
+  LIBRARY_CODE_LEN,
+  LIBRARY_HEARING_RADIUS,
+  LIBRARY_INTRO_DURATION,
+  LIBRARY_SHAPES,
+  type LibraryBookSpot,
+  type LibraryClue,
+  type LibraryDoor,
+  type LibraryMatchState,
+  type LibraryMonsterState,
+  type LibraryShape,
   MEDKIT_HEAL,
   MEDKIT_RADIUS,
+  MONSTER_RADIUS,
+  MONSTER_STUN_DURATION,
   type MatchConfig,
   NITRO_BLAST_RADIUS,
   NITRO_DAMAGE,
@@ -53,6 +67,23 @@ import {
   type WallRect,
   type WorldSyncState,
 } from './types.ts';
+
+function isWallOnFloor(wall: WallRect, floor: FloorLevel): boolean {
+  return wall.floor === undefined || wall.floor === floor;
+}
+
+function sameFloor(a?: FloorLevel, b?: FloorLevel): boolean {
+  return (a ?? 0) === (b ?? 0);
+}
+
+interface NavNode {
+  id: number;
+  x: number;
+  y: number;
+  floor: FloorLevel;
+  isStair: boolean;
+  neighbors: number[];
+}
 
 const TNT_HALF_SIZE = 29;
 
@@ -212,6 +243,7 @@ export class ArenaEngine {
   public winnerId: number | null = null;
   public winnerTeam: number | null = null;
   public winnerReason = '';
+  public libraryState?: LibraryMatchState;
 
   private nextId = 1;
   private bulletSpawnTimer = 1.4;
@@ -220,6 +252,21 @@ export class ArenaEngine {
   private medkitSpawnTimer = 9.0;
   private boxSpawnTimer = 4.0;
   private rapidStreaks = new Map<number, { count: number; lastKillAt: number }>();
+
+  private navNodes: NavNode[] = [];
+  private monsterPath: NavNode[] = [];
+  private monsterPathTimer = 0;
+  private monsterStepTimer = 0.25;
+  private monsterRageSpeedScale = 1.0;
+  private monsterHearCheckTimer = 0;
+  private monsterLastProgressX = 0;
+  private monsterLastProgressY = 0;
+  private monsterStuckTimer = 0;
+  private librarySolutions = new Map<number, number[]>();
+  private libraryBookQueues = new Map<number, LibraryClue[]>();
+  private libraryCollectedSpots = new Set<number>();
+  private botPaths = new Map<number, { nodes: NavNode[]; timer: number; goalX: number; goalY: number; goalFloor: FloorLevel }>();
+  private botCodeCooldown = new Map<number, number>();
 
   constructor(config: MatchConfig, slots?: SlotSetup[]) {
     this.config = config;
@@ -252,13 +299,29 @@ export class ArenaEngine {
     this.winnerTeam = null;
     this.winnerReason = '';
     this.rapidStreaks.clear();
+    this.libraryState = undefined;
+    this.navNodes = [];
+    this.monsterPath = [];
+    this.monsterPathTimer = 0;
+    this.monsterStepTimer = 0.25;
+    this.monsterRageSpeedScale = 1.0;
+    this.monsterHearCheckTimer = 0;
+    this.monsterLastProgressX = 0;
+    this.monsterLastProgressY = 0;
+    this.monsterStuckTimer = 0;
+    this.librarySolutions.clear();
+    this.libraryBookQueues.clear();
+    this.libraryCollectedSpots.clear();
+    this.botPaths.clear();
+    this.botCodeCooldown.clear();
 
     const isImmersive = this.map.immersive;
-    this.bulletSpawnTimer = isImmersive ? 1.5 : 2.0;
-    this.nitroSpawnTimer = isImmersive ? 11.5 : 6.0;
-    this.tntSpawnTimer = isImmersive ? 7.5 : 9.0;
-    this.medkitSpawnTimer = isImmersive ? 9.0 : 11.0;
-    this.boxSpawnTimer = isImmersive ? 2.5 : 2.4;
+    const isLibrary = this.map.id === 'library';
+    this.bulletSpawnTimer = isLibrary ? 1.8 : isImmersive ? 1.5 : 2.0;
+    this.nitroSpawnTimer = isLibrary ? 12.0 : isImmersive ? 11.5 : 6.0;
+    this.tntSpawnTimer = isLibrary ? 9.0 : isImmersive ? 7.5 : 9.0;
+    this.medkitSpawnTimer = isLibrary ? 10.5 : isImmersive ? 9.0 : 11.0;
+    this.boxSpawnTimer = isLibrary ? 3.5 : isImmersive ? 2.5 : 2.4;
 
     this.joystick.active = false;
     this.joystick.pointerId = null;
@@ -314,6 +377,8 @@ export class ArenaEngine {
         vx: 0,
         vy: 0,
         angle: aimCenterAngle,
+        floor: isLibrary ? 1 : 0,
+        stairBlend: isLibrary ? 1 : 0,
         hp: PLAYER_MAX_HP,
         maxHp: PLAYER_MAX_HP,
         ammo: 0,
@@ -337,17 +402,24 @@ export class ArenaEngine {
         aiStrafeDir: s.slot % 2 === 0 ? 1 : -1,
         aiThinkTimer: 0.15 + s.slot * 0.1,
         aiTargetAngle: aimCenterAngle,
-        aiMoveRatio: 0.72,
+        aiMoveRatio: isLibrary ? 0.72 : 0.72,
         aiHoldShotTimer: 0.7,
       };
     });
 
+    if (isLibrary) {
+      this.buildLibraryNavGraph();
+      this.initLibraryMatchState();
+    }
+
     // Calm initial pickups & movable cardboard cover boxes spread across the arena
-    const initBullets = isImmersive ? 5 : 3;
-    const initNitros = isImmersive ? 1 : 1;
-    const initBoxes = isImmersive ? 10 : 6;
+    const initBullets = isLibrary ? 7 : isImmersive ? 5 : 3;
+    const initNitros = isLibrary ? 2 : 1;
+    const initTnts = isLibrary ? 1 : 0;
+    const initBoxes = isLibrary ? 12 : isImmersive ? 10 : 6;
     for (let i = 0; i < initBullets; i++) this.spawnPickup('bullet');
     for (let i = 0; i < initNitros; i++) this.spawnPickup('nitro');
+    for (let i = 0; i < initTnts; i++) this.spawnPickup('tnt');
     for (let i = 0; i < initBoxes; i++) this.spawnCardboardBox();
   }
 
@@ -474,14 +546,27 @@ export class ArenaEngine {
     return out;
   }
 
-  private emitEvent(type: EngineEvent['type'], x: number, y: number, value?: number, playerId?: number) {
-    this.events.push({ type, x, y, value, playerId });
+  private emitEvent(
+    type: EngineEvent['type'],
+    x: number,
+    y: number,
+    value?: number,
+    playerId?: number,
+    floor?: FloorLevel
+  ) {
+    this.events.push({ type, x, y, value, playerId, floor });
   }
 
   public update(dt: number) {
     if (this.winnerId !== null) {
       this.updateParticlesAndTexts(dt);
       this.screenShake = Math.max(0, this.screenShake - dt * 28);
+      return;
+    }
+
+    // 5-second Library intro / loading screen countdown before action begins
+    if (this.libraryState && this.libraryState.introTimer > 0) {
+      this.libraryState.introTimer = Math.max(0, this.libraryState.introTimer - dt);
       return;
     }
 
@@ -493,6 +578,9 @@ export class ArenaEngine {
     this.updateBoxes(dt);
     this.updatePickups(dt);
     this.updateBullets(dt);
+    if (this.libraryState) {
+      this.updateLibraryMonster(dt);
+    }
     this.updateParticlesAndTexts(dt);
     this.checkWinConditions();
   }
@@ -548,23 +636,72 @@ export class ArenaEngine {
     }
   }
 
-  private findFreeSpot(radius: number): Vec2 | null {
+  private isPointWalkableOnFloor(x: number, y: number, radius: number, floor: FloorLevel): boolean {
+    if (x < ARENA_WALL_THICKNESS + radius || x > this.map.width - ARENA_WALL_THICKNESS - radius) {
+      return false;
+    }
+    if (y < ARENA_WALL_THICKNESS + radius || y > this.map.height - ARENA_WALL_THICKNESS - radius) {
+      return false;
+    }
+    if (this.map.id === 'library' && floor === 1) {
+      const inUpper = (this.map.upperZones ?? []).some(
+        (z) => x >= z.x && x <= z.x + z.w && y >= z.y && y <= z.y + z.h
+      );
+      const onStair = (this.map.stairs ?? []).some(
+        (s) => x >= s.x && x <= s.x + s.w && y >= s.y && y <= s.y + s.h
+      );
+      if (!inUpper && !onStair) return false;
+    }
+    for (const wall of this.map.walls) {
+      if (!isWallOnFloor(wall, floor)) continue;
+      if (circleIntersectsRect(x, y, radius, wall)) return false;
+    }
+    return true;
+  }
+
+  private isSegmentClearOnFloor(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    radius: number,
+    floor: FloorLevel
+  ): boolean {
+    const d = dist(x1, y1, x2, y2);
+    const steps = Math.max(2, Math.ceil(d / 18));
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const px = x1 + (x2 - x1) * t;
+      const py = y1 + (y2 - y1) * t;
+      if (!this.isPointWalkableOnFloor(px, py, radius, floor)) return false;
+    }
+    return true;
+  }
+
+  private findFreeSpot(radius: number, targetFloor?: FloorLevel): (Vec2 & { floor: FloorLevel }) | null {
     const pad = ARENA_WALL_THICKNESS + radius + 24;
-    for (let attempt = 0; attempt < 64; attempt++) {
+    const isLibrary = this.map.id === 'library';
+    for (let attempt = 0; attempt < 96; attempt++) {
+      const floor: FloorLevel =
+        targetFloor !== undefined ? targetFloor : isLibrary ? (attempt % 2 === 0 ? 0 : 1) : 0;
       const x = pad + Math.random() * (this.map.width - pad * 2);
       const y = pad + Math.random() * (this.map.height - pad * 2);
 
-      let blocked = false;
-      for (const wall of this.map.walls) {
-        if (circleIntersectsRect(x, y, radius + 12, wall)) {
-          blocked = true;
-          break;
-        }
-      }
-      if (blocked) continue;
+      if (!this.isPointWalkableOnFloor(x, y, radius + 12, floor)) continue;
 
+      // Avoid spawning inside staircase ramps on Library
+      if (
+        isLibrary &&
+        (this.map.stairs ?? []).some(
+          (s) => x >= s.x - 16 && x <= s.x + s.w + 16 && y >= s.y - 16 && y <= s.y + s.h + 16
+        )
+      ) {
+        continue;
+      }
+
+      let blocked = false;
       for (const p of this.players) {
-        if (p.alive && dist(x, y, p.x, p.y) < radius + PLAYER_RADIUS + 48) {
+        if (p.alive && sameFloor(p.floor, floor) && dist(x, y, p.x, p.y) < radius + PLAYER_RADIUS + 48) {
           blocked = true;
           break;
         }
@@ -572,7 +709,7 @@ export class ArenaEngine {
       if (blocked) continue;
 
       for (const item of this.pickups) {
-        if (dist(x, y, item.x, item.y) < radius + item.radius + 44) {
+        if (sameFloor(item.floor, floor) && dist(x, y, item.x, item.y) < radius + item.radius + 44) {
           blocked = true;
           break;
         }
@@ -580,7 +717,7 @@ export class ArenaEngine {
       if (blocked) continue;
 
       for (const box of this.boxes) {
-        if (dist(x, y, box.x, box.y) < radius + box.w * 0.62 + 16) {
+        if (sameFloor(box.floor, floor) && dist(x, y, box.x, box.y) < radius + box.w * 0.62 + 16) {
           blocked = true;
           break;
         }
@@ -593,7 +730,7 @@ export class ArenaEngine {
           break;
         }
       }
-      if (!blocked) return { x, y };
+      if (!blocked) return { x, y, floor };
     }
     return null;
   }
@@ -611,6 +748,7 @@ export class ArenaEngine {
       vx: 0,
       vy: 0,
       age: 0,
+      floor: spot.floor,
       lastPusherId: null,
       state: 'spawning',
       stateTimer: CARDBOARD_FADE_IN,
@@ -626,9 +764,9 @@ export class ArenaEngine {
       box.vx += (impactVx / speed) * 85;
       box.vy += (impactVy / speed) * 85;
     }
-    this.emitEvent('hit', box.x, box.y, 1);
-    this.spawnParticles(box.x, box.y, '#D97706', 10, 130);
-    this.spawnParticles(box.x, box.y, '#FDE68A', 5, 95);
+    this.emitEvent('hit', box.x, box.y, 1, undefined, box.floor ?? 0);
+    this.spawnParticles(box.x, box.y, '#D97706', 10, 130, box.floor ?? 0);
+    this.spawnParticles(box.x, box.y, '#FDE68A', 5, 95, box.floor ?? 0);
   }
 
   private updateBoxes(dt: number) {
@@ -671,7 +809,9 @@ export class ArenaEngine {
       // Resolve pushed cardboard boxes against solid arena walls
       const halfW = box.w * 0.5;
       const halfH = box.h * 0.5;
+      const boxFloor = box.floor ?? 0;
       for (const wall of this.map.walls) {
+        if (!isWallOnFloor(wall, boxFloor)) continue;
         const boxLeft = box.x - halfW;
         const boxRight = box.x + halfW;
         const boxTop = box.y - halfH;
@@ -712,6 +852,7 @@ export class ArenaEngine {
       for (let j = i + 1; j < this.boxes.length; j++) {
         const b = this.boxes[j];
         if (b.state !== 'active') continue;
+        if (!sameFloor(a.floor, b.floor)) continue;
         const overlapX = (a.w + b.w) * 0.5 - Math.abs(b.x - a.x);
         const overlapY = (a.h + b.h) * 0.5 - Math.abs(b.y - a.y);
         if (overlapX > 0 && overlapY > 0) {
@@ -749,6 +890,7 @@ export class ArenaEngine {
       y: spot.y,
       radius,
       age: 0,
+      floor: spot.floor,
     };
 
     if (kind === 'tnt') {
@@ -764,8 +906,14 @@ export class ArenaEngine {
     this.pickups.push(pickup);
   }
 
-  private resolveRectAgainstWalls(item: { x: number; y: number; vx: number; vy: number }, halfW: number, halfH: number) {
+  private resolveRectAgainstWalls(
+    item: { x: number; y: number; vx: number; vy: number; floor?: FloorLevel },
+    halfW: number,
+    halfH: number
+  ) {
+    const floor = item.floor ?? 0;
     for (const wall of this.map.walls) {
+      if (!isWallOnFloor(wall, floor)) continue;
       const overlapX = Math.min(item.x + halfW, wall.x + wall.w) - Math.max(item.x - halfW, wall.x);
       const overlapY = Math.min(item.y + halfH, wall.y + wall.h) - Math.max(item.y - halfH, wall.y);
       if (overlapX > 0 && overlapY > 0) {
@@ -808,7 +956,7 @@ export class ArenaEngine {
           }
         }
 
-        const tntState = { x: item.x, y: item.y, vx: item.vx ?? 0, vy: item.vy ?? 0 };
+        const tntState = { x: item.x, y: item.y, vx: item.vx ?? 0, vy: item.vy ?? 0, floor: item.floor ?? 0 };
         this.resolveRectAgainstWalls(tntState, TNT_HALF_SIZE, TNT_HALF_SIZE);
         item.x = tntState.x;
         item.y = tntState.y;
@@ -820,7 +968,7 @@ export class ArenaEngine {
           const secCeil = Math.ceil(item.countdown);
           if (secCeil >= 1 && item.lastTickSecond !== secCeil) {
             item.lastTickSecond = secCeil;
-            this.emitEvent('tnt_tick', item.x, item.y, secCeil);
+            this.emitEvent('tnt_tick', item.x, item.y, secCeil, undefined, item.floor ?? 0);
           }
           if (item.countdown <= 0) {
             tntToExplode.push({ item, attacker: item.ownerId ?? null });
@@ -831,7 +979,7 @@ export class ArenaEngine {
 
     for (const tnt of tntItems) {
       for (const box of this.boxes) {
-        if (box.state !== 'active') continue;
+        if (box.state !== 'active' || !sameFloor(box.floor, tnt.floor)) continue;
         const overlapX = TNT_HALF_SIZE + box.w * 0.5 - Math.abs(box.x - tnt.x);
         const overlapY = TNT_HALF_SIZE + box.h * 0.5 - Math.abs(box.y - tnt.y);
         if (overlapX > 0 && overlapY > 0) {
@@ -851,6 +999,7 @@ export class ArenaEngine {
       for (let j = i + 1; j < tntItems.length; j++) {
         const a = tntItems[i];
         const b = tntItems[j];
+        if (!sameFloor(a.floor, b.floor)) continue;
         const overlapX = TNT_HALF_SIZE * 2 - Math.abs(b.x - a.x);
         const overlapY = TNT_HALF_SIZE * 2 - Math.abs(b.y - a.y);
         if (overlapX > 0 && overlapY > 0) {
@@ -874,7 +1023,7 @@ export class ArenaEngine {
       let triggered = false;
 
       for (const box of this.boxes) {
-        if (box.state !== 'active') continue;
+        if (box.state !== 'active' || !sameFloor(box.floor, item.floor)) continue;
         const boxRect: WallRect = {
           x: box.x - box.w * 0.5,
           y: box.y - box.h * 0.5,
@@ -890,6 +1039,7 @@ export class ArenaEngine {
       if (triggered) continue;
 
       for (const tnt of tntItems) {
+        if (!sameFloor(tnt.floor, item.floor)) continue;
         const tntRect: WallRect = {
           x: tnt.x - TNT_HALF_SIZE,
           y: tnt.y - TNT_HALF_SIZE,
@@ -986,22 +1136,24 @@ export class ArenaEngine {
 
       player.x += player.vx * dt;
       player.y += player.vy * dt;
+      this.updateEntityFloorAndBlend(player);
 
       // Push movable active cardboard boxes & movable TNT crates (including smooth corner-unstick slide!)
       for (const box of this.boxes) {
-        if (box.state !== 'active') continue;
+        if (box.state !== 'active' || !sameFloor(box.floor, player.floor)) continue;
         if (this.pushMovableCrate(player, box, box.w * 0.5, box.h * 0.5)) {
           box.lastPusherId = player.id;
         }
       }
 
       for (const item of this.pickups) {
-        if (item.kind !== 'tnt') continue;
+        if (item.kind !== 'tnt' || !sameFloor(item.floor, player.floor)) continue;
         const tntCrate = {
           x: item.x,
           y: item.y,
           vx: item.vx ?? 0,
           vy: item.vy ?? 0,
+          floor: item.floor ?? 0,
         };
         if (this.pushMovableCrate(player, tntCrate, TNT_HALF_SIZE, TNT_HALF_SIZE)) {
           item.x = tntCrate.x;
@@ -1012,8 +1164,10 @@ export class ArenaEngine {
         }
       }
 
+      const pFloor = player.floor ?? 0;
       for (let pass = 0; pass < 2; pass++) {
         for (const wall of this.map.walls) {
+          if (!isWallOnFloor(wall, pFloor)) continue;
           const closestX = clamp(player.x, wall.x, wall.x + wall.w);
           const closestY = clamp(player.y, wall.y, wall.y + wall.h);
           const dx = player.x - closestX;
@@ -1040,6 +1194,7 @@ export class ArenaEngine {
           }
         }
       }
+      this.updateEntityFloorAndBlend(player);
     }
 
     for (let i = 0; i < this.players.length; i++) {
@@ -1047,7 +1202,7 @@ export class ArenaEngine {
       if (!a.alive) continue;
       for (let j = i + 1; j < this.players.length; j++) {
         const b = this.players[j];
-        if (!b.alive) continue;
+        if (!b.alive || !sameFloor(a.floor, b.floor)) continue;
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const d = Math.hypot(dx, dy);
@@ -1068,25 +1223,25 @@ export class ArenaEngine {
       if (!player.alive) continue;
       for (let i = this.pickups.length - 1; i >= 0; i--) {
         const item = this.pickups[i];
-        if (!item) continue;
+        if (!item || !sameFloor(item.floor, player.floor)) continue;
         const hitDist = PLAYER_RADIUS + item.radius - 2;
         if (dist(player.x, player.y, item.x, item.y) <= hitDist) {
           if (item.kind === 'bullet') {
             if (player.ammo < player.maxAmmo) {
               player.ammo += 1;
               this.pickups.splice(i, 1);
-              this.emitEvent('pickup', item.x, item.y, player.id);
-              this.spawnParticles(item.x, item.y, '#FACC15', 8, 95);
-              this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 8), '+1 AMMO', '#FDE047');
+              this.emitEvent('pickup', item.x, item.y, player.id, undefined, item.floor ?? 0);
+              this.spawnParticles(item.x, item.y, '#FACC15', 8, 95, item.floor ?? 0);
+              this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 8), '+1 AMMO', '#FDE047', item.floor ?? 0);
             }
           } else if (item.kind === 'medkit') {
             if (player.hp < player.maxHp) {
               const healed = Math.min(MEDKIT_HEAL, player.maxHp - player.hp);
               player.hp += healed;
               this.pickups.splice(i, 1);
-              this.emitEvent('heal', item.x, item.y);
-              this.spawnParticles(item.x, item.y, '#34D399', 12, 110);
-              this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 8), `+${healed} HP`, '#34D399');
+              this.emitEvent('heal', item.x, item.y, undefined, undefined, item.floor ?? 0);
+              this.spawnParticles(item.x, item.y, '#34D399', 12, 110, item.floor ?? 0);
+              this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 8), `+${healed} HP`, '#34D399', item.floor ?? 0);
             }
           } else if (item.kind === 'nitro') {
             this.detonatePickup(item, player.id);
@@ -1110,12 +1265,19 @@ export class ArenaEngine {
     }
   }
 
-  private detectWallPins(cx: number, cy: number, halfW: number, halfH: number): { pinX: -1 | 0 | 1; pinY: -1 | 0 | 1 } {
+  private detectWallPins(
+    cx: number,
+    cy: number,
+    halfW: number,
+    halfH: number,
+    floor: FloorLevel = 0
+  ): { pinX: -1 | 0 | 1; pinY: -1 | 0 | 1 } {
     let pinX: -1 | 0 | 1 = 0;
     let pinY: -1 | 0 | 1 = 0;
     const tol = 4;
 
     for (const wall of this.map.walls) {
+      if (!isWallOnFloor(wall, floor)) continue;
       const overlapY = Math.min(cy + halfH, wall.y + wall.h) - Math.max(cy - halfH, wall.y);
       if (overlapY > 4) {
         if (Math.abs(cx - halfW - (wall.x + wall.w)) <= tol) pinX = -1;
@@ -1132,7 +1294,7 @@ export class ArenaEngine {
 
   private pushMovableCrate(
     player: Player,
-    crate: { x: number; y: number; vx: number; vy: number },
+    crate: { x: number; y: number; vx: number; vy: number; floor?: FloorLevel },
     halfW: number,
     halfH: number
   ): boolean {
@@ -1168,7 +1330,7 @@ export class ArenaEngine {
       overlap = PLAYER_RADIUS + m;
     }
 
-    const pins = this.detectWallPins(crate.x, crate.y, halfW, halfH);
+    const pins = this.detectWallPins(crate.x, crate.y, halfW, halfH, crate.floor ?? 0);
 
     if (pins.pinX !== 0 && pins.pinY !== 0) {
       // Corner-pinned crate: slide smoothly out along the unblocked wall edge away from the player's body
@@ -1275,6 +1437,10 @@ export class ArenaEngine {
   }
 
   private applyBotControls(bot: Player, dt: number) {
+    if (this.libraryState) {
+      this.applyLibraryBotControls(bot, dt);
+      return;
+    }
     const diff: BotDifficulty = this.config.difficulty;
     const reactionInterval = diff === 'RUTHLESS' ? 0.14 : diff === 'TACTICAL' ? 0.24 : 0.4;
     const aimSpread = diff === 'RUTHLESS' ? 0.04 : diff === 'TACTICAL' ? 0.11 : 0.24;
@@ -1287,6 +1453,7 @@ export class ArenaEngine {
 
     for (const b of this.bullets) {
       if (b.ownerId === bot.id && b.age < BULLET_SELF_GRACE) continue;
+      if (!sameFloor(b.floor, bot.floor)) continue;
       const d = dist(bot.x, bot.y, b.x, b.y);
       if (d < 210) {
         const bSpeed = Math.hypot(b.vx, b.vy) || 1;
@@ -1306,6 +1473,7 @@ export class ArenaEngine {
     }
 
     for (const p of this.pickups) {
+      if (!sameFloor(p.floor, bot.floor)) continue;
       if (p.kind === 'tnt' && p.armed) {
         const d = dist(bot.x, bot.y, p.x, p.y);
         if (d < TNT_BLAST_RADIUS + 42) {
@@ -1346,7 +1514,7 @@ export class ArenaEngine {
       let wantsToShoot = false;
       let shootAngle = bot.angle;
 
-      const medkits = this.pickups.filter((p) => p.kind === 'medkit');
+      const medkits = this.pickups.filter((p) => p.kind === 'medkit' && sameFloor(p.floor, bot.floor));
       if (bot.hp <= 55 && medkits.length > 0) {
         let best = medkits[0];
         let bestD = dist(bot.x, bot.y, best.x, best.y);
@@ -1361,7 +1529,7 @@ export class ArenaEngine {
         goalY = best.y;
         moveRatio = 0.95;
       } else if (bot.ammo === 0) {
-        const ammoPickups = this.pickups.filter((p) => p.kind === 'bullet');
+        const ammoPickups = this.pickups.filter((p) => p.kind === 'bullet' && sameFloor(p.floor, bot.floor));
         if (ammoPickups.length > 0) {
           let best = ammoPickups[0];
           let bestD = dist(bot.x, bot.y, best.x, best.y);
@@ -1378,7 +1546,7 @@ export class ArenaEngine {
         }
       } else {
         const enemies = this.players.filter(
-          (p) => p.id !== bot.id && p.alive && !this.isTeammate(bot.id, p.id)
+          (p) => p.id !== bot.id && p.alive && !this.isTeammate(bot.id, p.id) && sameFloor(p.floor, bot.floor)
         );
         if (enemies.length > 0) {
           let target = enemies[0];
@@ -1388,7 +1556,7 @@ export class ArenaEngine {
             // In immersive large map, bots don't magically snipe across 1200px fog
             const maxVision = this.map.immersive ? 650 : 1800;
             const visible = d < maxVision;
-            const los = visible && this.hasLineOfSight(bot.x, bot.y, e.x, e.y);
+            const los = visible && this.hasLineOfSight(bot.x, bot.y, e.x, e.y, bot.floor ?? 0);
             let score = -d * 0.35 + (los ? 190 : 0) + (e.stunTimer > 0 ? 110 : 0) + (100 - e.hp) * 1.0 + e.kills * 30;
             if (e.spawnInvulnTimer > 0) score -= 40;
             if (score > bestScore) {
@@ -1403,12 +1571,13 @@ export class ArenaEngine {
           let explosiveShotAngle: number | null = null;
           if (inRange) {
             for (const n of this.pickups) {
+              if (!sameFloor(n.floor, bot.floor)) continue;
               if (n.kind !== 'nitro' && !(n.kind === 'tnt' && !n.armed)) continue;
               const blastR = n.kind === 'tnt' ? TNT_BLAST_RADIUS : NITRO_BLAST_RADIUS;
               if (
                 dist(n.x, n.y, target.x, target.y) < blastR - 10 &&
                 dist(n.x, n.y, bot.x, bot.y) > blastR + 20 &&
-                this.hasLineOfSight(bot.x, bot.y, n.x, n.y)
+                this.hasLineOfSight(bot.x, bot.y, n.x, n.y, bot.floor ?? 0)
               ) {
                 explosiveShotAngle = Math.atan2(n.y - bot.y, n.x - bot.x);
                 break;
@@ -1419,7 +1588,11 @@ export class ArenaEngine {
           if (explosiveShotAngle !== null && bot.aiHoldShotTimer <= 0) {
             wantsToShoot = true;
             shootAngle = explosiveShotAngle + (Math.random() - 0.5) * aimSpread * 0.6;
-          } else if (inRange && this.hasLineOfSight(bot.x, bot.y, target.x, target.y) && bot.aiHoldShotTimer <= 0) {
+          } else if (
+            inRange &&
+            this.hasLineOfSight(bot.x, bot.y, target.x, target.y, bot.floor ?? 0) &&
+            bot.aiHoldShotTimer <= 0
+          ) {
             const travelT = targetDist / BULLET_SPEED;
             const predX = target.x + target.vx * travelT * 0.78;
             const predY = target.y + target.vy * travelT * 0.78;
@@ -1455,7 +1628,9 @@ export class ArenaEngine {
       let moveAngle = Math.atan2(goalY - bot.y, goalX - bot.x);
       const probeX = bot.x + Math.cos(moveAngle) * 50;
       const probeY = bot.y + Math.sin(moveAngle) * 50;
+      const botFloor = bot.floor ?? 0;
       for (const wall of this.map.walls) {
+        if (!isWallOnFloor(wall, botFloor)) continue;
         if (circleIntersectsRect(probeX, probeY, PLAYER_RADIUS + 8, wall)) {
           moveAngle += bot.aiStrafeDir * 1.15;
           break;
@@ -1485,14 +1660,22 @@ export class ArenaEngine {
     }
   }
 
-  private hasLineOfSight(x1: number, y1: number, x2: number, y2: number): boolean {
+  private hasLineOfSight(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    floor: FloorLevel = 0
+  ): boolean {
     for (const wall of this.map.walls) {
+      if (!isWallOnFloor(wall, floor)) continue;
       if (segmentIntersectsRect(x1, y1, x2, y2, wall)) return false;
     }
     return true;
   }
 
   private findTrickshotAngle(shooter: Player, target: Player): number | null {
+    const floor = shooter.floor ?? 0;
     for (let i = 0; i < 16; i++) {
       const a = (i / 16) * Math.PI * 2;
       let x = shooter.x + Math.cos(a) * (PLAYER_RADIUS + 8);
@@ -1507,6 +1690,7 @@ export class ArenaEngine {
         y += vy * subDt;
 
         for (const wall of this.map.walls) {
+          if (!isWallOnFloor(wall, floor)) continue;
           const cx = clamp(x, wall.x, wall.x + wall.w);
           const cy = clamp(y, wall.y, wall.y + wall.h);
           const dx = x - cx;
@@ -1533,6 +1717,7 @@ export class ArenaEngine {
     player.ammo = Math.max(0, player.ammo - 1);
     player.shotsFired += 1;
 
+    const pFloor = player.floor ?? 0;
     const muzzleDist = PLAYER_RADIUS + BULLET_RADIUS + 3;
     const bx = player.x + Math.cos(player.angle) * muzzleDist;
     const by = player.y + Math.sin(player.angle) * muzzleDist;
@@ -1546,6 +1731,7 @@ export class ArenaEngine {
       vx: Math.cos(player.angle) * BULLET_SPEED,
       vy: Math.sin(player.angle) * BULLET_SPEED,
       radius: BULLET_RADIUS,
+      floor: pFloor,
       bouncesLeft: BULLET_MAX_BOUNCES,
       maxBounces: BULLET_MAX_BOUNCES,
       age: 0,
@@ -1557,8 +1743,8 @@ export class ArenaEngine {
     player.vx -= Math.cos(player.angle) * 35;
     player.vy -= Math.sin(player.angle) * 35;
 
-    this.emitEvent('shoot', bx, by);
-    this.spawnParticles(bx, by, player.accentColor, 6, 120);
+    this.emitEvent('shoot', bx, by, undefined, undefined, pFloor);
+    this.spawnParticles(bx, by, player.accentColor, 6, 120, pFloor);
   }
 
   private updateBullets(dt: number) {
@@ -1582,7 +1768,9 @@ export class ArenaEngine {
         b.y += b.vy * subDt;
 
         let hitWall = false;
+        const bFloor = b.floor ?? 0;
         for (const wall of this.map.walls) {
+          if (!isWallOnFloor(wall, bFloor)) continue;
           const cx = clamp(b.x, wall.x, wall.x + wall.w);
           const cy = clamp(b.y, wall.y, wall.y + wall.h);
           const dx = b.x - cx;
@@ -1620,21 +1808,21 @@ export class ArenaEngine {
 
             b.bouncesLeft -= 1;
             const isMetal = wall.kind === 'metal' || wall.kind === 'perimeter_steel';
-            this.emitEvent('bounce', b.x, b.y, isMetal ? 2 : 1);
-            this.spawnParticles(b.x, b.y, wall.kind === 'metal' ? '#E2E8F0' : '#FDE047', 5, 110);
+            this.emitEvent('bounce', b.x, b.y, isMetal ? 2 : 1, undefined, bFloor);
+            this.spawnParticles(b.x, b.y, wall.kind === 'metal' ? '#E2E8F0' : '#FDE047', 5, 110, bFloor);
             hitWall = true;
             break;
           }
         }
 
         if (hitWall && b.bouncesLeft < 0) {
-          this.spawnParticles(b.x, b.y, b.color, 7, 100);
+          this.spawnParticles(b.x, b.y, b.color, 7, 100, bFloor);
           destroyed = true;
           break;
         }
 
         for (const box of this.boxes) {
-          if (box.state !== 'active') continue;
+          if (box.state !== 'active' || !sameFloor(box.floor, bFloor)) continue;
           const rect: WallRect = {
             x: box.x - box.w * 0.5,
             y: box.y - box.h * 0.5,
@@ -1651,7 +1839,7 @@ export class ArenaEngine {
 
         for (let pIdx = this.pickups.length - 1; pIdx >= 0; pIdx--) {
           const p = this.pickups[pIdx];
-          if (!p) continue;
+          if (!p || !sameFloor(p.floor, bFloor)) continue;
           if (p.kind === 'nitro' && dist(b.x, b.y, p.x, p.y) <= b.radius + p.radius) {
             this.detonatePickup(p, b.ownerId);
             destroyed = true;
@@ -1676,13 +1864,13 @@ export class ArenaEngine {
                 p.countdown = TNT_COUNTDOWN;
                 p.maxCountdown = TNT_COUNTDOWN;
                 p.lastTickSecond = 3;
-                this.emitEvent('tnt_tick', p.x, p.y, 3);
-                this.addFloatingText(p.x, p.y - (TNT_HALF_SIZE + 12), '3s FUSE!', '#FEF08A');
+                this.emitEvent('tnt_tick', p.x, p.y, 3, undefined, bFloor);
+                this.addFloatingText(p.x, p.y - (TNT_HALF_SIZE + 12), '3s FUSE!', '#FEF08A', bFloor);
               }
 
-              this.emitEvent('hit', p.x, p.y, 2);
-              this.spawnParticles(b.x, b.y, '#EF4444', 9, 140);
-              this.spawnParticles(b.x, b.y, '#FEF08A', 5, 110);
+              this.emitEvent('hit', p.x, p.y, 2, undefined, bFloor);
+              this.spawnParticles(b.x, b.y, '#EF4444', 9, 140, bFloor);
+              this.spawnParticles(b.x, b.y, '#FEF08A', 5, 110, bFloor);
               destroyed = true;
               break;
             }
@@ -1690,8 +1878,35 @@ export class ArenaEngine {
         }
         if (destroyed) break;
 
+        // Bullets bounce harmlessly off The Figure (bulletproof!)
+        if (this.libraryState && sameFloor(this.libraryState.monster.floor, bFloor)) {
+          const m = this.libraryState.monster;
+          const dx = b.x - m.x;
+          const dy = b.y - m.y;
+          const d = Math.hypot(dx, dy);
+          if (d <= m.radius + b.radius) {
+            const nx = d > 0.001 ? dx / d : 1;
+            const ny = d > 0.001 ? dy / d : 0;
+            const overlap = m.radius + b.radius - d + 1;
+            b.x += nx * overlap;
+            b.y += ny * overlap;
+            const dot = b.vx * nx + b.vy * ny;
+            if (dot < 0) {
+              b.vx -= 2 * dot * nx;
+              b.vy -= 2 * dot * ny;
+            }
+            b.bouncesLeft -= 1;
+            this.emitEvent('bounce', b.x, b.y, 2, undefined, bFloor);
+            this.spawnParticles(b.x, b.y, '#FB923C', 6, 130, bFloor);
+            if (b.bouncesLeft < 0) {
+              destroyed = true;
+              break;
+            }
+          }
+        }
+
         for (const player of this.players) {
-          if (!player.alive || player.stunTimer > 0) continue;
+          if (!player.alive || player.stunTimer > 0 || !sameFloor(player.floor, bFloor)) continue;
           if (player.id === b.ownerId && b.age < BULLET_SELF_GRACE) continue;
           if (player.id !== b.ownerId && this.isTeammate(b.ownerId, player.id)) continue;
           if (dist(b.x, b.y, player.x, player.y) <= b.radius + PLAYER_RADIUS) {
@@ -1702,7 +1917,7 @@ export class ArenaEngine {
             if (owner && owner.id !== player.id) owner.shotsHit += 1;
 
             this.applyDamage(player, BULLET_DAMAGE, b.ownerId, knockX, knockY, true);
-            this.spawnParticles(b.x, b.y, b.color, 10, 150);
+            this.spawnParticles(b.x, b.y, b.color, 10, 150, bFloor);
             destroyed = true;
             break;
           }
@@ -1737,6 +1952,7 @@ export class ArenaEngine {
       const blastRadius = isTnt ? TNT_BLAST_RADIUS : NITRO_BLAST_RADIUS;
       const blastDamage = isTnt ? TNT_DAMAGE : NITRO_DAMAGE;
       const blastColor = isTnt ? '#EF4444' : '#FB923C';
+      const blastFloor: FloorLevel = current.item.floor ?? 0;
 
       this.explosions.push({
         id: this.nextId++,
@@ -1746,15 +1962,36 @@ export class ArenaEngine {
         age: 0,
         duration: 0.42,
         color: blastColor,
+        floor: blastFloor,
       });
 
       this.screenShake = Math.min(16, this.screenShake + (isTnt ? 11 : 8));
-      this.emitEvent('explosion', current.item.x, current.item.y, isTnt ? 2 : 1);
-      this.spawnParticles(current.item.x, current.item.y, blastColor, isTnt ? 26 : 18, 250);
-      this.spawnParticles(current.item.x, current.item.y, '#FEF08A', 10, 170);
+      this.emitEvent('explosion', current.item.x, current.item.y, isTnt ? 2 : 1, undefined, blastFloor);
+      this.spawnParticles(current.item.x, current.item.y, blastColor, isTnt ? 26 : 18, 250, blastFloor);
+      this.spawnParticles(current.item.x, current.item.y, '#FEF08A', 10, 170, blastFloor);
+
+      if (this.libraryState) {
+        const m = this.libraryState.monster;
+        const dM = dist(current.item.x, current.item.y, m.x, m.y);
+        if (sameFloor(m.floor, blastFloor) && dM <= blastRadius + m.radius) {
+          m.stunTimer = MONSTER_STUN_DURATION;
+          m.mode = 'calm';
+          m.rageTimer = 0;
+          m.rageFadeTimer = 0;
+          m.reachedHoldTimer = 0;
+          m.vx = 0;
+          m.vy = 0;
+          this.monsterPath = [];
+          this.emitEvent('monster_stun', m.x, m.y, undefined, undefined, m.floor);
+          this.addFloatingText(m.x, m.y - (m.radius + 14), 'FIGURE STUNNED 15s!', '#FDE047', m.floor);
+        } else {
+          // Explosive blasts elsewhere alert The Figure into Rage mode toward the blast site
+          this.triggerMonsterRage(current.item.x, current.item.y, blastFloor);
+        }
+      }
 
       for (const player of this.players) {
-        if (!player.alive) continue;
+        if (!player.alive || !sameFloor(player.floor, blastFloor)) continue;
         if (
           current.attacker !== null &&
           current.attacker !== player.id &&
@@ -1777,7 +2014,7 @@ export class ArenaEngine {
       }
 
       for (const box of this.boxes) {
-        if (box.state === 'active') {
+        if (box.state === 'active' && sameFloor(box.floor, blastFloor)) {
           if (dist(current.item.x, current.item.y, box.x, box.y) <= blastRadius + box.w * 0.4) {
             this.punctureBox(box, box.x - current.item.x, box.y - current.item.y);
           }
@@ -1785,7 +2022,7 @@ export class ArenaEngine {
       }
 
       for (const other of this.pickups) {
-        if ((other.kind === 'nitro' || other.kind === 'tnt') && !processedIds.has(other.id)) {
+        if ((other.kind === 'nitro' || other.kind === 'tnt') && sameFloor(other.floor, blastFloor) && !processedIds.has(other.id)) {
           if (dist(current.item.x, current.item.y, other.x, other.y) <= blastRadius) {
             queue.push({ item: other, attacker: current.attacker });
           }
@@ -1952,14 +2189,16 @@ export class ArenaEngine {
     player.y = bestSpawn.y;
     player.vx = 0;
     player.vy = 0;
+    player.floor = this.map.id === 'library' ? 1 : 0;
+    player.stairBlend = this.map.id === 'library' ? 1 : 0;
     player.hp = PLAYER_MAX_HP;
     player.ammo = 0;
     player.stunTimer = 0;
     player.alive = true;
     player.spawnInvulnTimer = SPAWN_INVULN_DURATION;
     player.angle = Math.atan2(this.map.height / 2 - bestSpawn.y, this.map.width / 2 - bestSpawn.x);
-    this.spawnParticles(player.x, player.y, player.color, 14, 120);
-    this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 10), 'SPAWN!', player.accentColor);
+    this.spawnParticles(player.x, player.y, player.color, 14, 120, player.floor);
+    this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 10), 'SPAWN!', player.accentColor, player.floor);
   }
 
   private checkWinConditions() {
@@ -2034,7 +2273,14 @@ export class ArenaEngine {
     }
   }
 
-  private spawnParticles(x: number, y: number, color: string, count: number, maxSpeed: number) {
+  private spawnParticles(
+    x: number,
+    y: number,
+    color: string,
+    count: number,
+    maxSpeed: number,
+    floor: FloorLevel = 0
+  ) {
     for (let i = 0; i < count; i++) {
       const a = Math.random() * Math.PI * 2;
       const sp = 35 + Math.random() * maxSpeed;
@@ -2047,11 +2293,18 @@ export class ArenaEngine {
         color,
         age: 0,
         duration: 0.25 + Math.random() * 0.3,
+        floor,
       });
     }
   }
 
-  private addFloatingText(x: number, y: number, text: string, color: string) {
+  private addFloatingText(
+    x: number,
+    y: number,
+    text: string,
+    color: string,
+    floor: FloorLevel = 0
+  ) {
     this.floatingTexts.push({
       id: this.nextId++,
       x,
@@ -2060,6 +2313,7 @@ export class ArenaEngine {
       color,
       age: 0,
       duration: 0.85,
+      floor,
     });
   }
 
@@ -2085,6 +2339,856 @@ export class ArenaEngine {
       ft.age += dt;
       ft.y -= 28 * dt;
       if (ft.age >= ft.duration) this.floatingTexts.splice(i, 1);
+    }
+  }
+
+  // ==================== THE LIBRARY MECHANICS ====================
+
+  private updateEntityFloorAndBlend(ent: { x: number; y: number; floor?: FloorLevel; stairBlend?: number }) {
+    if (this.map.id !== 'library') {
+      ent.floor = 0;
+      ent.stairBlend = 0;
+      return;
+    }
+    const stairs = this.map.stairs ?? [];
+    for (const st of stairs) {
+      if (
+        ent.x >= st.x - 4 &&
+        ent.x <= st.x + st.w + 4 &&
+        ent.y >= st.y - 4 &&
+        ent.y <= st.y + st.h + 4
+      ) {
+        const rawT =
+          st.upDir === 'up'
+            ? clamp((st.y + st.h - ent.y) / st.h, 0, 1)
+            : clamp((ent.y - st.y) / st.h, 0, 1);
+        ent.stairBlend = rawT;
+        ent.floor = rawT >= 0.5 ? 1 : 0;
+        return;
+      }
+    }
+    ent.floor = ent.floor ?? 0;
+    ent.stairBlend = ent.floor === 1 ? 1 : 0;
+  }
+
+  private buildLibraryNavGraph() {
+    const cell = 48;
+    const cols = Math.floor(this.map.width / cell);
+    const rows = Math.floor(this.map.height / cell);
+    const nodes: NavNode[] = [];
+    const lookup = new Map<string, number>();
+
+    const key = (gx: number, gy: number, fl: FloorLevel) => `${fl}:${gx}:${gy}`;
+    // Full Monster clearance + 3px buffer so A* paths never scrape bookshelf corners or rails
+    const testR = MONSTER_RADIUS + 3;
+
+    for (const fl of [0, 1] as FloorLevel[]) {
+      for (let gy = 0; gy < rows; gy++) {
+        for (let gx = 0; gx < cols; gx++) {
+          const wx = (gx + 0.5) * cell;
+          const wy = (gy + 0.5) * cell;
+          if (!this.isPointWalkableOnFloor(wx, wy, testR, fl)) continue;
+          const isStair = (this.map.stairs ?? []).some(
+            (s) => wx >= s.x - 16 && wx <= s.x + s.w + 16 && wy >= s.y - 16 && wy <= s.y + s.h + 16
+          );
+          const id = nodes.length;
+          nodes.push({ id, x: wx, y: wy, floor: fl, isStair, neighbors: [] });
+          lookup.set(key(gx, gy, fl), id);
+        }
+      }
+    }
+
+    const baseGridCount = nodes.length;
+
+    // Connect same-floor grid neighbors with explicit segment clearance verification
+    for (const fl of [0, 1] as FloorLevel[]) {
+      for (let gy = 0; gy < rows; gy++) {
+        for (let gx = 0; gx < cols; gx++) {
+          const id = lookup.get(key(gx, gy, fl));
+          if (id === undefined) continue;
+          const node = nodes[id];
+          const offsets = [
+            [1, 0],
+            [-1, 0],
+            [0, 1],
+            [0, -1],
+            [1, 1],
+            [-1, 1],
+            [1, -1],
+            [-1, -1],
+          ];
+          for (const [ox, oy] of offsets) {
+            const nid = lookup.get(key(gx + ox, gy + oy, fl));
+            if (nid === undefined) continue;
+            if (ox !== 0 && oy !== 0) {
+              if (
+                lookup.get(key(gx + ox, gy, fl)) === undefined ||
+                lookup.get(key(gx, gy + oy, fl)) === undefined
+              ) {
+                continue;
+              }
+            }
+            const nb = nodes[nid];
+            if (!this.isSegmentClearOnFloor(node.x, node.y, nb.x, nb.y, testR, fl)) continue;
+            if (!node.neighbors.includes(nid)) node.neighbors.push(nid);
+          }
+        }
+      }
+    }
+
+    // Add aligned staircase entry/exit chains so Monster & bots traverse Ground <-> Upper cleanly
+    for (const st of this.map.stairs ?? []) {
+      const cx = st.x + st.w * 0.5;
+      const groundApproachY = st.upDir === 'up' ? st.y + st.h + 72 : st.y - 72;
+      const groundEntryY = st.upDir === 'up' ? st.y + st.h + 12 : st.y - 12;
+      const midY = st.y + st.h * 0.5;
+      const upperEntryY = st.upDir === 'up' ? st.y - 12 : st.y + st.h + 12;
+      const upperApproachY = st.upDir === 'up' ? st.y - 72 : st.y + st.h + 72;
+
+      const gAppId = nodes.length;
+      nodes.push({ id: gAppId, x: cx, y: groundApproachY, floor: 0, isStair: false, neighbors: [] });
+      const gEntId = nodes.length;
+      nodes.push({ id: gEntId, x: cx, y: groundEntryY, floor: 0, isStair: true, neighbors: [] });
+      const m0Id = nodes.length;
+      nodes.push({ id: m0Id, x: cx, y: midY, floor: 0, isStair: true, neighbors: [] });
+      const m1Id = nodes.length;
+      nodes.push({ id: m1Id, x: cx, y: midY, floor: 1, isStair: true, neighbors: [] });
+      const uEntId = nodes.length;
+      nodes.push({ id: uEntId, x: cx, y: upperEntryY, floor: 1, isStair: true, neighbors: [] });
+      const uAppId = nodes.length;
+      nodes.push({ id: uAppId, x: cx, y: upperApproachY, floor: 1, isStair: false, neighbors: [] });
+
+      nodes[gAppId].neighbors.push(gEntId);
+      nodes[gEntId].neighbors.push(gAppId, m0Id);
+      nodes[m0Id].neighbors.push(gEntId, m1Id);
+      nodes[m1Id].neighbors.push(m0Id, uEntId);
+      nodes[uEntId].neighbors.push(m1Id, uAppId);
+      nodes[uAppId].neighbors.push(uEntId);
+
+      // Connect stair approach nodes to unobstructed nearby grid nodes on each floor
+      for (let i = 0; i < baseGridCount; i++) {
+        const n = nodes[i];
+        if (n.floor === 0) {
+          const dApp = dist(n.x, n.y, cx, groundApproachY);
+          if (dApp <= 145 && this.isSegmentClearOnFloor(n.x, n.y, cx, groundApproachY, testR, 0)) {
+            nodes[gAppId].neighbors.push(n.id);
+            n.neighbors.push(gAppId);
+          }
+          const dEnt = dist(n.x, n.y, cx, groundEntryY);
+          if (dEnt <= 135 && this.isSegmentClearOnFloor(n.x, n.y, cx, groundEntryY, testR, 0)) {
+            nodes[gEntId].neighbors.push(n.id);
+            n.neighbors.push(gEntId);
+          }
+        } else {
+          const dApp = dist(n.x, n.y, cx, upperApproachY);
+          if (dApp <= 145 && this.isSegmentClearOnFloor(n.x, n.y, cx, upperApproachY, testR, 1)) {
+            nodes[uAppId].neighbors.push(n.id);
+            n.neighbors.push(uAppId);
+          }
+          const dEnt = dist(n.x, n.y, cx, upperEntryY);
+          if (dEnt <= 135 && this.isSegmentClearOnFloor(n.x, n.y, cx, upperEntryY, testR, 1)) {
+            nodes[uEntId].neighbors.push(n.id);
+            n.neighbors.push(uEntId);
+          }
+        }
+      }
+    }
+
+    this.navNodes = nodes;
+  }
+
+  private findClosestNavNode(x: number, y: number, floor: FloorLevel): NavNode | null {
+    let best: NavNode | null = null;
+    let bestD = Infinity;
+    for (const n of this.navNodes) {
+      if (n.floor !== floor) continue;
+      const d = dist(x, y, n.x, n.y);
+      if (d < bestD) {
+        bestD = d;
+        best = n;
+      }
+    }
+    return best;
+  }
+
+  private findNavPath(
+    fromX: number,
+    fromY: number,
+    fromFloor: FloorLevel,
+    toX: number,
+    toY: number,
+    toFloor: FloorLevel
+  ): NavNode[] {
+    if (this.navNodes.length === 0) return [];
+    const start = this.findClosestNavNode(fromX, fromY, fromFloor);
+    const goal = this.findClosestNavNode(toX, toY, toFloor);
+    if (!start || !goal) return [];
+    if (start.id === goal.id) return [goal];
+
+    const nCount = this.navNodes.length;
+    const gScore = new Float32Array(nCount).fill(Infinity);
+    const fScore = new Float32Array(nCount).fill(Infinity);
+    const cameFrom = new Int32Array(nCount).fill(-1);
+    const closed = new Uint8Array(nCount);
+    const open: number[] = [start.id];
+
+    gScore[start.id] = 0;
+    fScore[start.id] = dist(start.x, start.y, goal.x, goal.y) + (start.floor !== goal.floor ? 320 : 0);
+
+    while (open.length > 0) {
+      let bestIdx = 0;
+      for (let i = 1; i < open.length; i++) {
+        if (fScore[open[i]] < fScore[open[bestIdx]]) bestIdx = i;
+      }
+      const currId = open.splice(bestIdx, 1)[0];
+      if (currId === goal.id) {
+        const path: NavNode[] = [];
+        let trace = goal.id;
+        while (trace !== -1 && trace !== start.id) {
+          path.push(this.navNodes[trace]);
+          trace = cameFrom[trace];
+        }
+        path.reverse();
+        return path;
+      }
+      closed[currId] = 1;
+      const curr = this.navNodes[currId];
+      for (const nbId of curr.neighbors) {
+        if (closed[nbId]) continue;
+        const nb = this.navNodes[nbId];
+        const stepCost = curr.floor !== nb.floor ? 120 : dist(curr.x, curr.y, nb.x, nb.y);
+        const tentative = gScore[currId] + stepCost;
+        if (tentative < gScore[nbId]) {
+          cameFrom[nbId] = currId;
+          gScore[nbId] = tentative;
+          fScore[nbId] = tentative + dist(nb.x, nb.y, goal.x, goal.y) + (nb.floor !== goal.floor ? 320 : 0);
+          if (!open.includes(nbId)) open.push(nbId);
+        }
+      }
+    }
+    return [];
+  }
+
+  private initLibraryMatchState() {
+    const shuffledShapes = [...LIBRARY_SHAPES].sort(() => Math.random() - 0.5);
+    const pillarSequence: LibraryShape[] = shuffledShapes.slice(0, LIBRARY_CODE_LEN);
+    const decoyShapes: LibraryShape[] = shuffledShapes.slice(LIBRARY_CODE_LEN);
+
+    const pc = this.map.pillarCenter ?? { x: this.map.width * 0.5, y: this.map.height * 0.5 };
+    const doors: LibraryDoor[] = [
+      { playerId: 0, side: 'W', x: pc.x - 110, y: pc.y },
+      { playerId: 1, side: 'E', x: pc.x + 110, y: pc.y },
+      { playerId: 2, side: 'N', x: pc.x, y: pc.y - 110 },
+      { playerId: 3, side: 'S', x: pc.x, y: pc.y + 110 },
+    ];
+
+    // Collect valid book placement spots tucked tightly against Ground & Upper bookshelf ledges
+    const groundSpots: Array<{ x: number; y: number; floor: FloorLevel }> = [];
+    const upperSpots: Array<{ x: number; y: number; floor: FloorLevel }> = [];
+
+    for (const wall of this.map.walls) {
+      if (wall.kind !== 'bookshelf' || wall.floor === undefined) continue;
+      const fl = wall.floor;
+      const vertical = wall.h > wall.w;
+      const candidates: Array<{ x: number; y: number }> = vertical
+        ? [
+            { x: wall.x - 16, y: wall.y + wall.h * 0.28 },
+            { x: wall.x + wall.w + 16, y: wall.y + wall.h * 0.72 },
+          ]
+        : [
+            { x: wall.x + wall.w * 0.28, y: wall.y - 16 },
+            { x: wall.x + wall.w * 0.72, y: wall.y + wall.h + 16 },
+          ];
+      for (const c of candidates) {
+        if (!this.isPointWalkableOnFloor(c.x, c.y, 14, fl)) continue;
+        if (
+          (this.map.stairs ?? []).some(
+            (s) => c.x >= s.x - 10 && c.x <= s.x + s.w + 10 && c.y >= s.y - 10 && c.y <= s.y + s.h + 10
+          )
+        ) {
+          continue;
+        }
+        if (fl === 0) groundSpots.push({ x: c.x, y: c.y, floor: 0 });
+        else upperSpots.push({ x: c.x, y: c.y, floor: 1 });
+      }
+    }
+
+    const playerProgress = this.players.map((p) => {
+      // Unique 5-digit solution for this player
+      const digits = Array.from({ length: LIBRARY_CODE_LEN }, () => Math.floor(Math.random() * 10));
+      this.librarySolutions.set(p.id, digits);
+
+      // 4 real clues + 3 decoy clues in Books #1-#7; Book #8 ALWAYS reveals the 5th real clue!
+      const realClues: LibraryClue[] = pillarSequence.map((shape, idx) => ({
+        shape,
+        digit: digits[idx],
+      }));
+      const shuffledReal = [...realClues].sort(() => Math.random() - 0.5);
+      const guaranteedFinalClue = shuffledReal[LIBRARY_CODE_LEN - 1];
+      const earlyRealClues = shuffledReal.slice(0, LIBRARY_CODE_LEN - 1);
+      const earlyDecoys: LibraryClue[] = decoyShapes.map((shape) => ({
+        shape,
+        digit: Math.floor(Math.random() * 10),
+      }));
+      const earlyQueue = [...earlyRealClues, ...earlyDecoys].sort(() => Math.random() - 0.5);
+      this.libraryBookQueues.set(p.id, [...earlyQueue, guaranteedFinalClue]);
+
+      // Pick 4 distinct Ground shelf spots + 4 distinct Upper shelf spots for this player
+      const gPick = [...groundSpots].sort(() => Math.random() - 0.5).slice(0, 4);
+      const uPick = [...upperSpots].sort(() => Math.random() - 0.5).slice(0, 4);
+      const chosen = [...gPick, ...uPick].slice(0, LIBRARY_BOOKS_PER_PLAYER);
+      const books: LibraryBookSpot[] = chosen.map((spot, idx) => ({
+        id: p.id * 100 + idx,
+        x: Math.round(spot.x),
+        y: Math.round(spot.y),
+        floor: spot.floor,
+        collected: false,
+      }));
+
+      return {
+        playerId: p.id,
+        collectedCount: 0,
+        books,
+        clues: [],
+        codeDigits: new Array(LIBRARY_CODE_LEN).fill(0),
+        unlocked: false,
+      };
+    });
+
+    // Spawn Figure completely clear of Ground shelves in the open West central hall
+    const spawnX = pc.x - 360;
+    const spawnY = pc.y;
+    const monster: LibraryMonsterState = {
+      x: spawnX,
+      y: spawnY,
+      vx: 0,
+      vy: 0,
+      angle: 0,
+      floor: 0,
+      radius: MONSTER_RADIUS,
+      mode: 'calm',
+      stunTimer: 0,
+      rageTimer: 0,
+      rageFadeTimer: 0,
+      reachedHoldTimer: 0,
+      targetX: pc.x + 360,
+      targetY: pc.y,
+      targetFloor: 0,
+    };
+    this.monsterLastProgressX = spawnX;
+    this.monsterLastProgressY = spawnY;
+    this.monsterStuckTimer = 0;
+
+    this.libraryState = {
+      pillarSequence,
+      totalCollectedAll: 0,
+      introTimer: LIBRARY_INTRO_DURATION,
+      monster,
+      playerProgress,
+      doors,
+    };
+  }
+
+  private getLibraryProgressFraction(): number {
+    if (!this.libraryState) return 0;
+    const totalMax = Math.max(8, this.players.length * LIBRARY_BOOKS_PER_PLAYER);
+    return clamp(this.libraryState.totalCollectedAll / totalMax, 0, 1);
+  }
+
+  private triggerMonsterRage(targetX: number, targetY: number, targetFloor: FloorLevel) {
+    if (!this.libraryState) return;
+    const m = this.libraryState.monster;
+    if (m.stunTimer > 0) return;
+
+    const wasCalm = m.mode !== 'rage';
+    m.mode = 'rage';
+    m.targetX = targetX;
+    m.targetY = targetY;
+    m.targetFloor = targetFloor;
+    m.rageTimer = 10.0;
+    m.reachedHoldTimer = -1;
+    m.rageFadeTimer = 0;
+    this.monsterPathTimer = 0;
+
+    if (wasCalm) {
+      this.emitEvent('monster_roar', m.x, m.y, undefined, undefined, m.floor);
+      this.addFloatingText(m.x, m.y - (m.radius + 14), 'HE HEARD YOU!', '#F97316', m.floor);
+    }
+  }
+
+  public collectNearbyBook(playerId: number): boolean {
+    if (!this.libraryState || this.winnerId !== null || this.libraryState.introTimer > 0) return false;
+    const player = this.players.find((p) => p.id === playerId && p.alive);
+    const prog = this.libraryState.playerProgress.find((pp) => pp.playerId === playerId);
+    if (!player || !prog) return false;
+
+    const pFloor = player.floor ?? 0;
+    let bestBook: LibraryBookSpot | null = null;
+    let bestD = 98;
+    for (const b of prog.books) {
+      if (b.collected || b.floor !== pFloor) continue;
+      const d = dist(player.x, player.y, b.x, b.y);
+      if (d <= bestD) {
+        bestD = d;
+        bestBook = b;
+      }
+    }
+    if (!bestBook) return false;
+
+    bestBook.collected = true;
+    this.libraryCollectedSpots.add(bestBook.id);
+    const queue = this.libraryBookQueues.get(playerId) ?? [];
+    const clue = queue[prog.collectedCount];
+    prog.collectedCount += 1;
+    this.libraryState.totalCollectedAll += 1;
+
+    if (clue) {
+      prog.clues.push(clue);
+      this.addFloatingText(
+        player.x,
+        player.y - (PLAYER_RADIUS + 14),
+        `CLUE ${prog.collectedCount}/8: = ${clue.digit}`,
+        '#FDE047',
+        pFloor
+      );
+    }
+    this.emitEvent('book_collect', bestBook.x, bestBook.y, prog.collectedCount, playerId, pFloor);
+    this.spawnParticles(bestBook.x, bestBook.y, '#FBBF24', 12, 130, pFloor);
+    return true;
+  }
+
+  public setDoorDialDigit(playerId: number, index: number, digit: number) {
+    if (!this.libraryState) return;
+    const prog = this.libraryState.playerProgress.find((pp) => pp.playerId === playerId);
+    if (!prog || index < 0 || index >= LIBRARY_CODE_LEN) return;
+    prog.codeDigits[index] = ((Math.round(digit) % 10) + 10) % 10;
+    const player = this.players.find((p) => p.id === playerId);
+    if (player) {
+      this.emitEvent('lock_dial', player.x, player.y, prog.codeDigits[index], playerId, player.floor ?? 0);
+    }
+  }
+
+  public submitDoorCode(playerId: number, digits: number[]): boolean {
+    if (!this.libraryState || this.winnerId !== null || this.libraryState.introTimer > 0) return false;
+    const player = this.players.find((p) => p.id === playerId && p.alive);
+    const prog = this.libraryState.playerProgress.find((pp) => pp.playerId === playerId);
+    const door = this.libraryState.doors.find((d) => d.playerId === playerId);
+    const solution = this.librarySolutions.get(playerId);
+    if (!player || !prog || !door || !solution) return false;
+
+    if ((player.floor ?? 0) !== 0 || dist(player.x, player.y, door.x, door.y) > 155) {
+      return false;
+    }
+
+    const cleanDigits = digits.slice(0, LIBRARY_CODE_LEN).map((d) => ((Math.round(d) % 10) + 10) % 10);
+    prog.codeDigits = cleanDigits;
+
+    const correct =
+      cleanDigits.length === solution.length && cleanDigits.every((d, idx) => d === solution[idx]);
+    if (!correct) {
+      this.emitEvent('lock_error', door.x, door.y, 1, playerId, 0);
+      this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 14), 'WRONG CODE!', '#FB7185', 0);
+      return false;
+    }
+
+    prog.unlocked = true;
+    this.emitEvent('door_unlock', door.x, door.y, 1, playerId, 0);
+    this.spawnParticles(door.x, door.y, '#34D399', 26, 200, 0);
+    if (this.config.teamMode === '2V2') {
+      this.winnerTeam = player.team ?? player.id % 2;
+    }
+    this.winnerId = player.id;
+    this.winnerReason = `${player.name} unlocked the Library Padlock and escaped!`;
+    this.emitEvent('victory', door.x, door.y, 1, playerId, 0);
+    return true;
+  }
+
+  private updateLibraryMonster(dt: number) {
+    if (!this.libraryState) return;
+    const m = this.libraryState.monster;
+    const progFrac = this.getLibraryProgressFraction();
+
+    if (m.stunTimer > 0) {
+      m.stunTimer = Math.max(0, m.stunTimer - dt);
+      m.vx *= Math.exp(-8 * dt);
+      m.vy *= Math.exp(-8 * dt);
+      return;
+    }
+
+    // 1. Calm / Stealth / Loud-Sound Hearing Logic (900px circle on same floor = 40% central map area)
+    let loudestSound: { x: number; y: number; floor: FloorLevel } | null = null;
+    this.monsterHearCheckTimer -= dt;
+    const checkProbabilisticStealth = this.monsterHearCheckTimer <= 0;
+    if (checkProbabilisticStealth) {
+      this.monsterHearCheckTimer = 0.32;
+    }
+
+    for (const p of this.players) {
+      if (!p.alive || p.stunTimer > 0) continue;
+      const pFloor = p.floor ?? 0;
+      if (pFloor !== m.floor) continue;
+
+      const d = dist(p.x, p.y, m.x, m.y);
+      if (d > LIBRARY_HEARING_RADIUS) continue;
+
+      const speed = Math.hypot(p.vx, p.vy);
+      const speedRatio = speed / PLAYER_MAX_SPEED;
+      if (speedRatio >= 0.96) {
+        // 100% walking speed inside 900px hearing circle -> instant rage trigger!
+        loudestSound = { x: p.x, y: p.y, floor: pFloor };
+        break;
+      } else if (speedRatio >= 0.80 && checkProbabilisticStealth) {
+        // 80%..100% speed: probability scales 0% at circumference (900px) -> up to 30% at 0.5 player diameter away
+        const closeDist = m.radius + PLAYER_RADIUS + 42;
+        const prox = clamp((LIBRARY_HEARING_RADIUS - d) / Math.max(1, LIBRARY_HEARING_RADIUS - closeDist), 0, 1);
+        const speedWeight = clamp((speedRatio - 0.80) / 0.20, 0.25, 1.0);
+        const chance = 0.30 * prox * speedWeight;
+        if (Math.random() < chance) {
+          loudestSound = { x: p.x, y: p.y, floor: pFloor };
+        }
+      }
+    }
+
+    if (loudestSound) {
+      this.triggerMonsterRage(loudestSound.x, loudestSound.y, loudestSound.floor);
+    }
+
+    // 2. Speed & Mode State Machine (Calm 0.50->0.85x, Rage 1.00->1.50x, 1s smooth fade-out)
+    const calmRatio = 0.50 + progFrac * 0.35;
+    const rageRatio = 1.00 + progFrac * 0.50;
+
+    if (m.mode === 'rage') {
+      m.rageTimer -= dt;
+      if (m.floor === m.targetFloor && dist(m.x, m.y, m.targetX, m.targetY) <= 44) {
+        if (m.reachedHoldTimer < 0) {
+          m.reachedHoldTimer = 1.0; // End 1s after reaching sound location
+        }
+      }
+      if (m.reachedHoldTimer >= 0) {
+        m.reachedHoldTimer -= dt;
+      }
+
+      if (m.rageTimer <= 0 || (m.reachedHoldTimer >= 0 && m.reachedHoldTimer <= 0)) {
+        // Begin 1s smooth fade-out back to Calm mode
+        m.mode = 'calm';
+        m.rageFadeTimer = 1.0;
+      }
+    }
+
+    if (m.rageFadeTimer > 0) {
+      m.rageFadeTimer = Math.max(0, m.rageFadeTimer - dt);
+    }
+
+    const targetRatio =
+      m.mode === 'rage'
+        ? rageRatio
+        : m.rageFadeTimer > 0
+          ? calmRatio + (rageRatio - calmRatio) * m.rageFadeTimer
+          : calmRatio;
+    this.monsterRageSpeedScale = targetRatio;
+    const moveSpeed = PLAYER_MAX_SPEED * targetRatio;
+
+    // 3. Two-Floor A* Pathfinding, Balanced Ground/Upper Roaming & Anti-Stuck Recovery
+    const pickCalmDestination = () => {
+      const wantFloor: FloorLevel = Math.random() < 0.64 ? 0 : 1;
+      const candidates = this.navNodes.filter(
+        (n) => !n.isStair && n.floor === wantFloor && dist(n.x, n.y, m.x, m.y) > 260
+      );
+      const pool = candidates.length > 0 ? candidates : this.navNodes.filter((n) => !n.isStair);
+      for (let tries = 0; tries < 8 && pool.length > 0; tries++) {
+        const pick = pool[Math.floor(Math.random() * pool.length)];
+        const path = this.findNavPath(m.x, m.y, m.floor, pick.x, pick.y, pick.floor);
+        if (path.length > 0) {
+          m.targetX = pick.x;
+          m.targetY = pick.y;
+          m.targetFloor = pick.floor;
+          this.monsterPath = path;
+          this.monsterPathTimer = 0.85;
+          return;
+        }
+      }
+    };
+
+    this.monsterPathTimer -= dt;
+    if (m.mode === 'calm') {
+      const closeToPatrol = m.floor === m.targetFloor && dist(m.x, m.y, m.targetX, m.targetY) < 75;
+      if (closeToPatrol || (this.monsterPath.length === 0 && this.monsterPathTimer <= 0)) {
+        pickCalmDestination();
+      }
+    } else if (this.monsterPathTimer <= 0 || this.monsterPath.length === 0) {
+      this.monsterPath = this.findNavPath(m.x, m.y, m.floor, m.targetX, m.targetY, m.targetFloor);
+      this.monsterPathTimer = 0.4;
+    }
+
+    let wpX = m.targetX;
+    let wpY = m.targetY;
+    while (this.monsterPath.length > 0) {
+      const next = this.monsterPath[0];
+      const hitDist = next.isStair ? 30 : 42;
+      if (dist(m.x, m.y, next.x, next.y) < hitDist && (next.isStair || next.floor === m.floor)) {
+        this.monsterPath.shift();
+      } else {
+        wpX = next.x;
+        wpY = next.y;
+        break;
+      }
+    }
+
+    const dx = wpX - m.x;
+    const dy = wpY - m.y;
+    const dWp = Math.hypot(dx, dy);
+    if (dWp > 3) {
+      const desiredAngle = Math.atan2(dy, dx);
+      const diff = normalizeAngle(desiredAngle - m.angle);
+      m.angle = normalizeAngle(m.angle + clamp(diff, -6.5 * dt, 6.5 * dt));
+      m.vx = (dx / dWp) * moveSpeed;
+      m.vy = (dy / dWp) * moveSpeed;
+      m.x += m.vx * dt;
+      m.y += m.vy * dt;
+    } else {
+      m.vx *= Math.exp(-8 * dt);
+      m.vy *= Math.exp(-8 * dt);
+    }
+
+    // Update floor & resolve walls on Monster's floor
+    const temp = { x: m.x, y: m.y, floor: m.floor, stairBlend: m.floor };
+    this.updateEntityFloorAndBlend(temp);
+    m.floor = temp.floor ?? 0;
+
+    for (let pass = 0; pass < 2; pass++) {
+      for (const wall of this.map.walls) {
+        if (!isWallOnFloor(wall, m.floor)) continue;
+        const cx = clamp(m.x, wall.x, wall.x + wall.w);
+        const cy = clamp(m.y, wall.y, wall.y + wall.h);
+        const wdx = m.x - cx;
+        const wdy = m.y - cy;
+        const d2 = wdx * wdx + wdy * wdy;
+        if (d2 < m.radius * m.radius) {
+          const d = Math.sqrt(d2);
+          if (d > 0.0001) {
+            const ov = m.radius - d;
+            m.x += (wdx / d) * ov;
+            m.y += (wdy / d) * ov;
+          } else {
+            const lp = m.x - wall.x;
+            const rp = wall.x + wall.w - m.x;
+            const tp = m.y - wall.y;
+            const bp = wall.y + wall.h - m.y;
+            const minP = Math.min(lp, rp, tp, bp);
+            if (minP === lp) m.x = wall.x - m.radius;
+            else if (minP === rp) m.x = wall.x + wall.w + m.radius;
+            else if (minP === tp) m.y = wall.y - m.radius;
+            else m.y = wall.y + wall.h + m.radius;
+          }
+        }
+      }
+    }
+
+    // Stuck detector: if Figure ever fails to make net progress for >0.55s, slide toward clearest nav node & reroute
+    if (dist(m.x, m.y, this.monsterLastProgressX, this.monsterLastProgressY) > 22) {
+      this.monsterLastProgressX = m.x;
+      this.monsterLastProgressY = m.y;
+      this.monsterStuckTimer = 0;
+    } else if (moveSpeed > 40) {
+      this.monsterStuckTimer += dt;
+      if (this.monsterStuckTimer > 0.55) {
+        const nearest = this.findClosestNavNode(m.x, m.y, m.floor);
+        if (nearest) {
+          const dN = dist(m.x, m.y, nearest.x, nearest.y);
+          if (dN > 4) {
+            const pull = Math.min(28, dN);
+            m.x += ((nearest.x - m.x) / dN) * pull;
+            m.y += ((nearest.y - m.y) / dN) * pull;
+          }
+        }
+        this.monsterStuckTimer = 0;
+        this.monsterPathTimer = 0;
+        if (m.mode === 'calm') {
+          pickCalmDestination();
+        } else {
+          this.monsterPath = this.findNavPath(m.x, m.y, m.floor, m.targetX, m.targetY, m.targetFloor);
+        }
+      }
+    }
+
+    // Heavy booming footsteps event
+    this.monsterStepTimer -= dt;
+    if (this.monsterStepTimer <= 0 && Math.hypot(m.vx, m.vy) > 35) {
+      this.monsterStepTimer = m.mode === 'rage' ? 0.24 : 0.44 - progFrac * 0.1;
+      this.emitEvent('monster_step', m.x, m.y, m.mode === 'rage' ? 2 : 1, undefined, m.floor);
+    }
+
+    // Instakill any player on the same floor touched by The Figure!
+    for (const p of this.players) {
+      if (!p.alive || (p.floor ?? 0) !== m.floor) continue;
+      if (dist(p.x, p.y, m.x, m.y) <= m.radius + PLAYER_RADIUS - 6) {
+        p.hp = 0;
+        p.alive = false;
+        p.deaths += 1;
+        p.stunTimer = 0;
+        p.ammo = 0;
+        p.respawnTimer = RESPAWN_DELAY;
+        this.emitEvent('monster_kill', p.x, p.y, 1, p.id, m.floor);
+        this.spawnParticles(p.x, p.y, '#EF4444', 24, 210, m.floor);
+        this.addFloatingText(p.x, p.y - (PLAYER_RADIUS + 12), 'CAUGHT BY FIGURE!', '#FB7185', m.floor);
+      }
+    }
+  }
+
+  private applyLibraryBotControls(bot: Player, dt: number) {
+    if (!this.libraryState) return;
+    const bFloor = bot.floor ?? 0;
+    const prog = this.libraryState.playerProgress.find((pp) => pp.playerId === bot.id);
+    const door = this.libraryState.doors.find((d) => d.playerId === bot.id);
+    const m = this.libraryState.monster;
+    const cooldown = Math.max(0, (this.botCodeCooldown.get(bot.id) ?? 0) - dt);
+    this.botCodeCooldown.set(bot.id, cooldown);
+
+    // 1. Collect nearby book automatically if close
+    if (prog && prog.collectedCount < LIBRARY_BOOKS_PER_PLAYER) {
+      for (const b of prog.books) {
+        if (!b.collected && b.floor === bFloor && dist(bot.x, bot.y, b.x, b.y) <= 78) {
+          this.collectNearbyBook(bot.id);
+          break;
+        }
+      }
+    }
+
+    // 2. If all 8 books collected and near own door, solve & escape!
+    if (prog && door && prog.collectedCount >= LIBRARY_BOOKS_PER_PLAYER && bFloor === 0 && dist(bot.x, bot.y, door.x, door.y) <= 135 && cooldown <= 0) {
+      const solution = this.librarySolutions.get(bot.id);
+      if (solution) {
+        this.botCodeCooldown.set(bot.id, 1.8);
+        this.submitDoorCode(bot.id, solution);
+        return;
+      }
+    }
+
+    // 3. Evade Monster, incoming bullets, and TNT blasts
+    let evadeX = 0;
+    let evadeY = 0;
+    const monsterDist = sameFloor(m.floor, bFloor) ? dist(bot.x, bot.y, m.x, m.y) : 9999;
+    if (m.stunTimer <= 0 && sameFloor(m.floor, bFloor) && monsterDist < 340) {
+      const away = Math.atan2(bot.y - m.y, bot.x - m.x);
+      evadeX += Math.cos(away) * 3.5;
+      evadeY += Math.sin(away) * 3.5;
+    }
+
+    for (const b of this.bullets) {
+      if (!sameFloor(b.floor, bFloor) || (b.ownerId === bot.id && b.age < BULLET_SELF_GRACE)) continue;
+      const d = dist(bot.x, bot.y, b.x, b.y);
+      if (d < 200) {
+        const bSpd = Math.hypot(b.vx, b.vy) || 1;
+        const side = (bot.x - b.x) * b.vy - (bot.y - b.y) * b.vx >= 0 ? 1 : -1;
+        evadeX += (b.vy / bSpd) * side * 2.0;
+        evadeY += (-b.vx / bSpd) * side * 2.0;
+      }
+    }
+
+    bot.aiThinkTimer -= dt;
+    bot.aiHoldShotTimer -= dt;
+
+    if (Math.hypot(evadeX, evadeY) > 0.35) {
+      bot.aiTargetAngle = Math.atan2(evadeY, evadeX);
+      bot.aiMoveRatio = monsterDist < 240 ? 0.95 : 0.72;
+    } else {
+      // Stealth slow-walk when inside Figure's 900px hearing circle on same floor!
+      const inHearing = m.stunTimer <= 0 && sameFloor(m.floor, bFloor) && monsterDist < LIBRARY_HEARING_RADIUS - 40;
+      const safeWalkRatio = inHearing ? 0.72 : 0.92;
+
+      // Opportunistic shot at visible rival on same floor
+      if (bot.ammo > 0 && bot.aiHoldShotTimer <= 0) {
+        for (const e of this.players) {
+          if (e.id === bot.id || !e.alive || this.isTeammate(bot.id, e.id)) continue;
+          if (!sameFloor(e.floor, bFloor)) continue;
+          const d = dist(bot.x, bot.y, e.x, e.y);
+          if (d < 540 && this.hasLineOfSight(bot.x, bot.y, e.x, e.y, bFloor)) {
+            bot.angle = Math.atan2(e.y - bot.y, e.x - bot.x);
+            this.fireBullet(bot);
+            bot.aiHoldShotTimer = 0.85;
+            break;
+          }
+        }
+      }
+
+      if (bot.aiThinkTimer <= 0) {
+        bot.aiThinkTimer = 0.26;
+        let goalX = this.map.width * 0.5;
+        let goalY = this.map.height * 0.5;
+        let goalFloor: FloorLevel = bFloor;
+
+        if (prog && prog.collectedCount < LIBRARY_BOOKS_PER_PLAYER) {
+          const remaining = prog.books.filter((b) => !b.collected);
+          remaining.sort(
+            (a, b) =>
+              (a.floor === bFloor ? 0 : 700) +
+              dist(bot.x, bot.y, a.x, a.y) -
+              ((b.floor === bFloor ? 0 : 700) + dist(bot.x, bot.y, b.x, b.y))
+          );
+          if (remaining[0]) {
+            goalX = remaining[0].x;
+            goalY = remaining[0].y;
+            goalFloor = remaining[0].floor;
+          }
+        } else if (door) {
+          const outX = door.side === 'W' ? door.x - 56 : door.side === 'E' ? door.x + 56 : door.x;
+          const outY = door.side === 'N' ? door.y - 56 : door.side === 'S' ? door.y + 56 : door.y;
+          goalX = outX;
+          goalY = outY;
+          goalFloor = 0;
+        }
+
+        const existing = this.botPaths.get(bot.id);
+        const needNewPath =
+          !existing ||
+          existing.timer <= 0 ||
+          existing.goalFloor !== goalFloor ||
+          dist(existing.goalX, existing.goalY, goalX, goalY) > 90 ||
+          existing.nodes.length === 0;
+        if (needNewPath) {
+          const nodes = this.findNavPath(bot.x, bot.y, bFloor, goalX, goalY, goalFloor);
+          this.botPaths.set(bot.id, { nodes, timer: 1.1, goalX, goalY, goalFloor });
+        } else {
+          existing.timer -= 0.26;
+        }
+
+        const pathState = this.botPaths.get(bot.id);
+        let wpX = goalX;
+        let wpY = goalY;
+        if (pathState && pathState.nodes.length > 0) {
+          while (pathState.nodes.length > 0) {
+            const next = pathState.nodes[0];
+            const hitDist = next.isStair ? 30 : 42;
+            if (dist(bot.x, bot.y, next.x, next.y) < hitDist && (next.isStair || next.floor === bFloor)) {
+              pathState.nodes.shift();
+            } else {
+              wpX = next.x;
+              wpY = next.y;
+              break;
+            }
+          }
+        }
+        bot.aiTargetAngle = Math.atan2(wpY - bot.y, wpX - bot.x);
+        bot.aiMoveRatio = safeWalkRatio;
+      }
+    }
+
+    const angleDiff = normalizeAngle(bot.aiTargetAngle - bot.angle);
+    bot.angle = normalizeAngle(bot.angle + clamp(angleDiff, -8 * dt, 8 * dt));
+
+    const targetSpeed = PLAYER_MAX_SPEED * bot.aiMoveRatio;
+    const targetVx = Math.cos(bot.aiTargetAngle) * targetSpeed;
+    const targetVy = Math.sin(bot.aiTargetAngle) * targetSpeed;
+    const dvx = targetVx - bot.vx;
+    const dvy = targetVy - bot.vy;
+    const dv = Math.hypot(dvx, dvy);
+    const maxStep = PLAYER_MAX_ACCEL * dt;
+    if (dv <= maxStep) {
+      bot.vx = targetVx;
+      bot.vy = targetVy;
+    } else {
+      bot.vx += (dvx / dv) * maxStep;
+      bot.vy += (dvy / dv) * maxStep;
     }
   }
 
@@ -2128,6 +3232,23 @@ export class ArenaEngine {
       winnerId: this.winnerId,
       winnerTeam: this.winnerTeam,
       winnerReason: this.winnerReason,
+      libraryState: this.libraryState
+        ? {
+            pillarSequence: this.libraryState.pillarSequence,
+            totalCollectedAll: this.libraryState.totalCollectedAll,
+            introTimer: Math.round(this.libraryState.introTimer * 100) / 100,
+            monster: { ...this.libraryState.monster },
+            playerProgress: this.libraryState.playerProgress.map((pp) => ({
+              playerId: pp.playerId,
+              collectedCount: pp.collectedCount,
+              books: pp.books,
+              clues: pp.clues,
+              codeDigits: pp.codeDigits,
+              unlocked: pp.unlocked,
+            })),
+            doors: this.libraryState.doors,
+          }
+        : undefined,
       players: this.players.map((p) => ({
         id: p.id,
         name: p.name,
@@ -2139,6 +3260,8 @@ export class ArenaEngine {
         vx: Math.round(p.vx),
         vy: Math.round(p.vy),
         angle: Math.round(p.angle * 1000) / 1000,
+        floor: p.floor ?? 0,
+        stairBlend: Math.round((p.stairBlend ?? 0) * 100) / 100,
         hp: p.hp,
         maxHp: p.maxHp,
         ammo: p.ammo,

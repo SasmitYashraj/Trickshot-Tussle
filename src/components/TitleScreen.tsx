@@ -1,6 +1,6 @@
 import { Globe, Play, User, Users } from 'lucide-react';
 import { useState } from 'react';
-import { SOLO_MAP_LIST } from '../game/maps';
+import { ARENA_MAPS, IMMERSIVE_MAP_LIST, SOLO_MAP_LIST } from '../game/maps';
 import {
   type BotDifficulty,
   type MapId,
@@ -39,10 +39,29 @@ export function TitleScreen({
   const setMode = (mode: MatchMode) => onChangeConfig({ ...config, mode });
   const setTeamMode = (teamMode: TeamMode) => onChangeConfig({ ...config, teamMode });
   const setColor = (playerColorId: string) => onChangeConfig({ ...config, playerColorId });
-  const setMap = (mapId: MapId) => onChangeConfig({ ...config, mapId, immersive: false });
+  const setArenaView = (immersive: boolean) => {
+    if (immersive === Boolean(config.immersive)) return;
+    const nextMapId = immersive ? IMMERSIVE_MAP_LIST[0].id : SOLO_MAP_LIST[0].id;
+    onChangeConfig({
+      ...config,
+      immersive,
+      mapId: nextMapId,
+      extraDark: immersive ? Boolean(config.extraDark) : false,
+    });
+  };
+  const setMap = (mapId: MapId) => {
+    const mapDef = ARENA_MAPS[mapId];
+    onChangeConfig({
+      ...config,
+      mapId,
+      immersive: mapDef.immersive,
+      extraDark: mapDef.immersive ? Boolean(config.extraDark) : false,
+    });
+  };
   const setDifficulty = (difficulty: BotDifficulty) => onChangeConfig({ ...config, difficulty });
   const activeColorId = config.playerColorId ?? 'cobalt';
   const activeTeamMode: TeamMode = config.teamMode ?? 'FFA';
+  const availableMaps = config.immersive ? IMMERSIVE_MAP_LIST : SOLO_MAP_LIST;
 
   return (
     <div className="h-dvh w-full overflow-y-auto overscroll-contain bg-[#0B1120]">
@@ -213,9 +232,39 @@ export function TitleScreen({
                 </div>
 
                 <div>
-                  <div className="text-xs font-semibold text-slate-400 mb-1.5">Arena Layout</div>
+                  <div className="text-xs font-semibold text-slate-400 mb-1.5">Arena View</div>
+                  <div className="grid grid-cols-2 gap-1 p-1 rounded-lg bg-slate-900 border border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => setArenaView(false)}
+                      className={`px-2 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                        !config.immersive
+                          ? 'bg-sky-500 text-slate-950'
+                          : 'text-slate-300 hover:text-white'
+                      }`}
+                    >
+                      Normal
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setArenaView(true)}
+                      className={`px-2 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                        config.immersive
+                          ? 'bg-sky-500 text-slate-950'
+                          : 'text-slate-300 hover:text-white'
+                      }`}
+                    >
+                      Immersive
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <div className="text-xs font-semibold text-slate-400 mb-1.5">
+                    {config.immersive ? 'Immersive Map' : 'Arena Layout'}
+                  </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                    {SOLO_MAP_LIST.map((m) => (
+                    {availableMaps.map((m) => (
                       <button
                         key={m.id}
                         type="button"
@@ -232,6 +281,36 @@ export function TitleScreen({
                     ))}
                   </div>
                 </div>
+
+                {config.immersive && (
+                  <div>
+                    <div className="text-xs font-semibold text-slate-400 mb-1.5">Lighting Mode</div>
+                    <div className="grid grid-cols-2 gap-1 p-1 rounded-lg bg-slate-900 border border-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => onChangeConfig({ ...config, extraDark: false })}
+                        className={`px-2 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                          !config.extraDark
+                            ? 'bg-sky-500 text-slate-950'
+                            : 'text-slate-300 hover:text-white'
+                        }`}
+                      >
+                        Bright
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onChangeConfig({ ...config, extraDark: true })}
+                        className={`px-2 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                          config.extraDark
+                            ? 'bg-amber-400 text-slate-950'
+                            : 'text-slate-300 hover:text-white'
+                        }`}
+                      >
+                        Extra Dark · Torch
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 <div>
                   <div className="text-xs font-semibold text-slate-400 mb-1.5">Rival Skill</div>

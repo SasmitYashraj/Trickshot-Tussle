@@ -14,9 +14,15 @@ export type MapId =
   | 'bunkers'
   | 'winter_tussle'
   | 'immersive_mansion'
-  | 'immersive_outdoors';
+  | 'immersive_outdoors'
+  | 'library';
 
-export type FloorTheme = 'mansion_wood' | 'grass_outdoors' | 'maple_cargo' | 'winter_snow';
+export type FloorTheme =
+  | 'mansion_wood'
+  | 'grass_outdoors'
+  | 'maple_cargo'
+  | 'winter_snow'
+  | 'library_wood';
 
 export type ObstacleKind =
   | 'perimeter_wood'
@@ -31,12 +37,17 @@ export type ObstacleKind =
   | 'tree'
   | 'pine_tree'
   | 'rock'
-  | 'hedge';
+  | 'hedge'
+  | 'library_pillar'
+  | 'mezzanine_rail'
+  | 'stair_rail';
 
 export interface Vec2 {
   x: number;
   y: number;
 }
+
+export type FloorLevel = 0 | 1;
 
 export interface WallRect {
   x: number;
@@ -45,6 +56,90 @@ export interface WallRect {
   h: number;
   kind?: ObstacleKind;
   accent?: string;
+  floor?: FloorLevel;
+}
+
+export type LibraryShape =
+  | 'circle'
+  | 'triangle'
+  | 'square'
+  | 'diamond'
+  | 'star'
+  | 'pentagon'
+  | 'hexagon'
+  | 'cross';
+
+export interface LibraryStair {
+  id: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Direction going UP from Ground (floor 0) to Upper Mezzanine (floor 1) */
+  upDir: 'up' | 'down' | 'left' | 'right';
+}
+
+export interface LibraryZone {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface LibraryDoor {
+  playerId: number;
+  side: 'N' | 'E' | 'S' | 'W';
+  x: number;
+  y: number;
+}
+
+export interface LibraryClue {
+  shape: LibraryShape;
+  digit: number;
+}
+
+export interface LibraryBookSpot {
+  id: number;
+  x: number;
+  y: number;
+  floor: FloorLevel;
+  collected: boolean;
+}
+
+export interface LibraryMonsterState {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  angle: number;
+  floor: FloorLevel;
+  radius: number;
+  mode: 'calm' | 'rage';
+  stunTimer: number;
+  rageTimer: number;
+  rageFadeTimer: number;
+  reachedHoldTimer: number;
+  targetX: number;
+  targetY: number;
+  targetFloor: FloorLevel;
+}
+
+export interface LibraryPlayerProgress {
+  playerId: number;
+  collectedCount: number;
+  books: LibraryBookSpot[];
+  clues: LibraryClue[];
+  codeDigits: number[];
+  unlocked: boolean;
+}
+
+export interface LibraryMatchState {
+  pillarSequence: LibraryShape[];
+  totalCollectedAll: number;
+  introTimer: number;
+  monster: LibraryMonsterState;
+  playerProgress: LibraryPlayerProgress[];
+  doors: LibraryDoor[];
 }
 
 export interface CardboardBox {
@@ -56,6 +151,7 @@ export interface CardboardBox {
   vx: number;
   vy: number;
   age: number;
+  floor?: FloorLevel;
   lastPusherId?: number | null;
   state: 'spawning' | 'active' | 'punctured' | 'fading';
   stateTimer: number;
@@ -82,6 +178,9 @@ export interface ArenaMap {
   walls: WallRect[];
   spawns: Vec2[];
   icePits?: Array<{ x: number; y: number; rx: number; ry: number; points?: Vec2[] }>;
+  upperZones?: LibraryZone[];
+  stairs?: LibraryStair[];
+  pillarCenter?: Vec2;
 }
 
 export interface PlayerColorOption {
@@ -114,6 +213,8 @@ export interface Player {
   vx: number;
   vy: number;
   angle: number;
+  floor?: FloorLevel;
+  stairBlend?: number;
   hp: number;
   maxHp: number;
   ammo: number;
@@ -150,6 +251,7 @@ export interface Bullet {
   vx: number;
   vy: number;
   radius: number;
+  floor?: FloorLevel;
   bouncesLeft: number;
   maxBounces: number;
   age: number;
@@ -166,6 +268,7 @@ export interface Pickup {
   y: number;
   radius: number;
   age: number;
+  floor?: FloorLevel;
   vx?: number;
   vy?: number;
   armed?: boolean;
@@ -183,6 +286,7 @@ export interface Explosion {
   age: number;
   duration: number;
   color: string;
+  floor?: FloorLevel;
 }
 
 export interface Particle {
@@ -194,6 +298,7 @@ export interface Particle {
   color: string;
   age: number;
   duration: number;
+  floor?: FloorLevel;
 }
 
 export interface FloatingText {
@@ -204,6 +309,7 @@ export interface FloatingText {
   color: string;
   age: number;
   duration: number;
+  floor?: FloorLevel;
 }
 
 export type EngineEventType =
@@ -218,7 +324,15 @@ export type EngineEventType =
   | 'knockout'
   | 'killstreak'
   | 'self_kill'
-  | 'victory';
+  | 'victory'
+  | 'book_collect'
+  | 'monster_step'
+  | 'monster_roar'
+  | 'monster_stun'
+  | 'monster_kill'
+  | 'lock_dial'
+  | 'lock_error'
+  | 'door_unlock';
 
 export interface EngineEvent {
   type: EngineEventType;
@@ -226,6 +340,7 @@ export interface EngineEvent {
   y: number;
   value?: number;
   playerId?: number;
+  floor?: FloorLevel;
   mode?: MatchMode;
 }
 
@@ -313,6 +428,7 @@ export interface WorldSyncState {
   winnerId: number | null;
   winnerTeam?: number | null;
   winnerReason: string;
+  libraryState?: LibraryMatchState;
   players: Array<{
     id: number;
     name: string;
@@ -324,6 +440,8 @@ export interface WorldSyncState {
     vx: number;
     vy: number;
     angle: number;
+    floor?: FloorLevel;
+    stairBlend?: number;
     hp: number;
     maxHp: number;
     ammo: number;
@@ -389,3 +507,20 @@ export const STUN_DURATION = 0.85;
 export const RESPAWN_DELAY = 2.6;
 export const SPAWN_INVULN_DURATION = 0.85;
 export const KILL_STREAK_WINDOW = 3.0;
+
+export const MONSTER_RADIUS = PLAYER_RADIUS * 1.5;
+export const MONSTER_STUN_DURATION = 15.0;
+export const LIBRARY_HEARING_RADIUS = 900;
+export const LIBRARY_BOOKS_PER_PLAYER = 8;
+export const LIBRARY_CODE_LEN = 5;
+export const LIBRARY_INTRO_DURATION = 5.0;
+export const LIBRARY_SHAPES: LibraryShape[] = [
+  'circle',
+  'triangle',
+  'square',
+  'diamond',
+  'star',
+  'pentagon',
+  'hexagon',
+  'cross',
+];

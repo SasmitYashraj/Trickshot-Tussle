@@ -1,6 +1,8 @@
 import { Pause, Play, RotateCcw, Volume2, VolumeX } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { GameOverModal } from './components/GameOverModal';
+import { LibraryLoadingScreen } from './components/LibraryLoadingScreen';
+import { LibraryOverlays } from './components/LibraryOverlays';
 import { OnlineLobbyScreen } from './components/OnlineLobbyScreen';
 import { PlayerHealthBar } from './components/PlayerHealthBar';
 import { TitleScreen } from './components/TitleScreen';
@@ -17,16 +19,29 @@ import { sound } from './game/sound';
 import {
   type ControlScheme,
   type EngineEvent,
+  type FloorLevel,
   type GameSnapshot,
   type GameState,
   type JoystickState,
   KILL_STREAK_WINDOW,
+  LIBRARY_BOOKS_PER_PLAYER,
+  LIBRARY_INTRO_DURATION,
+  type LibraryMatchState,
   type MatchConfig,
   type MatchMode,
   OnlineRoomState,
   WorldSyncState,
 } from './game/types';
 import { MultiplayerClient } from './net/multiplayerClient';
+
+interface LibraryUiSnapshot {
+  state: LibraryMatchState;
+  playerFloor: FloorLevel;
+  playerSpeed: number;
+  playerAlive: boolean;
+  canCollectBook: boolean;
+  canUnlockDoor: boolean;
+}
 
 const DEFAULT_SOLO_CONFIG: MatchConfig = {
   mode: 'ELIMINATION',
@@ -63,7 +78,10 @@ function playEngineEvents(
   listenerY?: number,
   listenerId = 0,
   onLocalKillStreak?: (streak: number, mode: MatchMode) => void,
-  onLocalSelfKill?: () => void
+  onLocalSelfKill?: () => void,
+  listenerFloor: FloorLevel = 0,
+  onLocalLockError?: () => void,
+  onLocalMonsterKill?: () => void
 ) {
   const hasLocalEliminationClimax = events.some(
     (e) =>
@@ -76,6 +94,7 @@ function playEngineEvents(
 
   for (const evt of events) {
     let spatial: { volume: number; pan: number } | undefined;
+    const sameFl = evt.floor === undefined || evt.floor === listenerFloor;
 
     if (listenerX !== undefined && listenerY !== undefined) {
       const dx = evt.x - listenerX;
@@ -84,22 +103,44 @@ function playEngineEvents(
       const isHeavyGlobal =
         evt.type === 'explosion' ||
         evt.type === 'knockout' ||
+        evt.type === 'monster_kill' ||
         evt.type === 'killstreak' ||
-        evt.type === 'victory';
+        evt.type === 'victory' ||
+        evt.type === 'monster_step' ||
+        evt.type === 'monster_roar' ||
+        evt.type === 'monster_stun' ||
+        evt.type === 'door_unlock';
 
       // Reload sound: full punch for the local player, subtle nearby audio, skip faraway bot reloads
       if (evt.type === 'pickup') {
         const isSelf = evt.value === listenerId || d < 95;
         if (!isSelf && d > 560) continue;
-        const vol = isSelf ? 1 : Math.max(0.18, 0.72 * (1 - d / 560));
+        const floorAtten = sameFl ? 1 : 0.4;
+        const vol = (isSelf ? 1 : Math.max(0.18, 0.72 * (1 - d / 560))) * floorAtten;
         const pan = Math.max(-0.85, Math.min(0.85, dx / 480));
         spatial = { volume: vol, pan };
       } else {
         const maxDist = isHeavyGlobal ? 1650 : 980;
-        if (d > maxDist && evt.type !== 'victory' && evt.type !== 'killstreak') continue;
-        const falloff = d < 95 ? 1 : Math.max(isHeavyGlobal ? 0.28 : 0.14, 1 - (d - 95) / maxDist);
+        if (
+          d > maxDist &&
+          evt.type !== 'victory' &&
+          evt.type !== 'killstreak' &&
+          evt.type !== 'monster_roar' &&
+          evt.type !== 'door_unlock' &&
+          evt.type !== 'monster_kill'
+        ) {
+          continue;
+        }
+        const falloff = d < 95 ? 1 : Math.max(isHeavyGlobal ? 0.24 : 0.14, 1 - (d - 95) / maxDist);
+        const floorAtten = sameFl
+          ? 1
+          : evt.type === 'monster_step'
+            ? 0.28
+            : evt.type === 'monster_roar' || evt.type === 'monster_stun' || evt.type === 'door_unlock'
+              ? 0.52
+              : 0.42;
         const pan = Math.max(-0.85, Math.min(0.85, dx / 520));
-        spatial = { volume: falloff, pan };
+        spatial = { volume: Math.min(1, falloff * floorAtten), pan };
       }
     }
 
@@ -131,6 +172,42 @@ function playEngineEvents(
           break;
         case 'knockout':
           sound.playKnockout(spatial);
+          break;
+        case 'monster_kill':
+          if (evt.playerId === listenerId) {
+            sound.playMonsterJumpscare();
+            onLocalMonsterKill?.();
+          } else {
+            sound.playKnockout(spatial);
+          }
+          break;
+        case 'book_collect':
+          if (evt.playerId === listenerId) {
+            sound.playBookCollect(spatial);
+          }
+          break;
+        case 'monster_step':
+          sound.playMonsterStep(spatial, (evt.value ?? 1) >= 2);
+          break;
+        case 'monster_roar':
+          sound.playMonsterRoar(spatial);
+          break;
+        case 'monster_stun':
+          sound.playMonsterStun(spatial);
+          break;
+        case 'lock_dial':
+          if (evt.playerId === listenerId) {
+            sound.playLockDial();
+          }
+          break;
+        case 'lock_error':
+          if (evt.playerId === listenerId) {
+            sound.playLockError();
+            onLocalLockError?.();
+          }
+          break;
+        case 'door_unlock':
+          sound.playDoorUnlock(spatial);
           break;
         case 'killstreak': {
           // Strictly private: audible and visible ONLY to the player who scored the kill
@@ -223,6 +300,12 @@ export default function App() {
   const [selfKillPopup, setSelfKillPopup] = useState<{ expiresAt: number } | null>(null);
   const [streakNow, setStreakNow] = useState<number>(0);
 
+  const [pcSpeedLimit, setPcSpeedLimit] = useState<number>(100);
+  const [libraryLockOpen, setLibraryLockOpen] = useState<boolean>(false);
+  const [lockErrorSeq, setLockErrorSeq] = useState<number>(0);
+  const [jumpscareFlash, setJumpscareFlash] = useState<boolean>(false);
+  const [libraryUi, setLibraryUi] = useState<LibraryUiSnapshot | null>(null);
+
   const engineRef = useRef<ArenaEngine>(new ArenaEngine(DEFAULT_SOLO_CONFIG));
   const [snapshot, setSnapshot] = useState<GameSnapshot>(() => engineRef.current.getSnapshot(0));
 
@@ -252,7 +335,36 @@ export default function App() {
   const isOnlineRef = useRef<boolean>(isOnline);
   const roomStateRef = useRef<OnlineRoomState | null>(roomState);
   const controlSchemeRef = useRef<ControlScheme>(controlScheme);
+  const pcSpeedLimitRef = useRef<number>(pcSpeedLimit);
+  const libraryLockOpenRef = useRef<boolean>(libraryLockOpen);
+  const libraryUiRef = useRef<LibraryUiSnapshot | null>(libraryUi);
+  const jumpscareTimerRef = useRef<number | null>(null);
   const clientRef = useRef<MultiplayerClient | null>(null);
+
+  const triggerJumpscareFlash = useCallback(() => {
+    setJumpscareFlash(true);
+    if (jumpscareTimerRef.current !== null) {
+      window.clearTimeout(jumpscareTimerRef.current);
+    }
+    jumpscareTimerRef.current = window.setTimeout(() => {
+      setJumpscareFlash(false);
+      jumpscareTimerRef.current = null;
+    }, 680);
+  }, []);
+
+  useEffect(() => {
+    libraryLockOpenRef.current = libraryLockOpen;
+  }, [libraryLockOpen]);
+
+  useEffect(() => {
+    pcSpeedLimitRef.current = pcSpeedLimit;
+  }, [pcSpeedLimit]);
+
+  const updatePcSpeedLimit = useCallback((nextVal: number) => {
+    const clamped = Math.max(35, Math.min(100, Math.round(nextVal)));
+    pcSpeedLimitRef.current = clamped;
+    setPcSpeedLimit(clamped);
+  }, []);
 
   useEffect(() => {
     gameStateRef.current = gameState;
@@ -297,15 +409,27 @@ export default function App() {
           cameraRef.current.initialized = false;
           setKillStreak(null);
           setSelfKillPopup(null);
+          setLibraryLockOpen(false);
+          setLockErrorSeq(0);
+          setLibraryUi(null);
+          libraryUiRef.current = null;
           setGameState('ONLINE_LOBBY');
         } else if (room.phase === 'PLAYING') {
+          if (room.config.mapId === 'library') {
+            sound.preloadLibraryAudio();
+          }
           cameraRef.current.initialized = false;
           setHasUsedJoystick(false);
           setKillStreak(null);
           setSelfKillPopup(null);
+          setLibraryLockOpen(false);
+          setLockErrorSeq(0);
+          setLibraryUi(null);
+          libraryUiRef.current = null;
           setGameState('PLAYING');
         } else if (room.phase === 'GAME_OVER') {
           setKillStreak((prev) => (prev?.mode === 'ELIMINATION' ? prev : null));
+          setLibraryLockOpen(false);
           setGameState('GAME_OVER');
         }
       },
@@ -328,7 +452,10 @@ export default function App() {
             },
             () => {
               setSelfKillPopup({ expiresAt: performance.now() + 2800 });
-            }
+            },
+            me?.floor ?? 0,
+            () => setLockErrorSeq((prev) => prev + 1),
+            triggerJumpscareFlash
           );
         }
         setSnapshot(worldToSnapshot(world, mySlot));
@@ -368,8 +495,17 @@ export default function App() {
 
   const startSoloMatch = useCallback(
     (overrideConfig?: MatchConfig) => {
-      const nextCfg = { ...(overrideConfig ?? config), immersive: false };
+      const baseCfg = overrideConfig ?? config;
+      const mapDef = ARENA_MAPS[baseCfg.mapId];
+      const nextCfg: MatchConfig = {
+        ...baseCfg,
+        immersive: mapDef.immersive,
+        extraDark: mapDef.immersive ? Boolean(baseCfg.extraDark) : false,
+      };
       sound.unlock();
+      if (nextCfg.mapId === 'library') {
+        sound.preloadLibraryAudio();
+      }
       setIsOnline(false);
       setRoomState(null);
       cameraRef.current.initialized = false;
@@ -379,6 +515,11 @@ export default function App() {
       setHasUsedJoystick(false);
       setKillStreak(null);
       setSelfKillPopup(null);
+      setLibraryLockOpen(false);
+      setLockErrorSeq(0);
+      setJumpscareFlash(false);
+      setLibraryUi(null);
+      libraryUiRef.current = null;
       setGameState('PLAYING');
     },
     [config]
@@ -456,6 +597,7 @@ export default function App() {
       if (prev === 'PLAYING') {
         engineRef.current.releaseJoystick();
         engineRef.current.setHumanCursorInput(false, 0, 0);
+        setLibraryLockOpen(false);
         return 'PAUSED';
       }
       if (prev === 'PAUSED') return 'PLAYING';
@@ -478,6 +620,11 @@ export default function App() {
     ]);
 
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && libraryLockOpenRef.current) {
+        setLibraryLockOpen(false);
+        return;
+      }
+
       if (
         !isOnlineRef.current &&
         e.key === 'Escape' &&
@@ -489,6 +636,29 @@ export default function App() {
       }
 
       if (gameStateRef.current !== 'PLAYING') return;
+
+      if (e.code === 'KeyE' && !e.repeat) {
+        const libUi = libraryUiRef.current;
+        if (libUi && libUi.state.introTimer <= 0 && libUi.playerAlive) {
+          sound.unlock();
+          if (libraryLockOpenRef.current) {
+            setLibraryLockOpen(false);
+            return;
+          }
+          if (libUi.canCollectBook) {
+            if (isOnlineRef.current) {
+              clientRef.current?.sendCollectBook();
+            } else {
+              engineRef.current.collectNearbyBook(0);
+            }
+            return;
+          }
+          if (libUi.canUnlockDoor) {
+            setLibraryLockOpen(true);
+            return;
+          }
+        }
+      }
 
       if (MOVE_CODES.has(e.code)) {
         if (e.code.startsWith('Arrow')) e.preventDefault();
@@ -564,6 +734,7 @@ export default function App() {
     let rafId = 0;
     let lastTime = performance.now();
     let hudAccumulator = 0;
+    let libHudAccumulator = 0;
 
     const tick = (now: number) => {
       const rawDt = (now - lastTime) / 1000;
@@ -588,6 +759,7 @@ export default function App() {
             teamMode: serverWorld.teamMode,
             elapsedTime: serverWorld.elapsedTime + sinceSync,
             screenShake: serverWorld.screenShake,
+            libraryState: serverWorld.libraryState,
             players: serverWorld.players.map((p) => ({
               ...p,
               x: p.alive ? p.x + p.vx * sinceSync : p.x,
@@ -626,11 +798,15 @@ export default function App() {
               },
               () => {
                 setSelfKillPopup({ expiresAt: performance.now() + 2800 });
-              }
+              },
+              human?.floor ?? 0,
+              () => setLockErrorSeq((prev) => prev + 1),
+              triggerJumpscareFlash
             );
           }
           if (engine.winnerId !== null) {
             setSnapshot(engine.getSnapshot(0));
+            setLibraryLockOpen(false);
             setGameState('GAME_OVER');
           }
         }
@@ -644,9 +820,11 @@ export default function App() {
         worldToRender = {
           mapId: engine.map.id,
           immersive: engine.map.immersive,
+          extraDark: Boolean(engine.config.extraDark),
           teamMode: engine.config.teamMode ?? 'FFA',
           elapsedTime: engine.elapsedTime,
           screenShake: engine.screenShake,
+          libraryState: engine.libraryState ?? undefined,
           players: engine.players,
           bullets: engine.bullets,
           pickups: engine.pickups,
@@ -658,7 +836,69 @@ export default function App() {
         };
       }
 
-      // WASD / Arrow movement + Shift slow-walk + 360-degree pure cursor aim
+      // Sync Library HUD / proximity / audio track availability cleanly
+      if (worldToRender && worldToRender.mapId === 'library' && worldToRender.libraryState) {
+        const libState = worldToRender.libraryState;
+        const localP = worldToRender.players.find((p) => p.id === localId);
+        const pFloor = (localP?.floor ?? 0) as FloorLevel;
+        const pSpeed = localP ? Math.hypot(localP.vx ?? 0, localP.vy ?? 0) : 0;
+        const pAlive = Boolean(localP?.alive);
+        const prog = libState.playerProgress.find((pp) => pp.playerId === localId);
+        const door = libState.doors.find((d) => d.playerId === localId);
+
+        const canCollectBook = Boolean(
+          pAlive &&
+            localP &&
+            prog &&
+            prog.books.some(
+              (b) => !b.collected && b.floor === pFloor && Math.hypot(localP.x - b.x, localP.y - b.y) <= 98
+            )
+        );
+        const canUnlockDoor = Boolean(
+          pAlive &&
+            pFloor === 0 &&
+            localP &&
+            door &&
+            !prog?.unlocked &&
+            Math.hypot(localP.x - door.x, localP.y - door.y) <= 155
+        );
+
+        if (!pAlive && libraryLockOpenRef.current) {
+          setLibraryLockOpen(false);
+        }
+
+        const nextLibUi: LibraryUiSnapshot = {
+          state: libState,
+          playerFloor: pFloor,
+          playerSpeed: pSpeed,
+          playerAlive: pAlive,
+          canCollectBook,
+          canUnlockDoor,
+        };
+        const prevUi = libraryUiRef.current;
+        libraryUiRef.current = nextLibUi;
+
+        libHudAccumulator += dt;
+        const stateFlipped =
+          !prevUi ||
+          prevUi.canCollectBook !== canCollectBook ||
+          prevUi.canUnlockDoor !== canUnlockDoor ||
+          (prevUi.state.introTimer > 0 && libState.introTimer <= 0) ||
+          prevUi.state.playerProgress.find((pp) => pp.playerId === localId)?.collectedCount !==
+            prog?.collectedCount ||
+          prevUi.playerFloor !== pFloor ||
+          prevUi.playerAlive !== pAlive;
+
+        if (stateFlipped || libHudAccumulator >= 0.08) {
+          libHudAccumulator = 0;
+          setLibraryUi(nextLibUi);
+        }
+      } else if (libraryUiRef.current !== null) {
+        libraryUiRef.current = null;
+        setLibraryUi(null);
+      }
+
+      // WASD / Arrow movement + Shift slow-walk (or PC Speed Slider in Library) + 360-degree pure cursor aim
       const { width, height } = canvasSizeRef.current;
       if (
         gameStateRef.current === 'PLAYING' &&
@@ -678,7 +918,8 @@ export default function App() {
           const moving = kx !== 0 || ky !== 0;
           const moveAngle = moving ? Math.atan2(ky, kx) : localP.angle;
           const shiftHeld = keys.has('ShiftLeft') || keys.has('ShiftRight');
-          const magnitude = moving ? (shiftHeld ? 0.44 : 1.0) : 0;
+          const maxPct = worldToRender.mapId === 'library' ? pcSpeedLimitRef.current / 100 : 1.0;
+          const magnitude = moving ? (shiftHeld ? Math.min(0.44, maxPct) : maxPct) : 0;
 
           let aimAngle = localP.angle;
           let hasAim = moving;
@@ -715,6 +956,7 @@ export default function App() {
       }
 
       if (worldToRender) {
+        const isLibrary = worldToRender.mapId === 'library';
         const isImmersivePlaying =
           gameStateRef.current === 'PLAYING' &&
           (worldToRender.immersive || ARENA_MAPS[worldToRender.mapId].immersive);
@@ -722,7 +964,19 @@ export default function App() {
           gameStateRef.current === 'PLAYING' &&
           !(worldToRender.immersive || ARENA_MAPS[worldToRender.mapId].immersive);
         const extraDark = Boolean(worldToRender.extraDark);
-        sound.setImmersiveAmbient(isImmersivePlaying, extraDark);
+        // Never emit synthetic atmospheric/BGM drone in The Library; use Unhinged player + SFX only
+        sound.setImmersiveAmbient(isImmersivePlaying && !isLibrary, extraDark);
+
+        const isLibraryPlaying =
+          isLibrary &&
+          gameStateRef.current === 'PLAYING' &&
+          (worldToRender.libraryState?.introTimer ?? LIBRARY_INTRO_DURATION) <= 0;
+        const totalMaxBooks = LIBRARY_BOOKS_PER_PLAYER * Math.max(1, worldToRender.players.length);
+        const libProgress = worldToRender.libraryState
+          ? worldToRender.libraryState.totalCollectedAll / totalMaxBooks
+          : 0;
+        const libInRage = worldToRender.libraryState?.monster.mode === 'rage';
+        sound.updateLibraryMusic(dt, isLibraryPlaying, libProgress, libInRage);
 
         // Compute dynamic tension (0..1) for ramping normal-mode suspense music
         let normalTension = 0;
@@ -801,6 +1055,7 @@ export default function App() {
       cancelAnimationFrame(rafId);
       sound.setImmersiveAmbient(false, false);
       sound.updateNormalMusic(0, false, 0);
+      sound.updateLibraryMusic(0, false, 0, false);
     };
   }, [gameState]);
 
@@ -1033,6 +1288,39 @@ export default function App() {
                 <p className="leading-relaxed">
                   Aim 360° with your cursor and press <span className="font-semibold text-slate-200">Spacebar</span> to shoot.
                 </p>
+                {activeConfig.mapId === 'library' && (
+                  <div className="pt-2 border-t border-slate-800/80 space-y-1.5">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="font-semibold text-amber-200">Walk Speed Cap</span>
+                      <span
+                        className={`font-mono-tabular font-bold ${
+                          pcSpeedLimit >= 100
+                            ? 'text-rose-300'
+                            : pcSpeedLimit >= 80
+                              ? 'text-amber-300'
+                              : 'text-emerald-300'
+                        }`}
+                      >
+                        {pcSpeedLimit}% {pcSpeedLimit < 80 ? 'Silent' : pcSpeedLimit < 100 ? 'Risk' : 'Loud'}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={35}
+                      max={100}
+                      step={1}
+                      value={pcSpeedLimit}
+                      onChange={(e) => updatePcSpeedLimit(Number(e.target.value))}
+                      aria-label="PC Walk Speed Percentage"
+                      className="w-full accent-amber-400 cursor-pointer"
+                    />
+                    <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono-tabular">
+                      <span>35%</span>
+                      <span className="text-emerald-400/90 font-semibold">80% Safe</span>
+                      <span>100%</span>
+                    </div>
+                  </div>
+                )}
               </>
             ) : (
               <>
@@ -1318,9 +1606,95 @@ export default function App() {
 
           {!hasUsedJoystick && gameState === 'PLAYING' && controlScheme === 'CURSOR_SPACE' && (
             <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 rounded-lg border border-slate-700/80 bg-slate-950/85 px-4 py-2 text-xs font-medium text-slate-200 whitespace-nowrap shadow-lg">
-              WASD to move (Shift to creep) · Cursor to aim · Spacebar to shoot
+              {activeConfig.mapId === 'library'
+                ? 'WASD to move (Shift or <80% slider to sneak) · [E] Collect/Unlock · Spacebar to shoot'
+                : 'WASD to move (Shift to creep) · Cursor to aim · Spacebar to shoot'}
             </div>
           )}
+
+          {/* Compact PC Walk-Speed Slider on <lg screens in Library CURSOR_SPACE mode */}
+          {activeConfig.mapId === 'library' &&
+            controlScheme === 'CURSOR_SPACE' &&
+            gameState === 'PLAYING' &&
+            (libraryUi?.state.introTimer ?? LIBRARY_INTRO_DURATION) <= 0 && (
+              <div className="lg:hidden pointer-events-auto absolute bottom-3 left-3 z-20 w-48 rounded-xl border border-amber-500/35 bg-slate-950/65 backdrop-blur-sm px-3 py-2 text-[11px] text-slate-200 shadow-lg">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-semibold text-amber-200">Walk Cap</span>
+                  <span className="font-mono-tabular font-bold text-emerald-300">
+                    {pcSpeedLimit}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={35}
+                  max={100}
+                  step={1}
+                  value={pcSpeedLimit}
+                  onChange={(e) => updatePcSpeedLimit(Number(e.target.value))}
+                  aria-label="PC Walk Speed Percentage"
+                  className="w-full accent-amber-400 cursor-pointer"
+                />
+              </div>
+            )}
+
+          {/* Library HUD, Collect/Unlock Prompt, & Semi-Transparent 5-Wheel Padlock */}
+          {activeConfig.mapId === 'library' &&
+            libraryUi &&
+            libraryUi.state.introTimer <= 0 &&
+            (gameState === 'PLAYING' || gameState === 'GAME_OVER') && (
+              <LibraryOverlays
+                libraryState={libraryUi.state}
+                localPlayerId={localSlot}
+                playerFloor={libraryUi.playerFloor}
+                playerSpeed={libraryUi.playerSpeed}
+                playerAlive={libraryUi.playerAlive}
+                canCollectBook={libraryUi.canCollectBook}
+                canUnlockDoor={libraryUi.canUnlockDoor}
+                lockOpen={libraryLockOpen}
+                lockErrorSeq={lockErrorSeq}
+                onCollectBook={() => {
+                  sound.unlock();
+                  if (isOnlineRef.current) {
+                    clientRef.current?.sendCollectBook();
+                  } else {
+                    engineRef.current.collectNearbyBook(0);
+                  }
+                }}
+                onOpenLock={() => {
+                  sound.unlock();
+                  setLibraryLockOpen(true);
+                }}
+                onCloseLock={() => setLibraryLockOpen(false)}
+                onDialDigit={(idx, nextDigit) => {
+                  sound.unlock();
+                  if (isOnlineRef.current) {
+                    clientRef.current?.sendLockDial(idx, nextDigit);
+                  } else {
+                    engineRef.current.setDoorDialDigit(0, idx, nextDigit);
+                  }
+                }}
+                onSubmitCode={(digits) => {
+                  sound.unlock();
+                  if (isOnlineRef.current) {
+                    clientRef.current?.sendSubmitDoorCode(digits);
+                  } else if (engineRef.current.submitDoorCode(0, digits)) {
+                    setLibraryLockOpen(false);
+                  }
+                }}
+              />
+            )}
+
+          {/* Brief crimson-orange Figure Jumpscare flash when caught */}
+          {jumpscareFlash && (
+            <div className="pointer-events-none absolute inset-0 z-40 bg-gradient-to-b from-orange-600/45 via-red-950/30 to-black/70 animate-pulse" />
+          )}
+
+          {/* 5-Second Black DOORS-Inspired Library Loading Screen */}
+          {activeConfig.mapId === 'library' &&
+            gameState === 'PLAYING' &&
+            (libraryUi?.state.introTimer ?? LIBRARY_INTRO_DURATION) > 0 && (
+              <LibraryLoadingScreen introTimer={libraryUi?.state.introTimer ?? LIBRARY_INTRO_DURATION} />
+            )}
         </div>
 
         {/* Right Side Health Bars (Desktop) */}

@@ -23,6 +23,7 @@ export interface FootstepListener {
   id: number;
   x: number;
   y: number;
+  floor?: number;
 }
 
 export interface FootstepWalker {
@@ -31,6 +32,7 @@ export interface FootstepWalker {
   y: number;
   vx?: number;
   vy?: number;
+  floor?: number;
   alive: boolean;
   stunTimer: number;
 }
@@ -56,18 +58,38 @@ class SoundEngine {
   private creakTimer = 5.0;
   private brownNoiseBuffer: AudioBuffer | null = null;
   private whiteNoiseBuffer: AudioBuffer | null = null;
+  private libraryMusicBuffer: AudioBuffer | null = null;
+  private monsterStepBuffer: AudioBuffer | null = null;
+  private monsterRoarBuffer: AudioBuffer | null = null;
+  private monsterJumpscareBuffer: AudioBuffer | null = null;
+  private libraryPreloadStarted = false;
+  private libraryRawCache = new Map<string, ArrayBuffer>();
+  private libraryDecodeInFlight = new Set<string>();
+  private activeRoarSource: AudioBufferSourceNode | null = null;
+  private libraryMusicActive = false;
+  private libraryMusicProgress = 0;
+  private libraryMusicInRage = false;
+  private libraryMusicNodes: {
+    source: AudioBufferSourceNode;
+    filter: BiquadFilterNode;
+    gain: GainNode;
+  } | null = null;
 
   public setMuted(muted: boolean) {
     this.muted = muted;
     if (muted) {
       this.stopAmbientImmediate();
       this.stopNormalMusicImmediate();
+      this.stopLibraryMusicImmediate();
     } else {
       if (this.ambientActive) {
         this.setImmersiveAmbient(true, this.ambientExtraDark);
       }
       if (this.normalMusicActive) {
         this.updateNormalMusic(0, true, this.normalMusicTension, this.normalMusicTheme);
+      }
+      if (this.libraryMusicActive) {
+        this.updateLibraryMusic(0, true, this.libraryMusicProgress, this.libraryMusicInRage);
       }
     }
   }
@@ -193,6 +215,7 @@ class SoundEngine {
 
   public unlock() {
     this.ensureCtx();
+    this.preloadLibraryAudio();
   }
 
   public setImmersiveAmbient(active: boolean, extraDark: boolean) {
@@ -1015,9 +1038,12 @@ class SoundEngine {
           const dy = p.y - listener.y;
           const d = Math.hypot(dx, dy);
           const maxHearDist = 740;
+          const sameFloor = (p.floor ?? 0) === (listener.floor ?? 0);
           if (d < maxHearDist) {
             const closeness = 1 - d / maxHearDist;
-            const volume = (0.012 + Math.pow(closeness, 1.75) * 0.22) * (0.6 + speedRatio * 0.4);
+            const floorAtten = sameFloor ? 1 : 0.25;
+            const volume =
+              (0.012 + Math.pow(closeness, 1.75) * 0.22) * (0.6 + speedRatio * 0.4) * floorAtten;
             const pan = Math.max(-0.85, Math.min(0.85, dx / 400));
             this.playFootstep(volume, pan, floorTheme, false);
           }
@@ -1687,6 +1713,424 @@ class SoundEngine {
       gain.connect(ctx.destination);
       osc.start(t0);
       osc.stop(t0 + 0.46);
+    });
+  }
+
+  // ==================== THE LIBRARY AUDIO ASSETS & SCARY SFX ====================
+
+  private static readonly LIBRARY_AUDIO_URLS = {
+    unhinged: '/assets/aistudio/03._Unhinged_02544cf6.mp3',
+    step: '/assets/aistudio/figure-footstep-1-_doors_-made-with-Voicemod_ed473e71.mp3',
+    roar: '/assets/aistudio/figure-roar-sound-roblox-doors_ab8d6800.mp3',
+    jumpscare: '/assets/aistudio/doors-figure-jumpscare-sound-effect-made-with-Voicemod_74ffc718.mp3',
+  } as const;
+
+  public preloadLibraryAudio() {
+    if (typeof window === 'undefined') return;
+    if (!this.libraryPreloadStarted) {
+      this.libraryPreloadStarted = true;
+      for (const [key, url] of Object.entries(SoundEngine.LIBRARY_AUDIO_URLS)) {
+        fetch(url)
+          .then((res) => {
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return res.arrayBuffer();
+          })
+          .then((buf) => {
+            this.libraryRawCache.set(key, buf);
+            this.decodeCachedTrack(key as keyof typeof SoundEngine.LIBRARY_AUDIO_URLS);
+          })
+          .catch(() => {
+            // Ignore offline fetch failures silently
+          });
+      }
+    } else {
+      for (const key of Object.keys(SoundEngine.LIBRARY_AUDIO_URLS)) {
+        this.decodeCachedTrack(key as keyof typeof SoundEngine.LIBRARY_AUDIO_URLS);
+      }
+    }
+  }
+
+  private decodeCachedTrack(key: keyof typeof SoundEngine.LIBRARY_AUDIO_URLS) {
+    if (key === 'unhinged' && this.libraryMusicBuffer) return;
+    if (key === 'step' && this.monsterStepBuffer) return;
+    if (key === 'roar' && this.monsterRoarBuffer) return;
+    if (key === 'jumpscare' && this.monsterJumpscareBuffer) return;
+
+    const raw = this.libraryRawCache.get(key);
+    if (!raw || this.libraryDecodeInFlight.has(key)) return;
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+
+    this.libraryDecodeInFlight.add(key);
+    ctx
+      .decodeAudioData(raw.slice(0))
+      .then((decoded) => {
+        if (key === 'unhinged') {
+          this.libraryMusicBuffer = decoded;
+          if (this.libraryMusicActive && !this.muted) {
+            this.updateLibraryMusic(0, true, this.libraryMusicProgress, this.libraryMusicInRage);
+          }
+        } else if (key === 'step') {
+          this.monsterStepBuffer = decoded;
+        } else if (key === 'roar') {
+          this.monsterRoarBuffer = decoded;
+        } else if (key === 'jumpscare') {
+          this.monsterJumpscareBuffer = decoded;
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        this.libraryDecodeInFlight.delete(key);
+      });
+  }
+
+  /**
+   * Loops & ramps DOORS "Unhinged" (03._Unhinged_02544cf6.mp3) cleanly with book progress (0..1)
+   * and Monster Rage state. Plays atmospheric intro once, then loops main pulsing body seamlessly.
+   */
+  public updateLibraryMusic(_dt: number, active: boolean, progressRaw: number, inRage: boolean) {
+    this.libraryMusicActive = active;
+    const progress = Math.max(0, Math.min(1, progressRaw));
+    this.libraryMusicProgress = progress;
+    this.libraryMusicInRage = inRage;
+
+    if (!active || this.muted) {
+      this.stopLibraryMusicImmediate();
+      return;
+    }
+
+    this.preloadLibraryAudio();
+    if (!this.libraryMusicBuffer) {
+      return;
+    }
+
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const targetRate = 0.98 + progress * 0.18 + (inRage ? 0.05 : 0);
+    const targetCutoff = 2400 + progress * 15500 + (inRage ? 2800 : 0);
+    const targetGain = 0.30 + progress * 0.28 + (inRage ? 0.12 : 0);
+
+    if (!this.libraryMusicNodes) {
+      const source = ctx.createBufferSource();
+      source.buffer = this.libraryMusicBuffer;
+      source.loop = true;
+      // Start at 0s (eerie whoosh intro), then seamlessly loop main pulsing body (~7.18s -> ~174.8s)
+      if (this.libraryMusicBuffer.duration > 30) {
+        source.loopStart = 7.18;
+        source.loopEnd = Math.min(this.libraryMusicBuffer.duration - 0.1, 174.8);
+      }
+      source.playbackRate.setValueAtTime(targetRate, now);
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(targetCutoff, now);
+      filter.Q.setValueAtTime(0.85, now);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0008, now);
+      gain.gain.linearRampToValueAtTime(targetGain, now + 0.55);
+
+      source.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      source.start(now, 0);
+
+      this.libraryMusicNodes = { source, filter, gain };
+    } else {
+      this.libraryMusicNodes.source.playbackRate.setTargetAtTime(targetRate, now, 0.35);
+      this.libraryMusicNodes.filter.frequency.setTargetAtTime(targetCutoff, now, 0.35);
+      this.libraryMusicNodes.gain.gain.setTargetAtTime(targetGain, now, 0.3);
+    }
+  }
+
+  private stopLibraryMusicImmediate() {
+    if (!this.libraryMusicNodes) return;
+    const nodes = this.libraryMusicNodes;
+    this.libraryMusicNodes = null;
+    try {
+      nodes.source.stop();
+      nodes.gain.disconnect();
+    } catch {
+      // Ignore already stopped buffer source
+    }
+  }
+
+  /** Crisp parchment page turn + wooden tome snap + mysterious chime on Book Collect */
+  public playBookCollect(opts?: SpatialAudioOpts) {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const { node: out } = this.createOutputNode(ctx, opts);
+
+    this.spawnNoiseBurst(ctx, out, now, 0.075, 'bandpass', 2400, 1100, 1.4, 0.24, 2.0);
+    const snap = ctx.createOscillator();
+    const sg = ctx.createGain();
+    snap.type = 'triangle';
+    snap.frequency.setValueAtTime(210, now + 0.045);
+    snap.frequency.exponentialRampToValueAtTime(72, now + 0.11);
+    sg.gain.setValueAtTime(0.18, now + 0.045);
+    sg.gain.exponentialRampToValueAtTime(0.0008, now + 0.12);
+    snap.connect(sg);
+    sg.connect(out);
+    snap.start(now + 0.045);
+    snap.stop(now + 0.13);
+
+    [659.25, 830.61, 987.77].forEach((freq, idx) => {
+      const t0 = now + 0.06 + idx * 0.045;
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t0);
+      g.gain.setValueAtTime(0.0008, t0);
+      g.gain.linearRampToValueAtTime(0.085, t0 + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0008, t0 + 0.28);
+      osc.connect(g);
+      g.connect(out);
+      osc.start(t0);
+      osc.stop(t0 + 0.3);
+    });
+  }
+
+  /** Heavy monstrous Figure footstep using uploaded DOORS thud + chest-shaking sub-bass weight */
+  public playMonsterStep(opts?: SpatialAudioOpts, rage = false) {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    this.preloadLibraryAudio();
+    const now = ctx.currentTime;
+    const stepVol = Math.max(0.04, Math.min(1.45, (opts?.volume ?? 1) * (rage ? 1.32 : 1.05)));
+    const { node: out } = this.createOutputNode(ctx, { volume: stepVol, pan: opts?.pan ?? 0 });
+    const jitter = 0.94 + Math.random() * 0.12;
+
+    if (this.monsterStepBuffer) {
+      const src = ctx.createBufferSource();
+      src.buffer = this.monsterStepBuffer;
+      // Slow & ultra heavy in Calm mode, frantic heavy slam in Rage mode
+      src.playbackRate.setValueAtTime((rage ? 1.14 : 0.88) * jitter, now);
+
+      const bassBoost = ctx.createBiquadFilter();
+      bassBoost.type = 'lowshelf';
+      bassBoost.frequency.setValueAtTime(160, now);
+      bassBoost.gain.setValueAtTime(rage ? 8.5 : 6.5, now);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(rage ? 1.18 : 0.96, now);
+
+      src.connect(bassBoost);
+      bassBoost.connect(gain);
+      gain.connect(out);
+      src.start(now);
+    }
+
+    // Physical sub-bass floor tremor layer so every step feels massive & terrifying when close
+    const sub = ctx.createOscillator();
+    const sg = ctx.createGain();
+    sub.type = 'sine';
+    sub.frequency.setValueAtTime((rage ? 68 : 54) * jitter, now);
+    sub.frequency.exponentialRampToValueAtTime(21, now + (rage ? 0.18 : 0.24));
+    sg.gain.setValueAtTime(0.001, now);
+    sg.gain.linearRampToValueAtTime(rage ? 0.42 : 0.34, now + 0.008);
+    sg.gain.exponentialRampToValueAtTime(0.0008, now + (rage ? 0.2 : 0.26));
+    sub.connect(sg);
+    sg.connect(out);
+    sub.start(now);
+    sub.stop(now + 0.27);
+  }
+
+  /** Real uploaded DOORS Figure terrifying roar when entering Rage mode */
+  public playMonsterRoar(opts?: SpatialAudioOpts) {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    this.preloadLibraryAudio();
+    const now = ctx.currentTime;
+    const roarVol = Math.max(0.08, Math.min(1.4, (opts?.volume ?? 1) * 1.15));
+    const { node: out } = this.createOutputNode(ctx, {
+      volume: roarVol,
+      pan: opts?.pan ?? 0,
+    });
+
+    if (this.activeRoarSource) {
+      try {
+        this.activeRoarSource.stop();
+      } catch {
+        // Ignore already finished source
+      }
+      this.activeRoarSource = null;
+    }
+
+    if (this.monsterRoarBuffer) {
+      const src = ctx.createBufferSource();
+      src.buffer = this.monsterRoarBuffer;
+      src.playbackRate.setValueAtTime(1.0 + Math.random() * 0.05, now);
+
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.001, now);
+      g.gain.linearRampToValueAtTime(1.05, now + 0.05);
+      g.gain.setValueAtTime(1.05, now + Math.max(0.1, this.monsterRoarBuffer.duration - 0.5));
+      g.gain.exponentialRampToValueAtTime(0.001, now + this.monsterRoarBuffer.duration);
+
+      src.connect(g);
+      g.connect(out);
+      src.start(now, 0.04);
+      this.activeRoarSource = src;
+      src.onended = () => {
+        if (this.activeRoarSource === src) this.activeRoarSource = null;
+      };
+      return;
+    }
+
+    // Fallback roar if still decoding on ultra-slow connection
+    const roarFilter = ctx.createBiquadFilter();
+    roarFilter.type = 'bandpass';
+    roarFilter.frequency.setValueAtTime(640, now);
+    roarFilter.frequency.exponentialRampToValueAtTime(190, now + 0.95);
+    roarFilter.Q.setValueAtTime(2.4, now);
+    roarFilter.connect(out);
+
+    const osc = ctx.createOscillator();
+    const og = ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(160, now);
+    osc.frequency.exponentialRampToValueAtTime(52, now + 0.95);
+    og.gain.setValueAtTime(0.001, now);
+    og.gain.linearRampToValueAtTime(0.32, now + 0.07);
+    og.gain.exponentialRampToValueAtTime(0.0008, now + 0.96);
+    osc.connect(og);
+    og.connect(roarFilter);
+    osc.start(now);
+    osc.stop(now + 0.98);
+  }
+
+  /** Terrifying Figure jumpscare sound when catching and killing the local player */
+  public playMonsterJumpscare() {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    this.preloadLibraryAudio();
+    const now = ctx.currentTime;
+
+    if (this.activeRoarSource) {
+      try {
+        this.activeRoarSource.stop();
+      } catch {
+        // Ignore
+      }
+      this.activeRoarSource = null;
+    }
+
+    if (this.monsterJumpscareBuffer) {
+      const src = ctx.createBufferSource();
+      src.buffer = this.monsterJumpscareBuffer;
+      src.playbackRate.setValueAtTime(1.0, now);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.95, now);
+
+      src.connect(gain);
+      gain.connect(ctx.destination);
+      src.start(now, 0);
+      return;
+    }
+
+    // Emergency fallback shriek + bass slam
+    this.playMonsterRoar({ volume: 1.25 });
+  }
+
+  /** Heavy blast stun recoil + groggy descending Figure groan */
+  public playMonsterStun(opts?: SpatialAudioOpts) {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const { node: out } = this.createOutputNode(ctx, opts);
+
+    const groan = ctx.createOscillator();
+    const g = ctx.createGain();
+    groan.type = 'sawtooth';
+    groan.frequency.setValueAtTime(140, now);
+    groan.frequency.exponentialRampToValueAtTime(42, now + 0.65);
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(520, now);
+    filter.frequency.exponentialRampToValueAtTime(140, now + 0.65);
+
+    g.gain.setValueAtTime(0.001, now);
+    g.gain.linearRampToValueAtTime(0.26, now + 0.04);
+    g.gain.exponentialRampToValueAtTime(0.0008, now + 0.68);
+    groan.connect(filter);
+    filter.connect(g);
+    g.connect(out);
+    groan.start(now);
+    groan.stop(now + 0.7);
+  }
+
+  /** Heavy brass rotating padlock dial click */
+  public playLockDial(opts?: SpatialAudioOpts) {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const { node: out } = this.createOutputNode(ctx, opts);
+
+    this.spawnNoiseBurst(ctx, out, now, 0.022, 'bandpass', 3200, 1800, 3.0, 0.18, 2.5);
+    const click = ctx.createOscillator();
+    const g = ctx.createGain();
+    click.type = 'triangle';
+    click.frequency.setValueAtTime(1320, now);
+    click.frequency.exponentialRampToValueAtTime(640, now + 0.024);
+    g.gain.setValueAtTime(0.14, now);
+    g.gain.exponentialRampToValueAtTime(0.0008, now + 0.028);
+    click.connect(g);
+    g.connect(out);
+    click.start(now);
+    click.stop(now + 0.032);
+  }
+
+  /** Dull iron padlock rejection clunk & buzz */
+  public playLockError(opts?: SpatialAudioOpts) {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const { node: out } = this.createOutputNode(ctx, opts);
+
+    [155, 118].forEach((freq, i) => {
+      const t0 = now + i * 0.11;
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(freq, t0);
+      osc.frequency.exponentialRampToValueAtTime(freq * 0.72, t0 + 0.12);
+      g.gain.setValueAtTime(0.14, t0);
+      g.gain.exponentialRampToValueAtTime(0.0008, t0 + 0.13);
+      osc.connect(g);
+      g.connect(out);
+      osc.start(t0);
+      osc.stop(t0 + 0.14);
+    });
+  }
+
+  /** Heavy deadbolt unlatch + oak door swing + escape chord */
+  public playDoorUnlock(opts?: SpatialAudioOpts) {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const { node: out } = this.createOutputNode(ctx, opts);
+
+    // Metallic bolt slide clunk
+    this.spawnNoiseBurst(ctx, out, now, 0.08, 'bandpass', 1800, 720, 2.2, 0.28, 2.0);
+    // Warm triumphant escape fanfare
+    [293.66, 440.0, 587.33, 880.0].forEach((freq, i) => {
+      const t0 = now + 0.09 + i * 0.07;
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = i === 0 ? 'triangle' : 'sine';
+      osc.frequency.setValueAtTime(freq, t0);
+      g.gain.setValueAtTime(0.001, t0);
+      g.gain.linearRampToValueAtTime(0.14, t0 + 0.025);
+      g.gain.exponentialRampToValueAtTime(0.0008, t0 + 0.55);
+      osc.connect(g);
+      g.connect(out);
+      osc.start(t0);
+      osc.stop(t0 + 0.58);
     });
   }
 }

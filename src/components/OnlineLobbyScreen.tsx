@@ -233,7 +233,7 @@ export function OnlineLobbyScreen({
               </div>
               <p className="text-slate-400 leading-relaxed">
                 {room.config.immersive
-                  ? 'Explore a sprawling 2400×1680 Wooden Mansion or Emerald Grove while the camera tracks your fighter. In Extra Dark mode, sweep your forward flashlight past pushable cardboard cover and furniture while glowing bullets illuminate the floor.'
+                  ? 'Explore the sprawling Wooden Mansion, Emerald Grove, or the two-floor DOORS-inspired The Library (hunt 8 books, walk below 80% speed to hide from The Figure, and unlock your 5-digit cipher door). In Extra Dark mode, sweep your forward flashlight past cover while glowing bullets light the room.'
                   : 'See the entire 1500×1050 arena at once for pure bank-shot geometry! Push cardboard cover boxes into lanes, shoot TNT or Nitro crates to detonate them early, and time shots carefully—stunned fighters are protected until they get back up.'}
               </p>
             </div>
