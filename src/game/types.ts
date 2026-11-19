@@ -216,6 +216,8 @@ export type EngineEventType =
   | 'tnt_tick'
   | 'splash'
   | 'knockout'
+  | 'killstreak'
+  | 'self_kill'
   | 'victory';
 
 export interface EngineEvent {
@@ -223,6 +225,8 @@ export interface EngineEvent {
   x: number;
   y: number;
   value?: number;
+  playerId?: number;
+  mode?: MatchMode;
 }
 
 export interface JoystickState {
@@ -384,3 +388,4 @@ export const CARDBOARD_FADE_OUT = 0.34;
 export const STUN_DURATION = 0.85;
 export const RESPAWN_DELAY = 2.6;
 export const SPAWN_INVULN_DURATION = 0.85;
+export const KILL_STREAK_WINDOW = 3.0;

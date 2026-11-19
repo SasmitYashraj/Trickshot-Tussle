@@ -136,6 +136,9 @@ export function getArenaViewTransform(
 
 const floorCache = new Map<string, HTMLCanvasElement>();
 let sharedLightCanvas: HTMLCanvasElement | null = null;
+let sharedFogCanvas: HTMLCanvasElement | null = null;
+let sharedWispCanvas: HTMLCanvasElement | null = null;
+let sharedWaterCanvas: HTMLCanvasElement | null = null;
 
 function getLightCanvas(width: number, height: number): HTMLCanvasElement {
   if (!sharedLightCanvas) {
@@ -146,6 +149,183 @@ function getLightCanvas(width: number, height: number): HTMLCanvasElement {
     sharedLightCanvas.height = height;
   }
   return sharedLightCanvas;
+}
+
+function getWinterFogCanvas(): HTMLCanvasElement {
+  if (sharedFogCanvas) return sharedFogCanvas;
+  const size = 512;
+  const off = document.createElement('canvas');
+  off.width = size;
+  off.height = size;
+  const ctx = off.getContext('2d');
+  if (ctx) {
+    // Seamless tileable organic white fog clouds (wrapped across edges for zero seams)
+    for (let i = 0; i < 68; i++) {
+      const cx = seededRand(i * 17 + 5) * size;
+      const cy = seededRand(i * 31 + 11) * size;
+      const rx = 62 + seededRand(i * 47 + 3) * 115;
+      const ry = 44 + seededRand(i * 61 + 9) * 85;
+      const alpha = 0.055 + seededRand(i * 73 + 13) * 0.08;
+      const isPure = i % 3 !== 0;
+      const rgb = isPure ? '255, 255, 255' : '232, 245, 255';
+
+      for (let ox = -size; ox <= size; ox += size) {
+        for (let oy = -size; oy <= size; oy += size) {
+          const px = cx + ox;
+          const py = cy + oy;
+          if (px + rx < -10 || px - rx > size + 10 || py + ry < -10 || py - ry > size + 10) {
+            continue;
+          }
+          ctx.save();
+          ctx.translate(px, py);
+          ctx.scale(1, ry / rx);
+          const g = ctx.createRadialGradient(0, 0, rx * 0.08, 0, 0, rx);
+          g.addColorStop(0, `rgba(${rgb}, ${alpha})`);
+          g.addColorStop(0.45, `rgba(${rgb}, ${alpha * 0.55})`);
+          g.addColorStop(1, `rgba(${rgb}, 0)`);
+          ctx.fillStyle = g;
+          ctx.beginPath();
+          ctx.arc(0, 0, rx, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+      }
+    }
+  }
+  sharedFogCanvas = off;
+  return off;
+}
+
+function getWinterWispCanvas(): HTMLCanvasElement {
+  if (sharedWispCanvas) return sharedWispCanvas;
+  const size = 512;
+  const off = document.createElement('canvas');
+  off.width = size;
+  off.height = size;
+  const ctx = off.getContext('2d');
+  if (ctx) {
+    // Wind-sheared wispy frost mist streaks (seamless tile)
+    for (let i = 0; i < 46; i++) {
+      const cx = seededRand(i * 23 + 19) * size;
+      const cy = seededRand(i * 41 + 7) * size;
+      const rx = 85 + seededRand(i * 53 + 17) * 130;
+      const ry = 18 + seededRand(i * 67 + 29) * 32;
+      const rot = -0.22 + (seededRand(i * 83 + 1) - 0.5) * 0.24;
+      const alpha = 0.05 + seededRand(i * 97 + 5) * 0.065;
+
+      for (let ox = -size; ox <= size; ox += size) {
+        for (let oy = -size; oy <= size; oy += size) {
+          const px = cx + ox;
+          const py = cy + oy;
+          if (px + rx < -20 || px - rx > size + 20 || py + rx < -20 || py - rx > size + 20) {
+            continue;
+          }
+          ctx.save();
+          ctx.translate(px, py);
+          ctx.rotate(rot);
+          ctx.scale(1, ry / rx);
+          const g = ctx.createRadialGradient(0, 0, rx * 0.05, 0, 0, rx);
+          g.addColorStop(0, `rgba(248, 252, 255, ${alpha})`);
+          g.addColorStop(0.55, `rgba(224, 242, 254, ${alpha * 0.45})`);
+          g.addColorStop(1, 'rgba(224, 242, 254, 0)');
+          ctx.fillStyle = g;
+          ctx.beginPath();
+          ctx.arc(0, 0, rx, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+      }
+    }
+  }
+  sharedWispCanvas = off;
+  return off;
+}
+
+function periodicHash(ix: number, iy: number, period: number, seed: number): number {
+  const px = ((ix % period) + period) % period;
+  const py = ((iy % period) + period) % period;
+  return seededRand(px * 374.7613 + py * 668.2652 + seed * 91.17);
+}
+
+function periodicNoise(u: number, v: number, period: number, seed: number): number {
+  const x = u * period;
+  const y = v * period;
+  const ix = Math.floor(x);
+  const iy = Math.floor(y);
+  const fx = x - ix;
+  const fy = y - iy;
+  const sx = fx * fx * fx * (fx * (fx * 6 - 15) + 10);
+  const sy = fy * fy * fy * (fy * (fy * 6 - 15) + 10);
+
+  const n00 = periodicHash(ix, iy, period, seed);
+  const n10 = periodicHash(ix + 1, iy, period, seed);
+  const n01 = periodicHash(ix, iy + 1, period, seed);
+  const n11 = periodicHash(ix + 1, iy + 1, period, seed);
+
+  const nx0 = n00 + (n10 - n00) * sx;
+  const nx1 = n01 + (n11 - n01) * sx;
+  return nx0 + (nx1 - nx0) * sy;
+}
+
+function periodicFbm(u: number, v: number, basePeriod: number, seed: number): number {
+  let sum = 0;
+  let amp = 0.52;
+  let norm = 0;
+  let period = basePeriod;
+  for (let o = 0; o < 4; o++) {
+    sum += amp * periodicNoise(u, v, period, seed + o * 17.3);
+    norm += amp;
+    amp *= 0.5;
+    period *= 2;
+  }
+  return sum / norm;
+}
+
+/** Seamless tileable 256x256 domain-warped fractal water & caustic filament texture */
+function getWinterWaterCanvas(): HTMLCanvasElement {
+  if (sharedWaterCanvas) return sharedWaterCanvas;
+  const size = 256;
+  const off = document.createElement('canvas');
+  off.width = size;
+  off.height = size;
+  const ctx = off.getContext('2d');
+  if (ctx) {
+    const img = ctx.createImageData(size, size);
+    const data = img.data;
+    for (let y = 0; y < size; y++) {
+      const v = y / size;
+      for (let x = 0; x < size; x++) {
+        const u = x / size;
+        // Two-stage domain warp for organic fractal swirling water currents
+        const qx = periodicFbm(u, v, 4, 1.1);
+        const qy = periodicFbm(u + 0.37, v + 0.19, 4, 3.7);
+        const rx = periodicFbm(u + 0.28 * qx, v + 0.28 * qy, 4, 7.3);
+        const ry = periodicFbm(u + 0.28 * qx + 0.51, v + 0.28 * qy + 0.23, 4, 11.9);
+        const f = periodicFbm(u + 0.26 * rx, v + 0.26 * ry, 5, 17.5);
+
+        // Refracted water caustic ridges
+        const causticPrimary = Math.pow(Math.max(0, 1 - Math.abs(f * 2 - 1)), 2.8);
+        const causticFine = Math.pow(Math.max(0, 1 - Math.abs(ry * 2 - 1)), 3.4);
+        const shimmer = Math.min(1, causticPrimary * 0.8 + causticFine * 0.4);
+        const depth = 0.25 + f * 0.75;
+
+        // Vivid hydrated copper sulphate (CuSO4·5H2O) azure-cyan palette (minimal red so never washed white!)
+        const r = Math.min(255, Math.round(2 + depth * 12 + shimmer * 32));
+        const g = Math.min(255, Math.round(78 + depth * 56 + shimmer * 92));
+        const b = Math.min(255, Math.round(168 + depth * 56 + shimmer * 68));
+        const a = Math.min(255, Math.round(165 + shimmer * 78));
+
+        const idx = (y * size + x) * 4;
+        data[idx] = r;
+        data[idx + 1] = g;
+        data[idx + 2] = b;
+        data[idx + 3] = a;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+  sharedWaterCanvas = off;
+  return off;
 }
 
 function seededRand(seed: number): number {
@@ -219,7 +399,7 @@ function drawPersianRug(
 }
 
 function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
-  const key = `${map.id}_${map.width}x${map.height}_v4`;
+  const key = `${map.id}_${map.width}x${map.height}_v5`;
   const existing = floorCache.get(key);
   if (existing) return existing;
 
@@ -304,22 +484,22 @@ function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
       }
     }
   } else if (map.floorTheme === 'winter_snow') {
-    // Cool arctic twilight snowfield with lowered color temperature & sculpted ice-blue drifts
-    ctx.fillStyle = '#CEE3FA';
+    // Cool arctic twilight snowfield with rich glacial blue shade & sculpted blue-tinted drifts
+    ctx.fillStyle = '#A8CDF2';
     ctx.fillRect(0, 0, map.width, map.height);
 
-    // Cool glacial blue color-temperature wash across the arena
+    // Cool cerulean-blue color-temperature wash across the arena
     const skyWash = ctx.createLinearGradient(0, 0, map.width, map.height);
-    skyWash.addColorStop(0, 'rgba(224, 240, 255, 0.42)');
-    skyWash.addColorStop(0.5, 'rgba(147, 197, 253, 0.28)');
-    skyWash.addColorStop(1, 'rgba(59, 130, 246, 0.24)');
+    skyWash.addColorStop(0, 'rgba(186, 222, 255, 0.42)');
+    skyWash.addColorStop(0.5, 'rgba(96, 165, 250, 0.34)');
+    skyWash.addColorStop(1, 'rgba(37, 99, 235, 0.28)');
     ctx.fillStyle = skyWash;
     ctx.fillRect(0, 0, map.width, map.height);
 
-    // Sculpted wind-carved snowdrifts (cooler slate-blue shadow side + pale glacier crest)
-    for (let i = 0; i < 24; i++) {
-      const dx = 90 + seededRand(i * 17 + 5) * (map.width - 180);
-      const dy = 75 + seededRand(i * 31 + 11) * (map.height - 150);
+    // Sculpted wind-carved snowdrifts (deep cobalt-blue shadow side + cool ice-blue crest)
+    for (let i = 0; i < 26; i++) {
+      const dx = 85 + seededRand(i * 17 + 5) * (map.width - 170);
+      const dy = 70 + seededRand(i * 31 + 11) * (map.height - 140);
       const rx = 85 + seededRand(i * 43 + 3) * 115;
       const ry = 28 + seededRand(i * 59 + 7) * 38;
       const rot = (seededRand(i * 71 + 9) - 0.5) * 0.45;
@@ -328,12 +508,12 @@ function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
       ctx.translate(dx, dy);
       ctx.rotate(rot);
 
-      ctx.fillStyle = i % 2 === 0 ? 'rgba(96, 165, 250, 0.34)' : 'rgba(125, 211, 252, 0.32)';
+      ctx.fillStyle = i % 2 === 0 ? 'rgba(59, 130, 246, 0.36)' : 'rgba(56, 189, 248, 0.32)';
       ctx.beginPath();
       ctx.ellipse(6, 8, rx, ry, 0, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.fillStyle = 'rgba(232, 244, 255, 0.82)';
+      ctx.fillStyle = 'rgba(205, 232, 255, 0.78)';
       ctx.beginPath();
       ctx.ellipse(0, 0, rx * 0.94, ry * 0.86, 0, 0, Math.PI * 2);
       ctx.fill();
@@ -342,11 +522,11 @@ function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
 
     // Subtle icy court framing lines & center snow-compass border
     ctx.save();
-    ctx.strokeStyle = 'rgba(37, 99, 235, 0.22)';
+    ctx.strokeStyle = 'rgba(29, 78, 216, 0.24)';
     ctx.lineWidth = 3;
     ctx.strokeRect(56, 56, map.width - 112, map.height - 112);
 
-    ctx.strokeStyle = 'rgba(14, 165, 233, 0.22)';
+    ctx.strokeStyle = 'rgba(14, 165, 233, 0.28)';
     ctx.lineWidth = 2.5;
     ctx.setLineDash([12, 10]);
     ctx.beginPath();
@@ -355,12 +535,12 @@ function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
     ctx.stroke();
     ctx.restore();
 
-    // Cool sparkling frost crystals & snow glints
-    for (let i = 0; i < 210; i++) {
+    // Cool sparkling frost crystals & ice-blue snow glints
+    for (let i = 0; i < 220; i++) {
       const fx = 28 + seededRand(i * 23 + 17) * (map.width - 56);
       const fy = 28 + seededRand(i * 37 + 29) * (map.height - 56);
-      const r = 1.2 + seededRand(i * 53 + 3) * 1.8;
-      ctx.fillStyle = i % 3 === 0 ? 'rgba(56, 189, 248, 0.45)' : 'rgba(224, 242, 254, 0.88)';
+      const r = 1.2 + seededRand(i * 53 + 3) * 1.9;
+      ctx.fillStyle = i % 3 === 0 ? 'rgba(56, 189, 248, 0.54)' : 'rgba(219, 238, 255, 0.84)';
       ctx.beginPath();
       ctx.arc(fx, fy, r, 0, Math.PI * 2);
       ctx.fill();
@@ -2072,6 +2252,20 @@ export function renderArena(
     scale
   );
 
+  // 9c. Realistic Moving White Fog & Illuminated Fog-Shadow Scattering (Winter Tussle)
+  if (map.floorTheme === 'winter_snow') {
+    drawWinterFogOverlay(
+      ctx,
+      map,
+      world,
+      canvasWidth,
+      canvasHeight,
+      worldTx,
+      worldTy,
+      scale
+    );
+  }
+
   // 10. Glowing Bullets & Trails (always crisp & luminous in Immersive / Extra Dark!)
   for (const b of world.bullets) {
     if (b.trail && b.trail.length > 1) {
@@ -2377,6 +2571,44 @@ function getConeLightSources(map: ArenaMap): ConeLightSource[] {
     ];
   }
 
+  if (map.floorTheme === 'winter_snow') {
+    return [
+      {
+        x: map.width * 0.28,
+        y: 16,
+        dirY: 1,
+        range: 680,
+        beamLen: 580,
+        beamHalfBase: 54,
+        beamHalfEnd: 340,
+        coneMaxHalfAngle: Math.atan2(340, 580) + 0.2,
+        colorRgb: '226, 243, 255',
+      },
+      {
+        x: map.width * 0.72,
+        y: 16,
+        dirY: 1,
+        range: 680,
+        beamLen: 580,
+        beamHalfBase: 54,
+        beamHalfEnd: 340,
+        coneMaxHalfAngle: Math.atan2(340, 580) + 0.2,
+        colorRgb: '226, 243, 255',
+      },
+      {
+        x: map.width * 0.5,
+        y: map.height - 16,
+        dirY: -1,
+        range: 660,
+        beamLen: 560,
+        beamHalfBase: 52,
+        beamHalfEnd: 330,
+        coneMaxHalfAngle: Math.atan2(330, 560) + 0.2,
+        colorRgb: '219, 238, 255',
+      },
+    ];
+  }
+
   return [];
 }
 
@@ -2608,14 +2840,11 @@ function drawDynamicLightShadows(
 ) {
   ctx.save();
 
-  if (map.floorTheme === 'grass_outdoors' || map.floorTheme === 'winter_snow') {
+  if (map.floorTheme === 'grass_outdoors') {
     // Diagonal sunbeams cast angled directional floor shadows for players, crates, TNT & Nitro
-    const isWinter = map.floorTheme === 'winter_snow';
     const sunSpots = map.immersive ? [450, 1200, 1850] : [360, 980];
     const dirX = 0.41;
     const dirY = 0.912;
-    const shadowRgb = isWinter ? '15, 39, 82' : '6, 18, 8';
-    const shadowPeak = isWinter ? 0.28 : 0.38;
 
     const castDirectional = (cx: number, cy: number, radius: number, isCircle: boolean) => {
       let bestStrength = 0;
@@ -2630,8 +2859,8 @@ function drawDynamicLightShadows(
       if (bestStrength <= 0.04) return;
       const len = 56 + bestStrength * 52;
       const grad = ctx.createLinearGradient(cx, cy, cx + dirX * len, cy + dirY * len);
-      grad.addColorStop(0, `rgba(${shadowRgb}, ${shadowPeak * bestStrength})`);
-      grad.addColorStop(1, `rgba(${shadowRgb}, 0)`);
+      grad.addColorStop(0, `rgba(6, 18, 8, ${0.38 * bestStrength})`);
+      grad.addColorStop(1, 'rgba(6, 18, 8, 0)');
       ctx.fillStyle = grad;
       if (isCircle) {
         const px = -dirY * radius;
@@ -2670,16 +2899,20 @@ function drawDynamicLightShadows(
     return;
   }
 
+  const isWinter = map.floorTheme === 'winter_snow';
+  const shadowRgb = isWinter ? '11, 30, 68' : '5, 6, 12';
+  const peakShadow = isWinter ? 0.34 : 0.44;
+  const midShadow = isWinter ? 0.15 : 0.2;
   const lights = getConeLightSources(map);
   for (const light of lights) {
-    const polys = collectLightShadowPolys(light, map, world, 220, true);
+    const polys = collectLightShadowPolys(light, map, world, isWinter ? 250 : 220, true);
     for (const poly of polys) {
       const mx = (poly.x0 + poly.x1) * 0.5;
       const my = (poly.y0 + poly.y1) * 0.5;
       const grad = ctx.createLinearGradient(mx, my, poly.tailX, poly.tailY);
-      grad.addColorStop(0, `rgba(5, 6, 12, ${0.44 * poly.strength})`);
-      grad.addColorStop(0.55, `rgba(5, 6, 12, ${0.2 * poly.strength})`);
-      grad.addColorStop(1, 'rgba(5, 6, 12, 0)');
+      grad.addColorStop(0, `rgba(${shadowRgb}, ${peakShadow * poly.strength})`);
+      grad.addColorStop(0.55, `rgba(${shadowRgb}, ${midShadow * poly.strength})`);
+      grad.addColorStop(1, `rgba(${shadowRgb}, 0)`);
       ctx.fillStyle = grad;
       ctx.beginPath();
       ctx.moveTo(poly.x0, poly.y0);
@@ -2809,7 +3042,12 @@ function drawVolumetricArenaLights(
   const elapsedTime = world.elapsedTime;
   ctx.save();
 
-  if (map.floorTheme === 'mansion_wood' || map.floorTheme === 'maple_cargo') {
+  if (
+    map.floorTheme === 'mansion_wood' ||
+    map.floorTheme === 'maple_cargo' ||
+    map.floorTheme === 'winter_snow'
+  ) {
+    const isWinter = map.floorTheme === 'winter_snow';
     const lights = getConeLightSources(map);
 
     // Render occluded volumetric beams on offscreen lightCanvas so players, TNT, Nitro, boxes & walls cut visible shadows through the light rays!
@@ -2827,22 +3065,44 @@ function drawVolumetricArenaLights(
 
       for (let i = 0; i < lights.length; i++) {
         const l = lights[i];
-        const shimmer = 0.91 + 0.09 * Math.sin(elapsedTime * 2.5 + i * 1.6);
-        const startY = l.y + l.dirY * 6;
-        const endY = l.y + l.beamLen * l.dirY;
-        const beamGrad = lctx.createLinearGradient(l.x, startY, l.x, endY);
-        beamGrad.addColorStop(0, `rgba(${l.colorRgb}, ${0.27 * shimmer})`);
-        beamGrad.addColorStop(0.55, `rgba(${l.colorRgb}, ${0.11 * shimmer})`);
-        beamGrad.addColorStop(1, `rgba(${l.colorRgb}, 0)`);
+        const shimmer = 0.91 + 0.09 * Math.sin(elapsedTime * (isWinter ? 1.6 : 2.5) + i * 1.6);
 
-        lctx.fillStyle = beamGrad;
-        lctx.beginPath();
-        lctx.moveTo(l.x - l.beamHalfBase, startY);
-        lctx.lineTo(l.x + l.beamHalfBase, startY);
-        lctx.lineTo(l.x + l.beamHalfEnd, endY);
-        lctx.lineTo(l.x - l.beamHalfEnd, endY);
-        lctx.closePath();
-        lctx.fill();
+        if (isWinter) {
+          // Soft feathered radial-cone beam in fog (zero hard straight trapezoid edges!)
+          lctx.save();
+          const cx = l.x;
+          const cy = l.y + l.dirY * (l.beamLen * 0.45);
+          const rx = l.beamHalfEnd * 0.96;
+          const ry = l.beamLen * 0.62;
+          lctx.translate(cx, cy);
+          lctx.scale(1, ry / Math.max(1, rx));
+          const rad = lctx.createRadialGradient(0, -rx * 0.35 * l.dirY, 16, 0, 0, rx);
+          rad.addColorStop(0, `rgba(${l.colorRgb}, ${0.28 * shimmer})`);
+          rad.addColorStop(0.45, `rgba(${l.colorRgb}, ${0.14 * shimmer})`);
+          rad.addColorStop(0.8, `rgba(${l.colorRgb}, ${0.045 * shimmer})`);
+          rad.addColorStop(1, `rgba(${l.colorRgb}, 0)`);
+          lctx.fillStyle = rad;
+          lctx.beginPath();
+          lctx.arc(0, 0, rx, 0, Math.PI * 2);
+          lctx.fill();
+          lctx.restore();
+        } else {
+          const startY = l.y + l.dirY * 6;
+          const endY = l.y + l.beamLen * l.dirY;
+          const beamGrad = lctx.createLinearGradient(l.x, startY, l.x, endY);
+          beamGrad.addColorStop(0, `rgba(${l.colorRgb}, ${0.27 * shimmer})`);
+          beamGrad.addColorStop(0.55, `rgba(${l.colorRgb}, ${0.11 * shimmer})`);
+          beamGrad.addColorStop(1, `rgba(${l.colorRgb}, 0)`);
+
+          lctx.fillStyle = beamGrad;
+          lctx.beginPath();
+          lctx.moveTo(l.x - l.beamHalfBase, startY);
+          lctx.lineTo(l.x + l.beamHalfBase, startY);
+          lctx.lineTo(l.x + l.beamHalfEnd, endY);
+          lctx.lineTo(l.x - l.beamHalfEnd, endY);
+          lctx.closePath();
+          lctx.fill();
+        }
       }
 
       // Punch out shadow silhouettes for players, boxes, TNT, Nitro & obstacles inside the volumetric rays
@@ -2850,7 +3110,7 @@ function drawVolumetricArenaLights(
       for (const l of lights) {
         const polys = collectLightShadowPolys(l, map, world, l.range + 160, true);
         for (const poly of polys) {
-          lctx.fillStyle = `rgba(0, 0, 0, ${0.82 * Math.min(1, poly.strength + 0.18)})`;
+          lctx.fillStyle = `rgba(0, 0, 0, ${(isWinter ? 0.72 : 0.82) * Math.min(1, poly.strength + 0.18)})`;
           lctx.beginPath();
           lctx.moveTo(poly.x0, poly.y0);
           lctx.lineTo(poly.fx0, poly.fy0);
@@ -2864,6 +3124,10 @@ function drawVolumetricArenaLights(
 
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
+      if (isWinter) {
+        // Soft atmospheric scattering blur softens beam edges and shadow trails naturally through fog
+        ctx.filter = 'blur(14px)';
+      }
       ctx.drawImage(
         lightCanvas,
         -worldTx / scale,
@@ -2874,7 +3138,7 @@ function drawVolumetricArenaLights(
       ctx.restore();
     }
 
-    // Draw physical wall lamp / green vent housings on top
+    // Draw physical wall lamp / green vent / frost-lantern housings on top
     for (const l of lights) {
       if (map.floorTheme === 'mansion_wood') {
         ctx.fillStyle = '#78350F';
@@ -2889,6 +3153,20 @@ function drawVolumetricArenaLights(
         ctx.fillStyle = '#FEF08A';
         ctx.beginPath();
         ctx.arc(l.x, l.y + l.dirY * 4, 14, l.dirY > 0 ? 0 : Math.PI, l.dirY > 0 ? Math.PI : Math.PI * 2, false);
+        ctx.fill();
+      } else if (isWinter) {
+        ctx.fillStyle = '#0F172A';
+        ctx.strokeStyle = '#38BDF8';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(l.x, l.y, 22, l.dirY > 0 ? 0 : Math.PI, l.dirY > 0 ? Math.PI : Math.PI * 2, false);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#E0F2FE';
+        ctx.beginPath();
+        ctx.arc(l.x, l.y + l.dirY * 4, 13, l.dirY > 0 ? 0 : Math.PI, l.dirY > 0 ? Math.PI : Math.PI * 2, false);
         ctx.fill();
       } else {
         ctx.fillStyle = '#1E293B';
@@ -2905,79 +3183,167 @@ function drawVolumetricArenaLights(
         ctx.fill();
       }
     }
-  } else if (map.floorTheme === 'grass_outdoors' || map.floorTheme === 'winter_snow') {
-    const isWinter = map.floorTheme === 'winter_snow';
+  } else if (map.floorTheme === 'grass_outdoors') {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     const sunSpots = map.immersive ? [450, 1200, 1850] : [360, 980];
-    for (let idx = 0; idx < sunSpots.length; idx++) {
-      const sx = sunSpots[idx];
-      const sway = isWinter ? Math.sin(elapsedTime * 0.45 + idx * 1.4) * 18 : 0;
-      const sunGrad = ctx.createLinearGradient(sx, 0, sx + 280, 660);
-      sunGrad.addColorStop(
-        0,
-        isWinter ? 'rgba(147, 210, 255, 0.16)' : 'rgba(254, 249, 195, 0.14)'
-      );
-      sunGrad.addColorStop(
-        0.55,
-        isWinter ? 'rgba(125, 211, 252, 0.08)' : 'rgba(254, 249, 195, 0.05)'
-      );
-      sunGrad.addColorStop(1, isWinter ? 'rgba(125, 211, 252, 0)' : 'rgba(254, 249, 195, 0)');
+    for (const sx of sunSpots) {
+      const sunGrad = ctx.createLinearGradient(sx, 0, sx + 280, 560);
+      sunGrad.addColorStop(0, 'rgba(254, 249, 195, 0.14)');
+      sunGrad.addColorStop(0.55, 'rgba(254, 249, 195, 0.05)');
+      sunGrad.addColorStop(1, 'rgba(254, 249, 195, 0)');
       ctx.fillStyle = sunGrad;
       ctx.beginPath();
-      ctx.moveTo(sx - (isWinter ? 95 : 70) + sway * 0.3, 0);
-      ctx.lineTo(sx + (isWinter ? 95 : 70) + sway * 0.3, 0);
-      ctx.lineTo(sx + (isWinter ? 380 : 340) + sway, isWinter ? 680 : 560);
-      ctx.lineTo(sx + (isWinter ? 95 : 90) + sway, isWinter ? 680 : 560);
+      ctx.moveTo(sx - 70, 0);
+      ctx.lineTo(sx + 70, 0);
+      ctx.lineTo(sx + 340, 560);
+      ctx.lineTo(sx + 90, 560);
       ctx.closePath();
       ctx.fill();
-
-      if (isWinter) {
-        // Soft atmospheric light-scattering bloom halo where beam meets frozen air
-        const bloom = ctx.createRadialGradient(
-          sx + 100 + sway * 0.4,
-          170,
-          12,
-          sx + 100 + sway * 0.4,
-          170,
-          260
-        );
-        bloom.addColorStop(0, 'rgba(186, 230, 253, 0.11)');
-        bloom.addColorStop(0.6, 'rgba(125, 211, 252, 0.04)');
-        bloom.addColorStop(1, 'rgba(125, 211, 252, 0)');
-        ctx.fillStyle = bloom;
-        ctx.beginPath();
-        ctx.arc(sx + 100 + sway * 0.4, 170, 260, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-
-    if (isWinter) {
-      // Drifting high-altitude ice mist veil + suspended glinting frost motes
-      const mistA = ctx.createRadialGradient(
-        map.width * (0.35 + Math.sin(elapsedTime * 0.18) * 0.06),
-        map.height * 0.55,
-        30,
-        map.width * 0.35,
-        map.height * 0.55,
-        460
-      );
-      mistA.addColorStop(0, 'rgba(186, 230, 253, 0.08)');
-      mistA.addColorStop(1, 'rgba(186, 230, 253, 0)');
-      ctx.fillStyle = mistA;
-      ctx.fillRect(0, 0, map.width, map.height);
-
-      for (let m = 0; m < 28; m++) {
-        const px = ((seededRand(m * 19 + 3) * map.width + elapsedTime * (14 + (m % 5) * 3)) % (map.width - 40)) + 20;
-        const py = ((seededRand(m * 37 + 11) * map.height + elapsedTime * (6 + (m % 3) * 2)) % (map.height - 40)) + 20;
-        const alpha = 0.25 + 0.3 * Math.sin(elapsedTime * 2.2 + m);
-        ctx.fillStyle = `rgba(224, 242, 254, ${Math.max(0.08, alpha)})`;
-        ctx.beginPath();
-        ctx.arc(px, py, 1.3 + (m % 3) * 0.6, 0, Math.PI * 2);
-        ctx.fill();
-      }
     }
     ctx.restore();
+  }
+
+  ctx.restore();
+}
+
+function drawWinterFogOverlay(
+  ctx: CanvasRenderingContext2D,
+  map: ArenaMap,
+  world: RenderableWorld,
+  canvasWidth: number,
+  canvasHeight: number,
+  worldTx: number,
+  worldTy: number,
+  scale: number
+) {
+  const t = world.elapsedTime;
+  const fogTex = getWinterFogCanvas();
+  const wispTex = getWinterWispCanvas();
+  const lights = getConeLightSources(map);
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, map.width, map.height);
+  ctx.clip();
+
+  // 1. Subtle cool arctic fog haze that softens & slightly lowers visibility across the arena
+  ctx.fillStyle = 'rgba(226, 240, 255, 0.11)';
+  ctx.fillRect(0, 0, map.width, map.height);
+
+  // 2. Drifting organic white fog clouds Layer A & Layer B (seamless pattern scroll)
+  const tile = 512;
+  const drawScrollingFog = (tex: HTMLCanvasElement, vx: number, vy: number, waveAmp: number, alpha: number) => {
+    const pat = ctx.createPattern(tex, 'repeat');
+    if (!pat) return;
+    const ox = ((t * vx) % tile + tile) % tile;
+    const oy = ((t * vy + Math.sin(t * 0.35) * waveAmp) % tile + tile) % tile;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(ox, oy);
+    ctx.fillStyle = pat;
+    ctx.fillRect(-ox - 32, -oy - 32, map.width + 64, map.height + 64);
+    ctx.restore();
+  };
+
+  drawScrollingFog(fogTex, 26, 9, 16, 0.72);
+  drawScrollingFog(wispTex, -38, 14, 12, 0.54);
+
+  // 3. Light-Fog Tyndall Scattering: lit white mist pools inside light cones, carved by real object shadows!
+  if (lights.length > 0 && scale > 0.001) {
+    const lightScale = 0.5;
+    const lw = Math.max(1, Math.ceil(canvasWidth * lightScale));
+    const lh = Math.max(1, Math.ceil(canvasHeight * lightScale));
+    const lightCanvas = getLightCanvas(lw, lh);
+    const lctx = lightCanvas.getContext('2d');
+    if (lctx) {
+      lctx.save();
+      lctx.clearRect(0, 0, lw, lh);
+      lctx.scale(lightScale, lightScale);
+      lctx.translate(worldTx, worldTy);
+      lctx.scale(scale, scale);
+
+      for (let i = 0; i < lights.length; i++) {
+        const l = lights[i];
+        const pulse = 0.88 + 0.12 * Math.sin(t * 1.4 + i * 2.0);
+        const cx = l.x + Math.sin(t * 0.4 + i) * 14;
+        const cy = l.y + l.dirY * (l.beamLen * 0.42);
+        const rx = l.beamHalfEnd * 0.94;
+        const ry = l.beamLen * 0.58;
+
+        lctx.save();
+        lctx.translate(cx, cy);
+        lctx.scale(1, ry / Math.max(1, rx));
+        const g = lctx.createRadialGradient(0, -rx * 0.25 * l.dirY, 18, 0, 0, rx);
+        g.addColorStop(0, `rgba(255, 255, 255, ${0.44 * pulse})`);
+        g.addColorStop(0.5, `rgba(232, 246, 255, ${0.22 * pulse})`);
+        g.addColorStop(1, 'rgba(224, 242, 254, 0)');
+        lctx.fillStyle = g;
+        lctx.beginPath();
+        lctx.arc(0, 0, rx, 0, Math.PI * 2);
+        lctx.fill();
+        lctx.restore();
+      }
+
+      // Carve soft shadow corridors behind players, pine trees, crates, TNT & Nitro inside the lit fog
+      lctx.globalCompositeOperation = 'destination-out';
+      for (const l of lights) {
+        const polys = collectLightShadowPolys(l, map, world, l.range + 140, true);
+        for (const poly of polys) {
+          lctx.fillStyle = `rgba(0, 0, 0, ${0.86 * Math.min(1, poly.strength + 0.2)})`;
+          lctx.beginPath();
+          lctx.moveTo(poly.x0, poly.y0);
+          lctx.lineTo(poly.fx0, poly.fy0);
+          lctx.lineTo(poly.fx1, poly.fy1);
+          lctx.lineTo(poly.x1, poly.y1);
+          lctx.closePath();
+          lctx.fill();
+        }
+      }
+
+      // Modulate the entire lit beam in one pattern pass so drifting fog visibly swirls inside the light!
+      const fogPat = lctx.createPattern(fogTex, 'repeat');
+      if (fogPat) {
+        const fox = ((t * 32) % tile + tile) % tile;
+        const foy = ((t * 11) % tile + tile) % tile;
+        lctx.save();
+        lctx.globalCompositeOperation = 'destination-in';
+        lctx.translate(fox, foy);
+        lctx.fillStyle = fogPat;
+        lctx.fillRect(-fox - 64, -foy - 64, map.width + 128, map.height + 128);
+        lctx.restore();
+      }
+      lctx.restore();
+
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.filter = 'blur(10px)';
+      ctx.drawImage(
+        lightCanvas,
+        -worldTx / scale,
+        -worldTy / scale,
+        canvasWidth / scale,
+        canvasHeight / scale
+      );
+      ctx.restore();
+    }
+  }
+
+  // 4. Fine wind-blown arctic snowflakes & frost motes drifting across the fog
+  for (let m = 0; m < 44; m++) {
+    const speedX = 36 + (m % 5) * 11;
+    const speedY = 14 + (m % 4) * 6;
+    const px = ((seededRand(m * 19 + 3) * map.width + t * speedX) % map.width + map.width) % map.width;
+    const py =
+      ((seededRand(m * 37 + 11) * map.height + t * speedY + Math.sin(t * 1.4 + m) * 14) %
+        map.height +
+        map.height) %
+      map.height;
+    const alpha = 0.26 + 0.26 * Math.sin(t * 2.2 + m);
+    ctx.fillStyle = `rgba(255, 255, 255, ${Math.max(0.1, alpha)})`;
+    ctx.beginPath();
+    ctx.arc(px, py, 1.4 + (m % 3) * 0.65, 0, Math.PI * 2);
+    ctx.fill();
   }
 
   ctx.restore();
@@ -3034,16 +3400,16 @@ function drawIcePits(ctx: CanvasRenderingContext2D, world: RenderableWorld, map:
     };
 
     if (pit.broken) {
-      // 1. Jagged shattered icy shoreline ledge surrounding deep arctic water
-      ctx.fillStyle = '#C7E2FE';
+      // 1. Jagged shattered snowy/icy lip overhanging the deep pit opening
+      ctx.fillStyle = '#9ECAFA';
       ctx.beginPath();
       if (pts && pts.length >= 3) {
         const n = pts.length;
         for (let i = 0; i < n * 2; i++) {
           const base = pts[Math.floor(i / 2)];
           const next = pts[(Math.floor(i / 2) + 1) % n];
-          const px = i % 2 === 0 ? base.x * 1.11 : ((base.x + next.x) * 0.5) * 1.01;
-          const py = i % 2 === 0 ? base.y * 1.11 : ((base.y + next.y) * 0.5) * 1.01;
+          const px = i % 2 === 0 ? base.x * 1.1 : ((base.x + next.x) * 0.5) * 1.01;
+          const py = i % 2 === 0 ? base.y * 1.1 : ((base.y + next.y) * 0.5) * 1.01;
           if (i === 0) ctx.moveTo(px, py);
           else ctx.lineTo(px, py);
         }
@@ -3051,7 +3417,7 @@ function drawIcePits(ctx: CanvasRenderingContext2D, world: RenderableWorld, map:
         const shards = 24;
         for (let i = 0; i < shards; i++) {
           const a = (i / shards) * Math.PI * 2;
-          const jag = i % 2 === 0 ? 1.09 : 0.99;
+          const jag = i % 2 === 0 ? 1.08 : 0.99;
           const px = Math.cos(a) * pit.rx * jag;
           const py = Math.sin(a) * pit.ry * jag;
           if (i === 0) ctx.moveTo(px, py);
@@ -3060,45 +3426,187 @@ function drawIcePits(ctx: CanvasRenderingContext2D, world: RenderableWorld, map:
       }
       ctx.closePath();
       ctx.fill();
-      ctx.strokeStyle = '#38BDF8';
-      ctx.lineWidth = 2.4;
+      ctx.strokeStyle = '#0284C7';
+      ctx.lineWidth = 2.6;
       ctx.stroke();
 
-      // 2. Deep abyssal blue water pit (instant death hazard!)
+      // 2. Deep pit interior: first draw sheer vertical ice cliff walls descending down into the chasm!
       ctx.save();
       traceContour(1);
       ctx.clip();
 
-      const maxR = Math.max(pit.rx, pit.ry) * 1.2;
-      const waterGrad = ctx.createRadialGradient(-pit.rx * 0.15, -pit.ry * 0.2, 10, 0, 0, maxR);
-      waterGrad.addColorStop(0, '#1D4ED8');
-      waterGrad.addColorStop(0.45, '#0B2E6B');
-      waterGrad.addColorStop(0.85, '#05163B');
-      waterGrad.addColorStop(1, '#020B24');
-      ctx.fillStyle = waterGrad;
+      const wallDrop = Math.min(26, Math.max(16, pit.ry * 0.34));
+      const cliffGrad = ctx.createLinearGradient(0, -pit.ry, 0, pit.ry);
+      cliffGrad.addColorStop(0, '#5BB4E8');
+      cliffGrad.addColorStop(0.28, '#145585');
+      cliffGrad.addColorStop(0.65, '#0A2E52');
+      cliffGrad.addColorStop(1, '#051A33');
+      ctx.fillStyle = cliffGrad;
       ctx.fillRect(-pit.rx * 1.4, -pit.ry * 1.4, pit.rx * 2.8, pit.ry * 2.8);
 
-      // Animated shimmering arctic water ripples conforming to organic pond shape
-      const phase = world.elapsedTime * 1.6 + pit.id * 1.4;
-      for (let r = 0; r < 3; r++) {
-        const frac = (phase * 0.35 + r / 3) % 1;
-        const alpha = (1 - frac) * 0.36;
-        ctx.strokeStyle = `rgba(125, 211, 252, ${alpha})`;
-        ctx.lineWidth = 2;
-        traceContour(0.28 + frac * 0.65);
+      // Vertical sheared ice striations along the exposed inner chasm wall (gives true depth perception)
+      ctx.strokeStyle = 'rgba(186, 230, 253, 0.24)';
+      ctx.lineWidth = 1.6;
+      const wallCols = 22;
+      for (let c = 0; c < wallCols; c++) {
+        const frac = (c + 0.5) / wallCols;
+        const wx = -pit.rx * 1.05 + frac * pit.rx * 2.1;
+        const jitter = (seededRand(pit.id * 41 + c * 17) - 0.5) * 8;
+        ctx.beginPath();
+        ctx.moveTo(wx + jitter, -pit.ry * 1.05);
+        ctx.lineTo(wx + jitter * 0.6, -pit.ry * 1.05 + wallDrop * 2.2);
         ctx.stroke();
       }
-
-      // Inner cliff overhang drop shadow
-      ctx.strokeStyle = 'rgba(2, 6, 23, 0.72)';
-      ctx.lineWidth = 10;
+      // Subtle dark rocky/frozen strata band just above the recessed waterline
+      ctx.strokeStyle = 'rgba(2, 16, 38, 0.72)';
+      ctx.lineWidth = 6;
       ctx.save();
-      ctx.translate(0, 5);
-      traceContour(1.01);
+      ctx.translate(0, wallDrop * 0.55);
+      traceContour(0.98);
       ctx.stroke();
       ctx.restore();
 
+      // 3. Recessed Water Surface sitting DOWN inside the pit (copper sulphate blue!)
+      ctx.save();
+      ctx.translate(0, wallDrop);
+      traceContour(0.97);
+      ctx.clip();
+
+      const maxR = Math.max(pit.rx, pit.ry) * 1.25;
+      // Rich hydrated copper sulphate (CuSO4·5H2O) radial depth: vibrant azure center -> deep cobalt edge
+      const waterGrad = ctx.createRadialGradient(-pit.rx * 0.1, -pit.ry * 0.12, 8, 0, 0, maxR);
+      waterGrad.addColorStop(0, '#0096E6');
+      waterGrad.addColorStop(0.45, '#006EC7');
+      waterGrad.addColorStop(0.82, '#004A99');
+      waterGrad.addColorStop(1, '#002B66');
+      ctx.fillStyle = waterGrad;
+      ctx.fillRect(-pit.rx * 1.5, -pit.ry * 1.5, pit.rx * 3.0, pit.ry * 3.0);
+
+      // Submerged underwater chasm wall rings hinting at deep water below the surface
+      ctx.strokeStyle = 'rgba(0, 22, 58, 0.42)';
+      ctx.lineWidth = 10;
+      traceContour(0.76);
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(0, 16, 44, 0.48)';
+      ctx.lineWidth = 12;
+      traceContour(0.5);
+      ctx.stroke();
+
+      // Dual counter-drifting domain-warped fractal CuSO4 caustic layers
+      const waterTile = getWinterWaterCanvas();
+      const pattern = ctx.createPattern(waterTile, 'repeat');
+      if (pattern) {
+        const driftA_X = (world.elapsedTime * 16 + pit.id * 43) % 256;
+        const driftA_Y = (world.elapsedTime * 10 + pit.id * 29) % 256;
+        ctx.save();
+        ctx.globalAlpha = 0.78;
+        ctx.translate(driftA_X, driftA_Y);
+        ctx.fillStyle = pattern;
+        ctx.fillRect(
+          -pit.rx * 1.5 - driftA_X,
+          -pit.ry * 1.5 - driftA_Y,
+          pit.rx * 3.0,
+          pit.ry * 3.0
+        );
+        ctx.restore();
+
+        const driftB_X = (-world.elapsedTime * 13 + pit.id * 67) % 256;
+        const driftB_Y = (world.elapsedTime * 14 - pit.id * 19) % 256;
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = 0.24;
+        ctx.translate(driftB_X, driftB_Y);
+        ctx.rotate(0.28);
+        ctx.fillStyle = pattern;
+        ctx.fillRect(-maxR * 2, -maxR * 2, maxR * 4, maxR * 4);
+        ctx.restore();
+      }
+
+      // Light-reactive frost lantern reflections (vivid azure-cyan sheen, not whitewash)
+      const lights = getConeLightSources(map);
+      for (const l of lights) {
+        const dx = pit.x - l.x;
+        const dy = pit.y - l.y;
+        const distToLight = Math.hypot(dx, dy);
+        if (distToLight > l.range * 1.15) continue;
+        const forwardDot = (dy / Math.max(1, distToLight)) * l.dirY;
+        if (forwardDot <= 0.15) continue;
+        const strength = Math.max(0, 1 - distToLight / (l.range * 1.15)) * forwardDot;
+        const lx = (-dx / Math.max(1, distToLight)) * pit.rx * 0.3;
+        const ly = (-dy / Math.max(1, distToLight)) * pit.ry * 0.3;
+        const specGrad = ctx.createRadialGradient(lx, ly, 4, lx, ly, maxR * 0.8);
+        specGrad.addColorStop(0, `rgba(56, 189, 248, ${0.34 * strength})`);
+        specGrad.addColorStop(0.55, `rgba(14, 165, 233, ${0.18 * strength})`);
+        specGrad.addColorStop(1, 'rgba(14, 165, 233, 0)');
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.fillStyle = specGrad;
+        ctx.fillRect(-pit.rx * 1.4, -pit.ry * 1.4, pit.rx * 2.8, pit.ry * 2.8);
+        ctx.restore();
+      }
+
+      // Subtle copper-cyan surface ripples & crisp azure-tinted sparkles
+      const phase = world.elapsedTime * 1.35 + pit.id * 1.4;
+      for (let r = 0; r < 2; r++) {
+        const frac = (phase * 0.28 + r / 2) % 1;
+        const alpha = (1 - frac) * 0.24;
+        ctx.strokeStyle = `rgba(56, 189, 248, ${alpha})`;
+        ctx.lineWidth = 1.5;
+        traceContour(0.3 + frac * 0.6);
+        ctx.stroke();
+      }
+
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      for (let s = 0; s < 12; s++) {
+        const seed = pit.id * 131 + s * 29;
+        const sx = (seededRand(seed + 1) - 0.5) * pit.rx * 1.35;
+        const sy = (seededRand(seed + 2) - 0.5) * pit.ry * 1.35;
+        const twinkle = Math.pow(
+          Math.max(0, Math.sin(world.elapsedTime * (2.6 + seededRand(seed + 3) * 2.4) + s * 1.9)),
+          3.4
+        );
+        if (twinkle < 0.18) continue;
+        const arm = (2.6 + seededRand(seed + 4) * 3.0) * twinkle;
+        ctx.fillStyle = `rgba(125, 211, 252, ${0.85 * twinkle})`;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy - arm);
+        ctx.lineTo(sx + arm * 0.26, sy - arm * 0.26);
+        ctx.lineTo(sx + arm, sy);
+        ctx.lineTo(sx + arm * 0.26, sy + arm * 0.26);
+        ctx.lineTo(sx, sy + arm);
+        ctx.lineTo(sx - arm * 0.26, sy + arm * 0.26);
+        ctx.lineTo(sx - arm, sy);
+        ctx.lineTo(sx - arm * 0.26, sy - arm * 0.26);
+        ctx.closePath();
+        ctx.fill();
+      }
       ctx.restore();
+
+      // Deep ambient occlusion shadow cast by the vertical ice cliff onto the water surface
+      ctx.strokeStyle = 'rgba(0, 14, 38, 0.72)';
+      ctx.lineWidth = 11;
+      ctx.save();
+      ctx.translate(0, 3);
+      traceContour(0.985);
+      ctx.stroke();
+      ctx.restore();
+
+      // Crisp turquoise waterline contact foam/glint around the recessed wall
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.55)';
+      ctx.lineWidth = 1.6;
+      traceContour(0.96);
+      ctx.stroke();
+
+      ctx.restore(); // end recessed water clip
+
+      // Sharp inner shadow edge right under the top snow/ice rim
+      ctx.strokeStyle = 'rgba(3, 18, 42, 0.65)';
+      ctx.lineWidth = 4;
+      traceContour(1.0);
+      ctx.stroke();
+
+      ctx.restore(); // end outer pit clip
     } else {
       // Intact walkable frozen ice pond with cool glacier sheen & warning fracture cracks
       ctx.fillStyle = 'rgba(125, 211, 252, 0.40)';

@@ -365,18 +365,6 @@ export function OnlineLobbyScreen({
                 <button
                   type="button"
                   disabled={!isHost}
-                  onClick={() => setMode('BRAWL')}
-                  className={`px-2 py-2 text-[11px] sm:text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
-                    room.config.mode === 'BRAWL'
-                      ? 'bg-sky-500 text-slate-950'
-                      : 'text-slate-300 hover:text-white'
-                  } ${!isHost ? 'cursor-default' : 'cursor-pointer'}`}
-                >
-                  Brawl (8 KOs)
-                </button>
-                <button
-                  type="button"
-                  disabled={!isHost}
                   onClick={() => setMode('ELIMINATION')}
                   className={`px-2 py-2 text-[11px] sm:text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
                     room.config.mode === 'ELIMINATION'
@@ -385,6 +373,18 @@ export function OnlineLobbyScreen({
                   } ${!isHost ? 'cursor-default' : 'cursor-pointer'}`}
                 >
                   Last Standing
+                </button>
+                <button
+                  type="button"
+                  disabled={!isHost}
+                  onClick={() => setMode('BRAWL')}
+                  className={`px-2 py-2 text-[11px] sm:text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                    room.config.mode === 'BRAWL'
+                      ? 'bg-sky-500 text-slate-950'
+                      : 'text-slate-300 hover:text-white'
+                  } ${!isHost ? 'cursor-default' : 'cursor-pointer'}`}
+                >
+                  Brawl (8 KOs)
                 </button>
               </div>
             </div>

@@ -22,6 +22,7 @@ import {
   type GameSnapshot,
   type IcePit,
   type JoystickState,
+  KILL_STREAK_WINDOW,
   MEDKIT_HEAL,
   MEDKIT_RADIUS,
   type MatchConfig,
@@ -218,6 +219,7 @@ export class ArenaEngine {
   private tntSpawnTimer = 7.0;
   private medkitSpawnTimer = 9.0;
   private boxSpawnTimer = 4.0;
+  private rapidStreaks = new Map<number, { count: number; lastKillAt: number }>();
 
   constructor(config: MatchConfig, slots?: SlotSetup[]) {
     this.config = config;
@@ -249,6 +251,7 @@ export class ArenaEngine {
     this.winnerId = null;
     this.winnerTeam = null;
     this.winnerReason = '';
+    this.rapidStreaks.clear();
 
     const isImmersive = this.map.immersive;
     this.bulletSpawnTimer = isImmersive ? 1.5 : 2.0;
@@ -471,8 +474,8 @@ export class ArenaEngine {
     return out;
   }
 
-  private emitEvent(type: EngineEvent['type'], x: number, y: number, value?: number) {
-    this.events.push({ type, x, y, value });
+  private emitEvent(type: EngineEvent['type'], x: number, y: number, value?: number, playerId?: number) {
+    this.events.push({ type, x, y, value, playerId });
   }
 
   public update(dt: number) {
@@ -1698,7 +1701,7 @@ export class ArenaEngine {
             const owner = this.players.find((pl) => pl.id === b.ownerId);
             if (owner && owner.id !== player.id) owner.shotsHit += 1;
 
-            this.applyDamage(player, BULLET_DAMAGE, b.ownerId, knockX, knockY);
+            this.applyDamage(player, BULLET_DAMAGE, b.ownerId, knockX, knockY, true);
             this.spawnParticles(b.x, b.y, b.color, 10, 150);
             destroyed = true;
             break;
@@ -1828,7 +1831,10 @@ export class ArenaEngine {
 
     if (attackerId !== null && attackerId !== player.id && !this.isTeammate(attackerId, player.id)) {
       const attacker = this.players.find((p) => p.id === attackerId);
-      if (attacker) attacker.kills += 1;
+      if (attacker) {
+        attacker.kills += 1;
+        this.recordKillStreak(attacker, player.x, player.y);
+      }
     }
 
     this.emitEvent('splash', player.x, player.y);
@@ -1838,12 +1844,42 @@ export class ArenaEngine {
     this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 10), 'SPLASH KO!', '#7DD3FC');
   }
 
+  private recordKillStreak(attacker: Player, x: number, y: number) {
+    if (this.config.mode === 'ELIMINATION') {
+      this.events.push({
+        type: 'killstreak',
+        x,
+        y,
+        value: attacker.kills,
+        playerId: attacker.id,
+        mode: 'ELIMINATION',
+      });
+      return;
+    }
+
+    const prev = this.rapidStreaks.get(attacker.id);
+    const count =
+      prev && this.elapsedTime - prev.lastKillAt <= KILL_STREAK_WINDOW ? prev.count + 1 : 1;
+    this.rapidStreaks.set(attacker.id, { count, lastKillAt: this.elapsedTime });
+    if (count >= 2) {
+      this.events.push({
+        type: 'killstreak',
+        x,
+        y,
+        value: count,
+        playerId: attacker.id,
+        mode: 'BRAWL',
+      });
+    }
+  }
+
   private applyDamage(
     player: Player,
     amount: number,
     attackerId: number | null,
     knockVx: number,
-    knockVy: number
+    knockVy: number,
+    byBullet = false
   ) {
     if (!player.alive || player.spawnInvulnTimer > 0 || player.stunTimer > 0) return;
     if (attackerId !== null && attackerId !== player.id && this.isTeammate(attackerId, player.id)) {
@@ -1877,9 +1913,17 @@ export class ArenaEngine {
 
       if (attackerId !== null && attackerId !== player.id) {
         const attacker = this.players.find((p) => p.id === attackerId);
-        if (attacker) attacker.kills += 1;
+        if (attacker) {
+          attacker.kills += 1;
+          this.recordKillStreak(attacker, player.x, player.y);
+        }
       } else if (attackerId === player.id) {
-        this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 28), 'SELF KO', '#F87171');
+        if (byBullet) {
+          this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 28), 'OWN SHOT!', '#F472B6');
+          this.emitEvent('self_kill', player.x, player.y, 1, player.id);
+        } else {
+          this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 28), 'SELF KO', '#F87171');
+        }
       }
 
       this.emitEvent('knockout', player.x, player.y);

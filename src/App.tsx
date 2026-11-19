@@ -14,20 +14,22 @@ import {
   renderArena,
 } from './game/renderer';
 import { sound } from './game/sound';
-import type {
-  ControlScheme,
-  EngineEvent,
-  GameSnapshot,
-  GameState,
-  JoystickState,
-  MatchConfig,
+import {
+  type ControlScheme,
+  type EngineEvent,
+  type GameSnapshot,
+  type GameState,
+  type JoystickState,
+  KILL_STREAK_WINDOW,
+  type MatchConfig,
+  type MatchMode,
   OnlineRoomState,
   WorldSyncState,
 } from './game/types';
 import { MultiplayerClient } from './net/multiplayerClient';
 
 const DEFAULT_SOLO_CONFIG: MatchConfig = {
-  mode: 'BRAWL',
+  mode: 'ELIMINATION',
   teamMode: 'FFA',
   mapId: 'crossroads',
   difficulty: 'TACTICAL',
@@ -37,7 +39,7 @@ const DEFAULT_SOLO_CONFIG: MatchConfig = {
 };
 
 const DEFAULT_ONLINE_CONFIG: MatchConfig = {
-  mode: 'BRAWL',
+  mode: 'ELIMINATION',
   teamMode: 'FFA',
   mapId: 'immersive_mansion',
   difficulty: 'TACTICAL',
@@ -59,8 +61,19 @@ function playEngineEvents(
   events: EngineEvent[],
   listenerX?: number,
   listenerY?: number,
-  listenerId = 0
+  listenerId = 0,
+  onLocalKillStreak?: (streak: number, mode: MatchMode) => void,
+  onLocalSelfKill?: () => void
 ) {
+  const hasLocalEliminationClimax = events.some(
+    (e) =>
+      e.type === 'killstreak' &&
+      e.mode === 'ELIMINATION' &&
+      e.playerId !== undefined &&
+      e.playerId === listenerId &&
+      (e.value ?? 0) >= 3
+  );
+
   for (const evt of events) {
     let spatial: { volume: number; pan: number } | undefined;
 
@@ -69,7 +82,10 @@ function playEngineEvents(
       const dy = evt.y - listenerY;
       const d = Math.hypot(dx, dy);
       const isHeavyGlobal =
-        evt.type === 'explosion' || evt.type === 'knockout' || evt.type === 'victory';
+        evt.type === 'explosion' ||
+        evt.type === 'knockout' ||
+        evt.type === 'killstreak' ||
+        evt.type === 'victory';
 
       // Reload sound: full punch for the local player, subtle nearby audio, skip faraway bot reloads
       if (evt.type === 'pickup') {
@@ -80,7 +96,7 @@ function playEngineEvents(
         spatial = { volume: vol, pan };
       } else {
         const maxDist = isHeavyGlobal ? 1650 : 980;
-        if (d > maxDist && evt.type !== 'victory') continue;
+        if (d > maxDist && evt.type !== 'victory' && evt.type !== 'killstreak') continue;
         const falloff = d < 95 ? 1 : Math.max(isHeavyGlobal ? 0.28 : 0.14, 1 - (d - 95) / maxDist);
         const pan = Math.max(-0.85, Math.min(0.85, dx / 520));
         spatial = { volume: falloff, pan };
@@ -116,8 +132,27 @@ function playEngineEvents(
         case 'knockout':
           sound.playKnockout(spatial);
           break;
+        case 'killstreak': {
+          // Strictly private: audible and visible ONLY to the player who scored the kill
+          if (evt.playerId !== undefined && evt.playerId === listenerId) {
+            const count = evt.value ?? 1;
+            const streakMode: MatchMode = evt.mode ?? 'BRAWL';
+            sound.playKillStreak(count, streakMode);
+            onLocalKillStreak?.(count, streakMode);
+          }
+          break;
+        }
+        case 'self_kill': {
+          if (evt.playerId !== undefined && evt.playerId === listenerId) {
+            sound.playSelfKill();
+            onLocalSelfKill?.();
+          }
+          break;
+        }
         case 'victory':
-          sound.playVictory();
+          if (!hasLocalEliminationClimax) {
+            sound.playVictory();
+          }
           break;
       }
     } catch {
@@ -179,6 +214,14 @@ export default function App() {
   const [roomState, setRoomState] = useState<OnlineRoomState | null>(null);
   const [onlineError, setOnlineError] = useState<string | null>(null);
   const [onlineConnecting, setOnlineConnecting] = useState(false);
+  const [killStreak, setKillStreak] = useState<{
+    count: number;
+    expiresAt: number;
+    mode: MatchMode;
+    durationMs: number;
+  } | null>(null);
+  const [selfKillPopup, setSelfKillPopup] = useState<{ expiresAt: number } | null>(null);
+  const [streakNow, setStreakNow] = useState<number>(0);
 
   const engineRef = useRef<ArenaEngine>(new ArenaEngine(DEFAULT_SOLO_CONFIG));
   const [snapshot, setSnapshot] = useState<GameSnapshot>(() => engineRef.current.getSnapshot(0));
@@ -252,12 +295,17 @@ export default function App() {
         if (room.phase === 'LOBBY') {
           onlineWorldRef.current = null;
           cameraRef.current.initialized = false;
+          setKillStreak(null);
+          setSelfKillPopup(null);
           setGameState('ONLINE_LOBBY');
         } else if (room.phase === 'PLAYING') {
           cameraRef.current.initialized = false;
           setHasUsedJoystick(false);
+          setKillStreak(null);
+          setSelfKillPopup(null);
           setGameState('PLAYING');
         } else if (room.phase === 'GAME_OVER') {
+          setKillStreak((prev) => (prev?.mode === 'ELIMINATION' ? prev : null));
           setGameState('GAME_OVER');
         }
       },
@@ -267,7 +315,21 @@ export default function App() {
         const mySlot = roomStateRef.current?.mySlot ?? 0;
         const me = world.players.find((p) => p.id === mySlot);
         if (world.events && world.events.length > 0) {
-          playEngineEvents(world.events, me?.x, me?.y, mySlot);
+          playEngineEvents(
+            world.events,
+            me?.x,
+            me?.y,
+            mySlot,
+            (streak, streakMode) => {
+              const nowMs = performance.now();
+              const durationMs = streakMode === 'ELIMINATION' ? 3400 : KILL_STREAK_WINDOW * 1000;
+              setStreakNow(nowMs);
+              setKillStreak({ count: streak, expiresAt: nowMs + durationMs, mode: streakMode, durationMs });
+            },
+            () => {
+              setSelfKillPopup({ expiresAt: performance.now() + 2800 });
+            }
+          );
         }
         setSnapshot(worldToSnapshot(world, mySlot));
       },
@@ -315,10 +377,43 @@ export default function App() {
       engineRef.current.setControlScheme(controlSchemeRef.current);
       setSnapshot(engineRef.current.getSnapshot(0));
       setHasUsedJoystick(false);
+      setKillStreak(null);
+      setSelfKillPopup(null);
       setGameState('PLAYING');
     },
     [config]
   );
+
+  // Auto-expire self-kill funny popup (keep visible even on immediate GAME_OVER)
+  useEffect(() => {
+    if (!selfKillPopup) return;
+    if (gameState !== 'PLAYING' && gameState !== 'GAME_OVER') {
+      setSelfKillPopup(null);
+      return;
+    }
+    const msLeft = Math.max(0, selfKillPopup.expiresAt - performance.now());
+    const id = window.setTimeout(() => setSelfKillPopup(null), msLeft);
+    return () => window.clearTimeout(id);
+  }, [selfKillPopup, gameState]);
+
+  // Smooth countdown timer for active kill-streak / Last Standing progression side popup
+  useEffect(() => {
+    if (!killStreak) return;
+    const allowInGameOver = gameState === 'GAME_OVER' && killStreak.mode === 'ELIMINATION';
+    if (gameState !== 'PLAYING' && !allowInGameOver) {
+      setKillStreak(null);
+      return;
+    }
+    const id = window.setInterval(() => {
+      const nowMs = performance.now();
+      if (nowMs >= killStreak.expiresAt) {
+        setKillStreak(null);
+      } else {
+        setStreakNow(nowMs);
+      }
+    }, 50);
+    return () => window.clearInterval(id);
+  }, [killStreak, gameState]);
 
   const handleCreateOnlineRoom = (name: string) => {
     sound.unlock();
@@ -518,7 +613,21 @@ export default function App() {
           const evts = engine.drainEvents();
           if (evts.length > 0) {
             const human = engine.players[0];
-            playEngineEvents(evts, human?.x, human?.y, 0);
+            playEngineEvents(
+              evts,
+              human?.x,
+              human?.y,
+              0,
+              (streak, streakMode) => {
+                const nowMs = performance.now();
+                const durationMs = streakMode === 'ELIMINATION' ? 3400 : KILL_STREAK_WINDOW * 1000;
+                setStreakNow(nowMs);
+                setKillStreak({ count: streak, expiresAt: nowMs + durationMs, mode: streakMode, durationMs });
+              },
+              () => {
+                setSelfKillPopup({ expiresAt: performance.now() + 2800 });
+              }
+            );
           }
           if (engine.winnerId !== null) {
             setSnapshot(engine.getSnapshot(0));
@@ -609,8 +718,45 @@ export default function App() {
         const isImmersivePlaying =
           gameStateRef.current === 'PLAYING' &&
           (worldToRender.immersive || ARENA_MAPS[worldToRender.mapId].immersive);
+        const isNormalPlaying =
+          gameStateRef.current === 'PLAYING' &&
+          !(worldToRender.immersive || ARENA_MAPS[worldToRender.mapId].immersive);
         const extraDark = Boolean(worldToRender.extraDark);
         sound.setImmersiveAmbient(isImmersivePlaying, extraDark);
+
+        // Compute dynamic tension (0..1) for ramping normal-mode suspense music
+        let normalTension = 0;
+        if (isNormalPlaying) {
+          const totalPlayers = Math.max(2, worldToRender.players.length);
+          const deadPlayers = worldToRender.players.filter((p) => !p.alive).length;
+          const deadRatio = deadPlayers / Math.max(1, totalPlayers - 1);
+          const timeBuild = Math.min(0.45, worldToRender.elapsedTime / 75);
+          const activeCfg = isOnlineRef.current
+            ? roomStateRef.current?.config ?? DEFAULT_ONLINE_CONFIG
+            : engineRef.current.config;
+          if (activeCfg.mode === 'ELIMINATION') {
+            const showdownBoost = deadPlayers >= totalPlayers - 2 ? 0.14 : 0;
+            normalTension = Math.min(1, Math.max(deadRatio * 0.78, timeBuild * 0.55) + deadRatio * 0.22 + showdownBoost);
+          } else {
+            const maxKills = Math.max(
+              0,
+              ...engineRef.current.players.map((p) => p.kills),
+              ...(onlineWorldRef.current?.players.map((p) => p.kills) ?? [0])
+            );
+            const killProg = Math.min(1, maxKills / Math.max(1, activeCfg.targetKills));
+            normalTension = Math.min(
+              1,
+              killProg * 0.78 + (deadPlayers / totalPlayers) * 0.16 + Math.min(0.18, worldToRender.elapsedTime / 110)
+            );
+          }
+        }
+        sound.updateNormalMusic(
+          dt,
+          isNormalPlaying,
+          normalTension,
+          ARENA_MAPS[worldToRender.mapId].floorTheme
+        );
+
         const listener = worldToRender.players.find((p) => p.id === localId);
         sound.updateImmersiveFootsteps(
           dt,
@@ -654,6 +800,7 @@ export default function App() {
     return () => {
       cancelAnimationFrame(rafId);
       sound.setImmersiveAmbient(false, false);
+      sound.updateNormalMusic(0, false, 0);
     };
   }, [gameState]);
 
@@ -1021,6 +1168,123 @@ export default function App() {
               )}
             </div>
           </div>
+
+          {/* Transparent Side-Edge Kill Popup (Private to the player who scored the kill) */}
+          {killStreak &&
+            (gameState === 'PLAYING' || (gameState === 'GAME_OVER' && killStreak.mode === 'ELIMINATION')) &&
+            (() => {
+              const remainingMs = Math.max(0, killStreak.expiresAt - streakNow);
+              const isElimination = killStreak.mode === 'ELIMINATION';
+              const pct = Math.max(0, Math.min(100, (remainingMs / killStreak.durationMs) * 100));
+              const count = killStreak.count;
+
+              const fires = isElimination
+                ? count >= 3
+                  ? '🔥🔥🔥👑'
+                  : count === 2
+                    ? '🔥🔥'
+                    : '🔥'
+                : count >= 4
+                  ? '🔥🔥🔥'
+                  : count === 3
+                    ? '🔥🔥'
+                    : '🔥';
+
+              const headlineText = isElimination
+                ? count >= 3
+                  ? 'SOLO ACE!'
+                  : count === 2
+                    ? 'RAMPAGE!'
+                    : 'KILL!'
+                : `${count}x ${
+                    count >= 6
+                      ? 'GODLIKE'
+                      : count === 5
+                        ? 'UNSTOPPABLE'
+                        : count === 4
+                          ? 'RAMPAGE'
+                          : count === 3
+                            ? 'TRIPLE STREAK'
+                            : 'DOUBLE KILL'
+                  }`;
+
+              const subCaption = isElimination
+                ? count >= 3
+                  ? 'ALL 3 RIVALS ELIMINATED'
+                  : count === 2
+                    ? '2 ELIMINATED'
+                    : '1 ELIMINATED'
+                : null;
+
+              const tierColor = isElimination
+                ? count >= 3
+                  ? 'text-amber-200'
+                  : count === 2
+                    ? 'text-orange-300'
+                    : 'text-yellow-200'
+                : count >= 5
+                  ? 'text-rose-300'
+                  : count >= 4
+                    ? 'text-orange-300'
+                    : count === 3
+                      ? 'text-amber-300'
+                      : 'text-yellow-200';
+
+              return (
+                <div
+                  style={{
+                    right: 'max(0.75rem, env(safe-area-inset-right))',
+                  }}
+                  className="pointer-events-none select-none absolute top-[4.65rem] sm:top-[5.15rem] lg:top-4 lg:right-4 z-40 flex flex-col items-end text-right"
+                >
+                  <div className="flex items-baseline gap-1.5 drop-shadow-[0_2px_6px_rgba(0,0,0,0.95)]">
+                    <span className="text-sm sm:text-base leading-none">{fires}</span>
+                    <span className={`font-display text-xs sm:text-sm font-black tracking-wide uppercase ${tierColor}`}>
+                      {headlineText}
+                    </span>
+                  </div>
+                  {isElimination ? (
+                    <span className="mt-0.5 font-mono-tabular text-[10px] font-bold tracking-wider text-sky-200/90 drop-shadow-[0_1px_3px_rgba(0,0,0,0.95)]">
+                      {subCaption}
+                    </span>
+                  ) : (
+                    <div className="mt-1 flex items-center gap-1.5">
+                      <span className="font-mono-tabular text-[10px] font-bold text-amber-200/95 drop-shadow-[0_1px_3px_rgba(0,0,0,0.95)]">
+                        {(remainingMs / 1000).toFixed(1)}s
+                      </span>
+                      <div className="h-1.5 w-24 sm:w-32 overflow-hidden rounded-full bg-white/15">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-yellow-300 via-orange-500 to-rose-500 transition-[width] duration-75 ease-linear"
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+          {/* Transparent Funny Self-Kill Popup (own bullet bounce KO) */}
+          {selfKillPopup && (gameState === 'PLAYING' || gameState === 'GAME_OVER') && (
+            <div
+              style={{
+                right: 'max(0.75rem, env(safe-area-inset-right))',
+              }}
+              className={`pointer-events-none select-none absolute ${
+                killStreak ? 'top-[7.2rem] sm:top-[7.8rem] lg:top-16' : 'top-[4.65rem] sm:top-[5.15rem] lg:top-4'
+              } lg:right-4 z-40 flex flex-col items-end text-right animate-bounce`}
+            >
+              <div className="flex items-baseline gap-1.5 drop-shadow-[0_2px_6px_rgba(0,0,0,0.95)]">
+                <span className="text-sm sm:text-base leading-none">🤡💀</span>
+                <span className="font-display text-xs sm:text-sm font-black tracking-wide uppercase text-pink-300">
+                  OOPS! SHOT YOURSELF!
+                </span>
+              </div>
+              <span className="mt-0.5 font-mono-tabular text-[10px] font-bold tracking-wider text-amber-200/90 drop-shadow-[0_1px_3px_rgba(0,0,0,0.95)]">
+                OWN TRICKSHOT KO
+              </span>
+            </div>
+          )}
 
           {/* Stationary Left-Side Joystick (Release to Shoot) */}
           {controlScheme === 'DRAG_STICK' && gameState === 'PLAYING' && (

@@ -164,17 +164,6 @@ export function TitleScreen({
                     <div className="grid grid-cols-2 gap-1 p-1 rounded-lg bg-slate-900 border border-slate-800">
                       <button
                         type="button"
-                        onClick={() => setMode('BRAWL')}
-                        className={`px-1.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-                          config.mode === 'BRAWL'
-                            ? 'bg-slate-700 text-white'
-                            : 'text-slate-400 hover:text-slate-200'
-                        }`}
-                      >
-                        8 KOs
-                      </button>
-                      <button
-                        type="button"
                         onClick={() => setMode('ELIMINATION')}
                         className={`px-1.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
                           config.mode === 'ELIMINATION'
@@ -183,6 +172,17 @@ export function TitleScreen({
                         }`}
                       >
                         Last Up
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMode('BRAWL')}
+                        className={`px-1.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                          config.mode === 'BRAWL'
+                            ? 'bg-slate-700 text-white'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        8 KOs
                       </button>
                     </div>
                   </div>

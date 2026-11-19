@@ -55,7 +55,7 @@ function sanitizeConfig(raw: Partial<MatchConfig> | undefined): MatchConfig {
     raw?.mapId && ARENA_MAPS[raw.mapId] ? ARENA_MAPS[raw.mapId] : ARENA_MAPS.immersive_mansion;
   const teamMode = raw?.teamMode === '2V2' ? '2V2' : 'FFA';
   return {
-    mode: raw?.mode === 'ELIMINATION' ? 'ELIMINATION' : 'BRAWL',
+    mode: raw?.mode === 'BRAWL' ? 'BRAWL' : 'ELIMINATION',
     teamMode,
     mapId: map.id,
     difficulty:

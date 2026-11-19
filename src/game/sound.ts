@@ -1,4 +1,4 @@
-import type { FloorTheme } from './types';
+import type { FloorTheme, MatchMode } from './types';
 
 interface AmbientNodes {
   master: GainNode;
@@ -9,6 +9,14 @@ interface AmbientNodes {
   lfo: OscillatorNode;
   windSource: AudioBufferSourceNode;
   windGain: GainNode;
+}
+
+interface NormalMusicNodes {
+  master: GainNode;
+  droneFilter: BiquadFilterNode;
+  droneOscA: OscillatorNode;
+  droneOscB: OscillatorNode;
+  droneLfo: OscillatorNode;
 }
 
 export interface FootstepListener {
@@ -38,6 +46,12 @@ class SoundEngine {
   private ambientNodes: AmbientNodes | null = null;
   private ambientActive = false;
   private ambientExtraDark = false;
+  private normalMusicNodes: NormalMusicNodes | null = null;
+  private normalMusicActive = false;
+  private normalMusicTension = 0;
+  private normalMusicTheme: FloorTheme = 'mansion_wood';
+  private musicStepTimer = 0.06;
+  private musicStepIndex = 0;
   private stepCooldowns = new Map<number, number>();
   private creakTimer = 5.0;
   private brownNoiseBuffer: AudioBuffer | null = null;
@@ -47,8 +61,14 @@ class SoundEngine {
     this.muted = muted;
     if (muted) {
       this.stopAmbientImmediate();
-    } else if (this.ambientActive) {
-      this.setImmersiveAmbient(true, this.ambientExtraDark);
+      this.stopNormalMusicImmediate();
+    } else {
+      if (this.ambientActive) {
+        this.setImmersiveAmbient(true, this.ambientExtraDark);
+      }
+      if (this.normalMusicActive) {
+        this.updateNormalMusic(0, true, this.normalMusicTension, this.normalMusicTheme);
+      }
     }
   }
 
@@ -279,6 +299,653 @@ class SoundEngine {
       nodes.oscC.stop();
       nodes.lfo.stop();
       nodes.windSource.stop();
+      nodes.master.disconnect();
+    } catch {
+      // Ignore already stopped audio nodes
+    }
+  }
+
+  /**
+   * Map-themed procedural orchestral/atmospheric suspense score for all Normal modes:
+   * Shares the same thrilling ramp in tempo, loudness, and tension across matches while
+   * crafting distinct instrumentation per map:
+   * - winter_snow (Winter Tussle): Santa sleigh bells, frosty celesta, shivering strings & F#m timpani
+   * - mansion_wood (Manor Foyer): Baroque harpsichord, manor clock chimes, cello & violin in Cm
+   * - grass_outdoors (Meadow Clearing): Celtic plucked harp, airy woodland flute, bodhrán & horns in Em
+   * - maple_cargo (Cargo Deck): Industrial sub-bass pulse, metallic hi-hat/anvil ticks & spy brass in Dm
+   */
+  public updateNormalMusic(
+    dt: number,
+    active: boolean,
+    tensionRaw: number,
+    floorTheme: FloorTheme = this.normalMusicTheme
+  ) {
+    this.normalMusicActive = active;
+    const tension = Math.max(0, Math.min(1, tensionRaw));
+    this.normalMusicTension = tension;
+
+    if (floorTheme !== this.normalMusicTheme) {
+      this.normalMusicTheme = floorTheme;
+      this.stopNormalMusicImmediate();
+    }
+
+    if (!active || this.muted) {
+      this.stopNormalMusicImmediate();
+      return;
+    }
+
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const masterLevel = 0.105 + tension * 0.08;
+    const droneCutoff =
+      floorTheme === 'winter_snow'
+        ? 270 + tension * 500
+        : floorTheme === 'maple_cargo'
+          ? 195 + tension * 540
+          : 230 + tension * 460;
+
+    // Distinct pedal root per map
+    const droneRootHz =
+      floorTheme === 'winter_snow'
+        ? 92.5 // F#2
+        : floorTheme === 'mansion_wood'
+          ? 65.41 // C2
+          : floorTheme === 'grass_outdoors'
+            ? 82.41 // E2
+            : 73.42; // D2
+
+    if (!this.normalMusicNodes) {
+      const master = ctx.createGain();
+      master.gain.setValueAtTime(0.0005, now);
+      master.gain.linearRampToValueAtTime(masterLevel, now + 0.55);
+      master.connect(ctx.destination);
+
+      const droneFilter = ctx.createBiquadFilter();
+      droneFilter.type = 'lowpass';
+      droneFilter.frequency.setValueAtTime(droneCutoff, now);
+      droneFilter.Q.setValueAtTime(floorTheme === 'maple_cargo' ? 2.4 : 1.5, now);
+      droneFilter.connect(master);
+
+      const droneOscA = ctx.createOscillator();
+      droneOscA.type = floorTheme === 'grass_outdoors' ? 'triangle' : 'sawtooth';
+      droneOscA.frequency.setValueAtTime(droneRootHz, now);
+      const gainA = ctx.createGain();
+      gainA.gain.setValueAtTime(0.32, now);
+      droneOscA.connect(gainA);
+      gainA.connect(droneFilter);
+
+      const droneOscB = ctx.createOscillator();
+      droneOscB.type = floorTheme === 'winter_snow' ? 'sine' : 'triangle';
+      droneOscB.frequency.setValueAtTime(droneRootHz * 2, now);
+      const gainB = ctx.createGain();
+      gainB.gain.setValueAtTime(0.24, now);
+      droneOscB.connect(gainB);
+      gainB.connect(droneFilter);
+
+      const droneLfo = ctx.createOscillator();
+      droneLfo.type = 'sine';
+      droneLfo.frequency.setValueAtTime(0.35, now);
+      const lfoGain = ctx.createGain();
+      lfoGain.gain.setValueAtTime(floorTheme === 'maple_cargo' ? 75 : 55, now);
+      droneLfo.connect(lfoGain);
+      lfoGain.connect(droneFilter.frequency);
+
+      droneOscA.start(now);
+      droneOscB.start(now);
+      droneLfo.start(now);
+
+      this.normalMusicNodes = {
+        master,
+        droneFilter,
+        droneOscA,
+        droneOscB,
+        droneLfo,
+      };
+      this.musicStepTimer = 0.04;
+      this.musicStepIndex = 0;
+    } else {
+      this.normalMusicNodes.master.gain.setTargetAtTime(masterLevel, now, 0.28);
+      this.normalMusicNodes.droneFilter.frequency.setTargetAtTime(droneCutoff, now, 0.3);
+      this.normalMusicNodes.droneLfo.frequency.setTargetAtTime(0.35 + tension * 0.9, now, 0.3);
+    }
+
+    if (dt <= 0) return;
+
+    this.musicStepTimer -= dt;
+    if (this.musicStepTimer <= 0) {
+      // Structurally distinct meters, step counts, and tempo curves per map!
+      let stepSec = 0.25;
+      let cycleLen = 16;
+      if (floorTheme === 'mansion_wood') {
+        // 3/4 Haunted Baroque Waltz (12 steps = 2 bars of 6 eighth notes, 74 -> 132 BPM)
+        const waltzBpm = 74 + tension * 58;
+        stepSec = 60 / waltzBpm / 2;
+        cycleLen = 12;
+      } else if (floorTheme === 'grass_outdoors') {
+        // 6/8 Celtic Woodland Hunt Gallop (12 compound eighth steps, 84 -> 138 BPM)
+        const jigBpm = 84 + tension * 54;
+        stepSec = 60 / jigBpm / 2;
+        cycleLen = 12;
+      } else if (floorTheme === 'maple_cargo') {
+        // 4/4 Syncopated Industrial Cyber-Heist (16 16th/8th groove steps, 96 -> 146 BPM)
+        const heistBpm = 96 + tension * 50;
+        stepSec = 60 / heistBpm / 2;
+        cycleLen = 16;
+      } else {
+        // Winter Tussle: 4/4 Arctic Sleigh-Bell Chase (16 steps, 88 -> 146 BPM)
+        const winterBpm = 88 + tension * 58;
+        stepSec = 60 / winterBpm / 2;
+        cycleLen = 16;
+      }
+
+      this.musicStepTimer = Math.max(0.13, stepSec);
+      this.triggerNormalMusicStep(
+        ctx,
+        this.normalMusicNodes.master,
+        this.musicStepIndex % cycleLen,
+        stepSec,
+        tension,
+        floorTheme
+      );
+      this.musicStepIndex = (this.musicStepIndex + 1) % cycleLen;
+    }
+  }
+
+  /** Santa sleigh-bell shake: crisp shimmering jingle burst + high metallic partials */
+  private spawnSleighBells(ctx: AudioContext, dest: AudioNode, t0: number, intensity: number) {
+    // Crisp leather-strap & brass jingle shake burst
+    this.spawnNoiseBurst(ctx, dest, t0, 0.075, 'bandpass', 6400, 4200, 1.8, 0.095 * intensity, 2.0);
+    // Double subtle tail shake 45ms later
+    this.spawnNoiseBurst(ctx, dest, t0 + 0.042, 0.06, 'highpass', 5200, 3800, 1.4, 0.055 * intensity, 2.2);
+
+    // Individual bright spherical jingle partials
+    const bellPartials = [2960, 4186, 5580];
+    for (let i = 0; i < bellPartials.length; i++) {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      const jitter = 0.97 + Math.random() * 0.06;
+      const startT = t0 + i * 0.008;
+      osc.frequency.setValueAtTime(bellPartials[i] * jitter, startT);
+      g.gain.setValueAtTime(0.0005, startT);
+      g.gain.linearRampToValueAtTime(0.032 * intensity, startT + 0.006);
+      g.gain.exponentialRampToValueAtTime(0.0005, startT + 0.085);
+      osc.connect(g);
+      g.connect(dest);
+      osc.start(startT);
+      osc.stop(startT + 0.095);
+    }
+  }
+
+  /** Shimmering music-box / celesta note (used in Winter Tussle) or Manor Clock Chime */
+  private spawnBellTone(
+    ctx: AudioContext,
+    dest: AudioNode,
+    t0: number,
+    freq: number,
+    dur: number,
+    peak: number,
+    harmonicRatio = 2.0
+  ) {
+    const fund = ctx.createOscillator();
+    const over = ctx.createOscillator();
+    const fg = ctx.createGain();
+    const og = ctx.createGain();
+    fund.type = 'sine';
+    over.type = 'triangle';
+    fund.frequency.setValueAtTime(freq, t0);
+    over.frequency.setValueAtTime(freq * harmonicRatio, t0);
+
+    fg.gain.setValueAtTime(0.0005, t0);
+    fg.gain.linearRampToValueAtTime(peak, t0 + 0.008);
+    fg.gain.exponentialRampToValueAtTime(0.0005, t0 + dur);
+
+    og.gain.setValueAtTime(0.0005, t0);
+    og.gain.linearRampToValueAtTime(peak * 0.35, t0 + 0.005);
+    og.gain.exponentialRampToValueAtTime(0.0005, t0 + dur * 0.45);
+
+    fund.connect(fg);
+    over.connect(og);
+    fg.connect(dest);
+    og.connect(dest);
+    fund.start(t0);
+    over.start(t0);
+    fund.stop(t0 + dur + 0.02);
+    over.stop(t0 + dur * 0.46 + 0.02);
+  }
+
+  private triggerNormalMusicStep(
+    ctx: AudioContext,
+    dest: AudioNode,
+    step: number,
+    stepDur: number,
+    tension: number,
+    floorTheme: FloorTheme
+  ) {
+    const t0 = ctx.currentTime + 0.015;
+
+    if (floorTheme === 'winter_snow') {
+      // === WINTER TUSSLE (16-step Arctic Sleigh-Bell & Celesta Chase) ===
+      // Distinct 2-bar crystalline winter theme in F# minor with frosty pizzicato & accelerating Santa sleigh bells
+      const winterBass = [
+        185.0, 0, 277.18, 185.0, // F#3 - C#4 F#3
+        220.0, 0, 293.66, 277.18, // A3 - D4 C#4
+        185.0, 220.0, 277.18, 293.66, // F#3 A3 C#4 D4
+        246.94, 220.0, 196.0, 174.61, // B3 A3 G3 E#3
+      ];
+      const bassHz = winterBass[step];
+      if (bassHz > 0 && (step % 2 === 0 || tension > 0.3)) {
+        // Icy staccato pizzicato glass-strings (tight pluck, NOT long orchestral sawtooths)
+        const pFilter = ctx.createBiquadFilter();
+        pFilter.type = 'bandpass';
+        pFilter.frequency.setValueAtTime(540 + tension * 1100, t0);
+        pFilter.Q.setValueAtTime(1.1, t0);
+        pFilter.connect(dest);
+
+        const pOsc = ctx.createOscillator();
+        const pg = ctx.createGain();
+        pOsc.type = 'triangle';
+        pOsc.frequency.setValueAtTime(bassHz, t0);
+        const len = Math.min(0.18, stepDur * 0.72);
+        pg.gain.setValueAtTime(0.0005, t0);
+        pg.gain.linearRampToValueAtTime((step % 4 === 0 ? 0.34 : 0.22) * (0.76 + tension * 0.44), t0 + 0.008);
+        pg.gain.exponentialRampToValueAtTime(0.0008, t0 + len);
+        pOsc.connect(pg);
+        pg.connect(pFilter);
+        pOsc.start(t0);
+        pOsc.stop(t0 + len + 0.02);
+      }
+
+      // Santa Sleigh Bells: gentle snowflake sparkle early -> relentless rapid sleigh-chase shakes!
+      const sleighHit =
+        step === 2 ||
+        step === 6 ||
+        step === 10 ||
+        step === 14 ||
+        (tension > 0.35 && (step === 0 || step === 8)) ||
+        (tension > 0.65 && step % 2 === 1);
+      if (sleighHit) {
+        const bellPower = (step % 4 === 2 ? 1.05 : 0.75) * (0.7 + tension * 0.7);
+        this.spawnSleighBells(ctx, dest, t0, bellPower);
+        if (tension > 0.78 && step % 4 === 2) {
+          this.spawnSleighBells(ctx, dest, t0 + stepDur * 0.5, 0.55);
+        }
+      }
+
+      // Main Frost Celesta / Glockenspiel Tune (very bright, wintry, distinct melody)
+      const winterMelody: Record<number, number> = {
+        0: 739.99, // F#5
+        2: 1108.73, // C#6
+        3: 987.77, // B5
+        4: 880.0, // A5
+        6: 830.61, // G#5
+        8: 739.99, // F#5
+        10: 659.25, // E5
+        12: 587.33, // D5
+        14: 698.46, // E#5
+        15: 739.99, // F#5 pickup (enters when tension > 0.4)
+      };
+      const melHz = winterMelody[step];
+      if (melHz && (step !== 15 || tension > 0.4)) {
+        this.spawnBellTone(ctx, dest, t0, melHz, Math.min(0.62, stepDur * 2.4), 0.14 + tension * 0.08, 2.0);
+        // Winter ramp-up layer: octave crystalline chime harmony (unique to Winter Tussle!)
+        if (tension > 0.45 && step % 4 === 0) {
+          this.spawnBellTone(ctx, dest, t0 + 0.025, melHz * 0.5, stepDur * 2.8, 0.12 * tension, 3.0);
+        }
+      }
+
+      // Winter Ramp-Up Percussion: crisp frost-snare rim clicks & deep snow drum on downbeats only
+      if (step === 0 || step === 8) {
+        this.spawnTimpani(ctx, dest, t0, 96, 38, 0.28 + tension * 0.18);
+      }
+      if (tension > 0.28 && (step === 4 || step === 12 || (tension > 0.62 && step % 2 === 0))) {
+        this.spawnNoiseBurst(ctx, dest, t0, 0.04, 'highpass', 3600, 5200, 1.8, 0.055 + tension * 0.08, 2.5);
+      }
+      return;
+    }
+
+    if (floorTheme === 'mansion_wood') {
+      // === MANOR FOYER (3/4 Gothic Haunted Waltz - 12 steps: Bar1 0..5, Bar2 6..11) ===
+      // Beat positions: 0 (ONE), 2 (two), 4 (three) | 6 (ONE), 8 (two), 10 (three)
+      const isWaltzDownbeat = step === 0 || step === 6;
+      const isWaltzChordBeat = step === 2 || step === 4 || step === 8 || step === 10;
+
+      if (isWaltzDownbeat) {
+        // Deep resonant Baroque Pipe-Organ + Cello waltz downbeat ("OOM")
+        const rootHz = step === 0 ? 130.81 : 116.54; // C3 -> Bb2/Ab2 progression
+        this.spawnTimpani(ctx, dest, t0, rootHz * 0.72, 34, 0.3 + tension * 0.16);
+        this.spawnBellTone(
+          ctx,
+          dest,
+          t0,
+          step === 0 ? 261.63 : 196.0, // Manor grandfather-clock chime on waltz beat 1
+          stepDur * 4.5,
+          0.11 + tension * 0.07,
+          2.41
+        );
+      }
+
+      // Plucked Harpsichord Waltz Accompaniment ("pah-pah") + rapid 16th-note Baroque ramp runs!
+      const harpChordNotes: Record<number, number[]> = {
+        0: [130.81],
+        1: [196.0], // fast baroque fill when tension > 0.45
+        2: [311.13, 392.0], // Eb4 + G4 (Cm)
+        3: [392.0],
+        4: [311.13, 392.0],
+        5: [349.23],
+        6: [174.61],
+        7: [261.63],
+        8: [349.23, 415.3], // F4 + Ab4 (Fm)
+        9: [415.3],
+        10: [293.66, 392.0], // D4 + G4 (G7 tension!)
+        11: [493.88], // B4 leading tone!
+      };
+      const notes = harpChordNotes[step] ?? [];
+      const playThisStep =
+        isWaltzDownbeat || isWaltzChordBeat || (tension > 0.38 && step % 2 === 1);
+
+      if (playThisStep && notes.length > 0) {
+        const harpF = ctx.createBiquadFilter();
+        harpF.type = 'lowpass';
+        harpF.frequency.setValueAtTime(1600 + tension * 1700, t0);
+        harpF.frequency.exponentialRampToValueAtTime(360, t0 + Math.min(0.22, stepDur * 0.9));
+        harpF.Q.setValueAtTime(2.1, t0);
+        harpF.connect(dest);
+
+        for (const fHz of notes) {
+          const hOsc = ctx.createOscillator();
+          const hg = ctx.createGain();
+          hOsc.type = 'sawtooth';
+          hOsc.frequency.setValueAtTime(fHz, t0);
+          const dur = Math.min(0.24, stepDur * 0.9);
+          const pk = (isWaltzChordBeat ? 0.16 : 0.11) * (0.8 + tension * 0.45);
+          hg.gain.setValueAtTime(0.0005, t0);
+          hg.gain.linearRampToValueAtTime(pk, t0 + 0.005);
+          hg.gain.exponentialRampToValueAtTime(0.0008, t0 + dur);
+          hOsc.connect(hg);
+          hg.connect(harpF);
+          hOsc.start(t0);
+          hOsc.stop(t0 + dur + 0.02);
+        }
+      }
+
+      // Sweeping Gothic Solo Violin / Organ Waltz Melody (distinct 3/4 haunted ballroom theme)
+      const waltzMelody: Record<number, { hz: number; durSteps: number }> = {
+        0: { hz: 523.25, durSteps: 2 }, // C5
+        2: { hz: 622.25, durSteps: 2 }, // Eb5
+        4: { hz: 587.33, durSteps: 2 }, // D5
+        6: { hz: 493.88, durSteps: 2 }, // B4
+        8: { hz: 523.25, durSteps: 2 }, // C5
+        10: { hz: 392.0, durSteps: 2 }, // G4
+      };
+      const wMel = waltzMelody[step];
+      if (wMel) {
+        this.spawnStringSwell(ctx, dest, t0, wMel.hz, stepDur * wMel.durSteps * 0.95, 0.25 + tension * 0.75);
+        // Manor ramp-up: Cathedral Organ high octave layer enters above 50% tension
+        if (tension > 0.5 && isWaltzDownbeat) {
+          this.spawnStringSwell(ctx, dest, t0, wMel.hz * 2, stepDur * 2.4, tension * 0.85);
+        }
+      }
+      return;
+    }
+
+    if (floorTheme === 'grass_outdoors') {
+      // === MEADOW CLEARING (6/8 Compound Celtic Hunt - 12 steps: Triplets ONE-2-3 FOUR-5-6) ===
+      // Distinct rolling 6/8 gallop, Celtic Harp + Breath Woodland Flute + Bodhrán Battle Rolls
+      const isCompoundPulse = step === 0 || step === 3 || step === 6 || step === 9;
+      const harpGallop = [
+        164.81, 246.94, 329.63, // E3 B3 E4
+        196.0, 293.66, 392.0, // G3 D4 G4
+        220.0, 277.18, 329.63, // A3 C#4 E4 (bright Dorian twist)
+        246.94, 196.0, 146.83, // B3 G3 D3
+      ];
+      const harpHz = harpGallop[step];
+
+      // Rolling 6/8 Celtic Harp arpeggio
+      if (isCompoundPulse || tension > 0.18 || step % 3 !== 2) {
+        const harpF = ctx.createBiquadFilter();
+        harpF.type = 'lowpass';
+        harpF.frequency.setValueAtTime(980 + tension * 1150, t0);
+        harpF.connect(dest);
+
+        const hOsc = ctx.createOscillator();
+        const hg = ctx.createGain();
+        hOsc.type = 'triangle';
+        hOsc.frequency.setValueAtTime(harpHz, t0);
+        const hLen = Math.min(0.24, stepDur * 0.88);
+        hg.gain.setValueAtTime(0.0005, t0);
+        hg.gain.linearRampToValueAtTime((isCompoundPulse ? 0.34 : 0.2) * (0.78 + tension * 0.44), t0 + 0.008);
+        hg.gain.exponentialRampToValueAtTime(0.0008, t0 + hLen);
+        hOsc.connect(hg);
+        hg.connect(harpF);
+        hOsc.start(t0);
+        hOsc.stop(t0 + hLen + 0.02);
+      }
+
+      // Expressive Woodland Celtic Flute Main Tune (6/8 lilt!)
+      const fluteLine: Record<number, { hz: number; steps: number }> = {
+        0: { hz: 659.25, steps: 2 }, // E5
+        2: { hz: 587.33, steps: 1 }, // D5
+        3: { hz: 493.88, steps: 2.5 }, // B4
+        6: { hz: 554.37, steps: 2 }, // C#5
+        8: { hz: 587.33, steps: 1 }, // D5
+        9: { hz: 783.99, steps: 1.5 }, // G5 soaring peak!
+        11: { hz: 659.25, steps: 1 }, // E5
+      };
+      const fl = fluteLine[step];
+      if (fl) {
+        const dur = stepDur * fl.steps * 0.95;
+        const osc = ctx.createOscillator();
+        const fg = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(fl.hz * 0.985, t0);
+        osc.frequency.linearRampToValueAtTime(fl.hz, t0 + 0.035);
+        fg.gain.setValueAtTime(0.0005, t0);
+        fg.gain.linearRampToValueAtTime(0.105 + tension * 0.085, t0 + 0.03);
+        fg.gain.exponentialRampToValueAtTime(0.0008, t0 + dur);
+        osc.connect(fg);
+        fg.connect(dest);
+        osc.start(t0);
+        osc.stop(t0 + dur + 0.02);
+        this.spawnNoiseBurst(ctx, dest, t0, 0.05, 'bandpass', fl.hz * 1.4, fl.hz, 2.2, 0.03 + tension * 0.025, 1.8);
+      }
+
+      // Meadow Ramp-Up: Bodhrán triplet war-drum rolls + Hunting Horn fifths (no standard 4/4 timpani/saw!)
+      if (isCompoundPulse || (tension > 0.45 && (step === 2 || step === 8)) || (tension > 0.72 && step % 3 === 2)) {
+        this.spawnTimpani(ctx, dest, t0, isCompoundPulse ? 116 : 92, 48, (isCompoundPulse ? 0.34 : 0.2) * (0.6 + tension * 0.55));
+      }
+      if (tension > 0.3 && (step === 0 || step === 6)) {
+        // Warm brass hunting horn call (pure fifth dyad E4+B4 -> G4+D5)
+        const hornHz = step === 0 ? 329.63 : 392.0;
+        const hFilter = ctx.createBiquadFilter();
+        hFilter.type = 'lowpass';
+        hFilter.frequency.setValueAtTime(620 + tension * 900, t0);
+        hFilter.connect(dest);
+        for (const ratio of [1, 1.5]) {
+          const ho = ctx.createOscillator();
+          const hgn = ctx.createGain();
+          ho.type = 'triangle';
+          ho.frequency.setValueAtTime(hornHz * ratio, t0);
+          const hd = stepDur * 2.6;
+          hgn.gain.setValueAtTime(0.0005, t0);
+          hgn.gain.linearRampToValueAtTime(0.095 * tension, t0 + 0.06);
+          hgn.gain.exponentialRampToValueAtTime(0.0008, t0 + hd);
+          ho.connect(hgn);
+          hgn.connect(hFilter);
+          ho.start(t0);
+          ho.stop(t0 + hd + 0.02);
+        }
+      }
+      return;
+    }
+
+    // === CARGO DECK (16-step Syncopated Industrial Cyber-Heist Groove) ===
+    // Completely electronic/tactical espionage structure (NO classical orchestral swells!):
+    // Syncopated sub-bass funk-thriller riff + radar pings + crisp snare/shaker ramp + acid synth stabs
+    const bassPattern = [
+      146.83, 0, 146.83, 155.56, // D3 - D3 Eb3
+      0, 220.0, 0, 196.0, // - A3 - G3
+      146.83, 0, 174.61, 155.56, // D3 - F3 Eb3
+      146.83, 0, 138.59, 164.81, // D3 - C#3 E3
+    ];
+    const bassHz = bassPattern[step];
+    if (bassHz > 0) {
+      const acidFilter = ctx.createBiquadFilter();
+      acidFilter.type = 'lowpass';
+      const cutoff = 380 + tension * 1950;
+      acidFilter.frequency.setValueAtTime(cutoff, t0);
+      acidFilter.frequency.exponentialRampToValueAtTime(Math.max(180, cutoff * 0.42), t0 + stepDur * 0.85);
+      acidFilter.Q.setValueAtTime(3.2 + tension * 3.5, t0);
+      acidFilter.connect(dest);
+
+      const bOsc = ctx.createOscillator();
+      const bSub = ctx.createOscillator();
+      const bg = ctx.createGain();
+      bOsc.type = 'sawtooth';
+      bSub.type = 'sine';
+      bOsc.frequency.setValueAtTime(bassHz, t0);
+      bSub.frequency.setValueAtTime(bassHz * 0.5, t0);
+      const bLen = Math.min(0.24, stepDur * 0.85);
+      bg.gain.setValueAtTime(0.0005, t0);
+      bg.gain.linearRampToValueAtTime(0.28 + tension * 0.14, t0 + 0.008);
+      bg.gain.exponentialRampToValueAtTime(0.0008, t0 + bLen);
+      bOsc.connect(bg);
+      bSub.connect(bg);
+      bg.connect(acidFilter);
+      bOsc.start(t0);
+      bSub.start(t0);
+      bOsc.stop(t0 + bLen + 0.02);
+      bSub.stop(t0 + bLen + 0.02);
+    }
+
+    // Main Tactical Heist Melody: Sonar Radar Pings + Urgent Staccato Cyber-Brass Riff
+    const radarPing: Record<number, number> = {
+      0: 1174.66, // D6 radar ping
+      6: 1396.91, // F6
+      10: 1318.51, // E6
+      14: 1108.73, // C#6
+    };
+    if (radarPing[step]) {
+      this.spawnBellTone(ctx, dest, t0, radarPing[step], stepDur * 1.6, 0.075 + tension * 0.055, 1.0);
+    }
+
+    const cyberRiff: Record<number, number> = {
+      0: 293.66, // D4
+      3: 349.23, // F4
+      6: 329.63, // E4
+      8: 293.66, // D4
+      11: 440.0, // A4
+      13: 392.0, // G4
+      15: 466.16, // Bb4
+    };
+    if (cyberRiff[step] && (tension > 0.18 || step % 4 === 0)) {
+      const synthF = ctx.createBiquadFilter();
+      synthF.type = 'bandpass';
+      synthF.frequency.setValueAtTime(900 + tension * 1800, t0);
+      synthF.Q.setValueAtTime(1.5, t0);
+      synthF.connect(dest);
+
+      const sOsc = ctx.createOscillator();
+      const sg = ctx.createGain();
+      sOsc.type = 'square';
+      sOsc.frequency.setValueAtTime(cyberRiff[step], t0);
+      const sd = Math.min(0.22, stepDur * 1.1);
+      sg.gain.setValueAtTime(0.0005, t0);
+      sg.gain.linearRampToValueAtTime(0.085 + tension * 0.085, t0 + 0.01);
+      sg.gain.exponentialRampToValueAtTime(0.0008, t0 + sd);
+      sOsc.connect(sg);
+      sg.connect(synthF);
+      sOsc.start(t0);
+      sOsc.stop(t0 + sd + 0.02);
+    }
+
+    // Electronic Kick (0, 6, 10), Sharp Industrial Snare (4, 12), & Escalating 16th Hi-Hats!
+    if (step === 0 || step === 6 || step === 10 || (tension > 0.65 && step === 14)) {
+      this.spawnTimpani(ctx, dest, t0, 128, 36, 0.34 + tension * 0.14);
+    }
+    if (step === 4 || step === 12 || (tension > 0.78 && step === 15)) {
+      this.spawnNoiseBurst(ctx, dest, t0, 0.085, 'bandpass', 1850, 650, 0.9, 0.16 + tension * 0.12, 2.2);
+    }
+    if (step % 2 === 1 || tension > 0.35) {
+      this.spawnNoiseBurst(
+        ctx,
+        dest,
+        t0,
+        0.028,
+        'highpass',
+        5200,
+        7400,
+        1.8,
+        (step % 4 === 2 ? 0.075 : 0.04) * (0.6 + tension * 0.75),
+        2.6
+      );
+    }
+  }
+
+  private spawnTimpani(
+    ctx: AudioContext,
+    dest: AudioNode,
+    t0: number,
+    startHz: number,
+    endHz: number,
+    peak: number
+  ) {
+    const timp = ctx.createOscillator();
+    const tg = ctx.createGain();
+    timp.type = 'sine';
+    timp.frequency.setValueAtTime(startHz, t0);
+    timp.frequency.exponentialRampToValueAtTime(Math.max(24, endHz), t0 + 0.16);
+    tg.gain.setValueAtTime(0.0008, t0);
+    tg.gain.linearRampToValueAtTime(peak, t0 + 0.008);
+    tg.gain.exponentialRampToValueAtTime(0.0008, t0 + 0.17);
+    timp.connect(tg);
+    tg.connect(dest);
+    timp.start(t0);
+    timp.stop(t0 + 0.18);
+  }
+
+  private spawnStringSwell(
+    ctx: AudioContext,
+    dest: AudioNode,
+    t0: number,
+    melHz: number,
+    dur: number,
+    tension: number
+  ) {
+    const melStrength = Math.min(1, Math.max(0.05, (tension - 0.08) / 0.92));
+    const strFilter = ctx.createBiquadFilter();
+    strFilter.type = 'lowpass';
+    strFilter.frequency.setValueAtTime(680 + melStrength * 1650, t0);
+    strFilter.connect(dest);
+
+    for (const detune of [-6, 6]) {
+      const sOsc = ctx.createOscillator();
+      const sg = ctx.createGain();
+      sOsc.type = 'sawtooth';
+      sOsc.frequency.setValueAtTime(melHz, t0);
+      sOsc.detune.setValueAtTime(detune, t0);
+      sg.gain.setValueAtTime(0.0005, t0);
+      sg.gain.linearRampToValueAtTime(0.055 + melStrength * 0.085, t0 + Math.min(0.18, dur * 0.35));
+      sg.gain.exponentialRampToValueAtTime(0.0008, t0 + dur);
+      sOsc.connect(sg);
+      sg.connect(strFilter);
+      sOsc.start(t0);
+      sOsc.stop(t0 + dur + 0.02);
+    }
+  }
+
+  private stopNormalMusicImmediate() {
+    this.musicStepTimer = 0.04;
+    this.musicStepIndex = 0;
+    if (!this.normalMusicNodes) return;
+    const nodes = this.normalMusicNodes;
+    this.normalMusicNodes = null;
+    try {
+      nodes.droneOscA.stop();
+      nodes.droneOscB.stop();
+      nodes.droneLfo.stop();
       nodes.master.disconnect();
     } catch {
       // Ignore already stopped audio nodes
@@ -778,6 +1445,228 @@ class SoundEngine {
 
     // Subtle comms static burst ("player down")
     this.spawnNoiseBurst(ctx, out, now + 0.11, 0.14, 'bandpass', 2200, 1400, 2.2, 0.085, 1.8);
+  }
+
+  /**
+   * Dramatic ramping orchestral cue for:
+   * - BRAWL: rapid consecutive kills under 3s (2x..6x+)
+   * - ELIMINATION (Last Standing): non-time-dependent kill progression (1=Kill, 2=Rampage, 3=Solo Ace Climax)
+   */
+  public playKillStreak(streak: number, mode: MatchMode = 'BRAWL') {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const tier =
+      mode === 'ELIMINATION'
+        ? streak >= 3
+          ? 5
+          : streak === 2
+            ? 3
+            : 1
+        : Math.max(1, Math.min(5, streak - 1)); // 1=2x, 2=3x, 3=4x, 4=5x, 5=6x+
+    const { node: out } = this.createOutputNode(ctx, { volume: Math.min(1.12, 0.84 + tier * 0.06) });
+
+    // 1. Orchestral Timpani Impact (+ dramatic double/triple pre-roll at higher streaks)
+    const hitOffsets =
+      tier >= 4 ? [0, 0.075, 0.15] : tier >= 2 ? [0, 0.08] : [0];
+    hitOffsets.forEach((offset, idx) => {
+      const t0 = now + offset;
+      const isMain = idx === hitOffsets.length - 1;
+      const timp = ctx.createOscillator();
+      const timpGain = ctx.createGain();
+      timp.type = 'sine';
+      const baseHz = 96 + tier * 4;
+      timp.frequency.setValueAtTime(isMain ? baseHz : baseHz * 0.9, t0);
+      timp.frequency.exponentialRampToValueAtTime(42, t0 + (isMain ? 0.36 : 0.14));
+      const peak = (isMain ? 0.34 : 0.16) + tier * 0.025;
+      timpGain.gain.setValueAtTime(0.001, t0);
+      timpGain.gain.linearRampToValueAtTime(peak, t0 + 0.008);
+      timpGain.gain.exponentialRampToValueAtTime(0.0008, t0 + (isMain ? 0.38 : 0.16));
+      timp.connect(timpGain);
+      timpGain.connect(out);
+      timp.start(t0);
+      timp.stop(t0 + (isMain ? 0.4 : 0.17));
+
+      // Mallet skin transient
+      this.spawnNoiseBurst(
+        ctx,
+        out,
+        t0,
+        isMain ? 0.065 : 0.035,
+        'lowpass',
+        420 + tier * 60,
+        110,
+        1.1,
+        isMain ? 0.16 : 0.08,
+        1.8
+      );
+    });
+
+    // 2. Symphonic String Ensemble Chord Swell (climbs in pitch & harmonic density with streak)
+    const chordVoicings: number[][] = [
+      [293.66, 440.0, 587.33], // 2x: D4 - A4 - D5 (tense power fourth/fifth)
+      [349.23, 523.25, 698.46, 880.0], // 3x: F4 - C5 - F5 - A5 (rising heroic swell)
+      [440.0, 659.25, 880.0, 1046.5], // 4x: A4 - E5 - A5 - C6 (urgent dramatic climb)
+      [523.25, 783.99, 1046.5, 1318.51], // 5x: C5 - G5 - C6 - E6 (triumphant climax)
+      [587.33, 880.0, 1174.66, 1479.98, 1760.0], // 6x+: D5 - A5 - D6 - F#6 - A6
+    ];
+    const chord = chordVoicings[tier - 1];
+
+    const stringFilter = ctx.createBiquadFilter();
+    stringFilter.type = 'lowpass';
+    stringFilter.Q.setValueAtTime(1.4, now);
+    stringFilter.frequency.setValueAtTime(340, now);
+    stringFilter.frequency.exponentialRampToValueAtTime(2100 + tier * 520, now + 0.34);
+    stringFilter.frequency.exponentialRampToValueAtTime(880, now + 0.85);
+    stringFilter.connect(out);
+
+    const swellDur = 0.72 + tier * 0.06;
+    const detunes = [-7, 0, 7];
+    for (const freq of chord) {
+      for (const cents of detunes) {
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(freq, now + 0.02);
+        osc.detune.setValueAtTime(cents, now + 0.02);
+
+        const voicePeak = (0.042 + tier * 0.005) / chord.length;
+        g.gain.setValueAtTime(0.0005, now + 0.02);
+        g.gain.linearRampToValueAtTime(voicePeak, now + 0.16);
+        g.gain.exponentialRampToValueAtTime(0.0005, now + swellDur);
+
+        osc.connect(g);
+        g.connect(stringFilter);
+        osc.start(now + 0.02);
+        osc.stop(now + swellDur + 0.02);
+      }
+    }
+
+    // 3. Heroic Brass / French Horn Fanfare Motif
+    const hornFilter = ctx.createBiquadFilter();
+    hornFilter.type = 'bandpass';
+    hornFilter.Q.setValueAtTime(1.1, now);
+    hornFilter.frequency.setValueAtTime(680, now + 0.04);
+    hornFilter.frequency.exponentialRampToValueAtTime(1550 + tier * 240, now + 0.35);
+    hornFilter.connect(out);
+
+    const root = chord[0] * 0.5;
+    const fifth = chord[1] * 0.5;
+    const fanfareNotes =
+      tier >= 3
+        ? [
+            { f: root, t: 0.04, d: 0.18 },
+            { f: fifth, t: 0.16, d: 0.22 },
+            { f: root * 2, t: 0.3, d: 0.48 },
+          ]
+        : [
+            { f: root, t: 0.04, d: 0.2 },
+            { f: fifth, t: 0.19, d: 0.42 },
+          ];
+
+    for (const note of fanfareNotes) {
+      const t0 = now + note.t;
+      const hornA = ctx.createOscillator();
+      const hornB = ctx.createOscillator();
+      const hg = ctx.createGain();
+      hornA.type = 'sawtooth';
+      hornB.type = 'triangle';
+      hornA.frequency.setValueAtTime(note.f, t0);
+      hornB.frequency.setValueAtTime(note.f * 1.003, t0);
+      const hornPeak = 0.095 + tier * 0.014;
+      hg.gain.setValueAtTime(0.0008, t0);
+      hg.gain.linearRampToValueAtTime(hornPeak, t0 + 0.035);
+      hg.gain.exponentialRampToValueAtTime(0.0008, t0 + note.d);
+
+      hornA.connect(hg);
+      hornB.connect(hg);
+      hg.connect(hornFilter);
+      hornA.start(t0);
+      hornB.start(t0);
+      hornA.stop(t0 + note.d + 0.02);
+      hornB.stop(t0 + note.d + 0.02);
+    }
+
+    // 4. Orchestral Suspended Cymbal Shimmer (scales sharply with streak tension)
+    this.spawnNoiseBurst(
+      ctx,
+      out,
+      now + (tier >= 3 ? 0.12 : 0.06),
+      0.42 + tier * 0.09,
+      'highpass',
+      3100,
+      5400,
+      1.1,
+      0.06 + tier * 0.026,
+      1.4
+    );
+  }
+
+  /** Funny cartoon blunder cue when a player kills themself with their own bullet */
+  public playSelfKill() {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const { node: out } = this.createOutputNode(ctx, { volume: 1.0 });
+
+    // 1. Rubbery spring "BOING!" bounce
+    const boing = ctx.createOscillator();
+    const boingG = ctx.createGain();
+    boing.type = 'sine';
+    boing.frequency.setValueAtTime(240, now);
+    boing.frequency.exponentialRampToValueAtTime(590, now + 0.075);
+    boing.frequency.exponentialRampToValueAtTime(210, now + 0.18);
+    boingG.gain.setValueAtTime(0.001, now);
+    boingG.gain.linearRampToValueAtTime(0.24, now + 0.012);
+    boingG.gain.exponentialRampToValueAtTime(0.001, now + 0.19);
+    boing.connect(boingG);
+    boingG.connect(out);
+    boing.start(now);
+    boing.stop(now + 0.2);
+
+    // 2. Comical sad-trombone "Wah-Wah-Waaah" descending steps + droop
+    const wahNotes = [
+      { f0: 311.13, f1: 293.66, t: 0.14, d: 0.17 },
+      { f0: 293.66, f1: 277.18, t: 0.32, d: 0.17 },
+      { f0: 277.18, f1: 261.63, t: 0.5, d: 0.17 },
+      { f0: 261.63, f1: 185.0, t: 0.68, d: 0.52 },
+    ];
+    for (const w of wahNotes) {
+      const t0 = now + w.t;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(980, t0);
+      filter.frequency.exponentialRampToValueAtTime(420, t0 + w.d);
+      filter.Q.setValueAtTime(1.9, t0);
+      filter.connect(out);
+
+      const osc = ctx.createOscillator();
+      const wg = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(w.f0, t0);
+      osc.frequency.exponentialRampToValueAtTime(w.f1, t0 + w.d);
+      wg.gain.setValueAtTime(0.001, t0);
+      wg.gain.linearRampToValueAtTime(0.18, t0 + 0.025);
+      wg.gain.exponentialRampToValueAtTime(0.001, t0 + w.d);
+      osc.connect(wg);
+      wg.connect(filter);
+      osc.start(t0);
+      osc.stop(t0 + w.d + 0.02);
+    }
+
+    // 3. Tiny comedic slide-whistle droop at the very start
+    const whistle = ctx.createOscillator();
+    const whistleG = ctx.createGain();
+    whistle.type = 'triangle';
+    whistle.frequency.setValueAtTime(1180, now + 0.02);
+    whistle.frequency.exponentialRampToValueAtTime(340, now + 0.24);
+    whistleG.gain.setValueAtTime(0.001, now + 0.02);
+    whistleG.gain.linearRampToValueAtTime(0.085, now + 0.04);
+    whistleG.gain.exponentialRampToValueAtTime(0.0008, now + 0.25);
+    whistle.connect(whistleG);
+    whistleG.connect(out);
+    whistle.start(now + 0.02);
+    whistle.stop(now + 0.26);
   }
 
   /** Clean modern tactical match victory chord */
