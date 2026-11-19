@@ -1,4 +1,4 @@
-const CACHE_NAME = 'trickshot-tussle-v8';
+const CACHE_NAME = 'trickshot-tussle-v9';
 const APP_SHELL = [
   '/',
   '/index.html',

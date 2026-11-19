@@ -87,37 +87,41 @@ function playEngineEvents(
       }
     }
 
-    switch (evt.type) {
-      case 'shoot':
-        sound.playShoot(spatial);
-        break;
-      case 'pickup':
-        sound.playPickup(spatial);
-        break;
-      case 'heal':
-        sound.playHeal(spatial);
-        break;
-      case 'bounce':
-        sound.playBounce(spatial, evt.value === 2 ? 'metal' : 'solid');
-        break;
-      case 'hit':
-        sound.playHit(spatial, evt.value === 1 ? 'wood' : evt.value === 2 ? 'crate' : 'body');
-        break;
-      case 'explosion':
-        sound.playExplosion(evt.value === 2 ? 'tnt' : 'nitro', spatial);
-        break;
-      case 'tnt_tick':
-        sound.playTntTick(evt.value ?? 3, spatial);
-        break;
-      case 'splash':
-        sound.playSplash(spatial);
-        break;
-      case 'knockout':
-        sound.playKnockout(spatial);
-        break;
-      case 'victory':
-        sound.playVictory();
-        break;
+    try {
+      switch (evt.type) {
+        case 'shoot':
+          sound.playShoot(spatial);
+          break;
+        case 'pickup':
+          sound.playPickup(spatial);
+          break;
+        case 'heal':
+          sound.playHeal(spatial);
+          break;
+        case 'bounce':
+          sound.playBounce(spatial, evt.value === 2 ? 'metal' : 'solid');
+          break;
+        case 'hit':
+          sound.playHit(spatial, evt.value === 1 ? 'wood' : evt.value === 2 ? 'crate' : 'body');
+          break;
+        case 'explosion':
+          sound.playExplosion(evt.value === 2 ? 'tnt' : 'nitro', spatial);
+          break;
+        case 'tnt_tick':
+          sound.playTntTick(evt.value ?? 3, spatial);
+          break;
+        case 'splash':
+          sound.playSplash(spatial);
+          break;
+        case 'knockout':
+          sound.playKnockout(spatial);
+          break;
+        case 'victory':
+          sound.playVictory();
+          break;
+      }
+    } catch {
+      // Never allow audio API errors to stall the simulation/render loop
     }
   }
 }

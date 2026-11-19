@@ -135,46 +135,40 @@ class SoundEngine {
     peakGain: number,
     decayPow = 1.6
   ) {
+    const safeStart = Math.max(ctx.currentTime, startTime);
+    const safeDur = Math.max(0.012, duration);
+
     const src = ctx.createBufferSource();
     src.buffer = this.getWhiteNoiseBuffer(ctx);
     src.loop = true;
 
     const filter = ctx.createBiquadFilter();
     filter.type = filterType;
-    filter.frequency.setValueAtTime(Math.max(30, startFreq), startTime);
+    filter.frequency.setValueAtTime(Math.max(30, startFreq), safeStart);
     if (endFreq !== startFreq) {
-      filter.frequency.exponentialRampToValueAtTime(Math.max(30, endFreq), startTime + duration);
+      filter.frequency.exponentialRampToValueAtTime(Math.max(30, endFreq), safeStart + safeDur);
     }
-    filter.Q.setValueAtTime(q, startTime);
+    filter.Q.setValueAtTime(q, safeStart);
 
     const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.0001, startTime);
-    gain.gain.linearRampToValueAtTime(peakGain, startTime + Math.min(0.004, duration * 0.15));
-    gain.gain.exponentialRampToValueAtTime(0.0005, startTime + duration);
-    if (decayPow !== 1.6) {
-      // Gentle secondary shape via mid-point
-      gain.gain.setValueCurveAtTime(
-        (() => {
-          const steps = 16;
-          const arr = new Float32Array(steps);
-          for (let i = 0; i < steps; i++) {
-            const t = i / (steps - 1);
-            arr[i] = Math.max(0.0005, peakGain * Math.pow(1 - t, decayPow));
-          }
-          return arr;
-        })(),
-        startTime,
-        duration
-      );
-    }
+    const safePeak = Math.max(0.0005, peakGain);
+    const attackEnd = safeStart + Math.min(0.004, safeDur * 0.15);
+    const decaySpan = Math.max(0.004, safeStart + safeDur - attackEnd);
+    const midTime = attackEnd + decaySpan * 0.35;
+    const midGain = Math.max(0.0005, safePeak * Math.pow(0.55, decayPow));
+
+    gain.gain.setValueAtTime(0.0001, safeStart);
+    gain.gain.linearRampToValueAtTime(safePeak, attackEnd);
+    gain.gain.exponentialRampToValueAtTime(midGain, midTime);
+    gain.gain.exponentialRampToValueAtTime(0.0005, attackEnd + decaySpan);
 
     src.connect(filter);
     filter.connect(gain);
     gain.connect(dest);
 
-    const offset = Math.random() * 1.2;
-    src.start(startTime, offset, duration + 0.02);
-    src.stop(startTime + duration + 0.02);
+    const offset = Math.random() * 0.7;
+    src.start(safeStart, offset);
+    src.stop(safeStart + safeDur + 0.02);
   }
 
   public unlock() {
