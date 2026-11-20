@@ -92,12 +92,32 @@ function buildLibraryMap(): ArenaMap {
   ];
 
   // Staircase side borders (balustrades blocking entry from the sides on BOTH floors)
+  // Plus a Ground-floor (floor: 0) rear wall closing the back end of the staircase so you can only climb up from the open ground mouth
   const railT = 18;
   for (const st of stairs) {
     walls.push({ x: st.x - railT, y: st.y, w: railT, h: st.h, kind: 'stair_rail', floor: 0 });
     walls.push({ x: st.x + st.w, y: st.y, w: railT, h: st.h, kind: 'stair_rail', floor: 0 });
     walls.push({ x: st.x - railT, y: st.y, w: railT, h: st.h, kind: 'stair_rail', floor: 1 });
     walls.push({ x: st.x + st.w, y: st.y, w: railT, h: st.h, kind: 'stair_rail', floor: 1 });
+    if (st.upDir === 'up') {
+      walls.push({
+        x: st.x - railT,
+        y: st.y - railT,
+        w: st.w + railT * 2,
+        h: railT,
+        kind: 'stair_rail',
+        floor: 0,
+      });
+    } else if (st.upDir === 'down') {
+      walls.push({
+        x: st.x - railT,
+        y: st.y + st.h,
+        w: st.w + railT * 2,
+        h: railT,
+        kind: 'stair_rail',
+        floor: 0,
+      });
+    }
   }
 
   // Upper Mezzanine inner guardrails (floor: 1) sealing the balcony except at the 4 stair tops
@@ -406,3 +426,14 @@ export const IMMERSIVE_MAP_LIST: ArenaMap[] = [
   ARENA_MAPS.immersive_outdoors,
   ARENA_MAPS.library,
 ];
+
+export const MAP_PREVIEW_URLS: Record<MapId, string> = {
+  crossroads: '/assets/maps/crossroads.png',
+  pillars: '/assets/maps/pillars.png',
+  bunkers: '/assets/maps/bunkers.png',
+  winter_tussle: '/assets/maps/winter_tussle.png',
+  immersive_mansion: '/assets/maps/immersive_mansion.jpg',
+  immersive_outdoors: '/assets/maps/immersive_outdoors.jpg',
+  library: '/assets/maps/library.jpg',
+};
+

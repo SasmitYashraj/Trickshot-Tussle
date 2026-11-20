@@ -16,6 +16,7 @@ import type {
   MapId,
   Particle,
   Pickup,
+  PlayerSkinFinish,
   TeamMode,
   WallRect,
 } from './types';
@@ -37,6 +38,7 @@ export interface RenderPlayer {
   team?: number;
   color: string;
   accentColor: string;
+  finish?: PlayerSkinFinish;
   x: number;
   y: number;
   vx?: number;
@@ -82,6 +84,7 @@ export interface CursorOverlayState {
   controlScheme?: ControlScheme;
   cursorScreen?: { x: number; y: number } | null;
   hideJoystick?: boolean;
+  spectateTargetId?: number | null;
 }
 
 export function getArenaViewTransform(
@@ -1034,45 +1037,93 @@ function drawObstacle(ctx: CanvasRenderingContext2D, wall: WallRect, world?: Ren
     const shelfSeed = Math.round(wall.x * 13 + wall.y * 29);
 
     if (vertical) {
+      const spineW = 4;
+      const spineX = wall.x + (wall.w - spineW) * 0.5;
+      const sideSpace = Math.max(4, (wall.w - spineW) * 0.5 - 3);
+
+      // Left face & Right face book rows facing cleanly outward on each side of the divider
       for (let by = wall.y + 6, idx = 0; by < wall.y + wall.h - 10; by += 8, idx++) {
-        const rnd = seededRand(shelfSeed + idx * 17);
-        const thickness = 5 + Math.floor(rnd * 2.5);
-        const depth = Math.max(8, wall.w - 10 - Math.floor(seededRand(shelfSeed + idx * 31) * 5));
-        // Occasional unpickable dark tome nudged slightly out of the shelf edge
-        const protrude = rnd > 0.87 ? (idx % 2 === 0 ? -3 : 3) : 0;
-        const bx = wall.x + (wall.w - depth) * 0.5 + protrude;
+        const rndL = seededRand(shelfSeed + idx * 17);
+        const rndR = seededRand(shelfSeed + idx * 23 + 7);
+        const thickL = 5 + Math.floor(rndL * 2.5);
+        const thickR = 5 + Math.floor(rndR * 2.5);
+        const depthL = Math.max(4, sideSpace - Math.floor(rndL * 3));
+        const depthR = Math.max(4, sideSpace - Math.floor(rndR * 3));
+        const protL = rndL > 0.88 ? -2 : 0;
+        const protR = rndR > 0.88 ? 2 : 0;
 
-        ctx.fillStyle = darkBooks[(idx + Math.floor(rnd * 5)) % darkBooks.length];
-        ctx.fillRect(bx, by, depth, thickness);
-
-        // Faint tarnished spine band
+        // Left-facing row (spines flush to spineX on right, jutting left)
+        const lx = spineX - depthL + protL;
+        ctx.fillStyle = darkBooks[(idx + Math.floor(rndL * 5)) % darkBooks.length];
+        ctx.fillRect(lx, by, depthL, thickL);
         if (idx % 4 === 0) {
-          ctx.fillStyle = 'rgba(217, 179, 108, 0.14)';
-          ctx.fillRect(bx + 2, by + 1, 2, thickness - 2);
+          ctx.fillStyle = 'rgba(217, 179, 108, 0.16)';
+          ctx.fillRect(lx + 1, by + 1, 2, thickL - 2);
+        }
+
+        // Right-facing row (spines flush to spineX + spineW on left, jutting right)
+        const rx = spineX + spineW + protR;
+        ctx.fillStyle = darkBooks[(idx + 3 + Math.floor(rndR * 5)) % darkBooks.length];
+        ctx.fillRect(rx, by, depthR, thickR);
+        if ((idx + 2) % 4 === 0) {
+          ctx.fillStyle = 'rgba(217, 179, 108, 0.16)';
+          ctx.fillRect(rx + depthR - 3, by + 1, 2, thickR - 2);
         }
       }
-      // Carved horizontal shelf dividers
+
+      // Central solid dark mahogany partition wall (~4px) separating both faces
+      ctx.fillStyle = '#2B1207';
+      ctx.fillRect(spineX, wall.y + 2, spineW, wall.h - 4);
+      ctx.fillStyle = 'rgba(217, 119, 6, 0.18)';
+      ctx.fillRect(spineX + 1, wall.y + 2, 1, wall.h - 4);
+
+      // Carved horizontal bay dividers
       ctx.fillStyle = '#2B1207';
       for (let dy = wall.y + 88; dy < wall.y + wall.h - 28; dy += 90) {
         ctx.fillRect(wall.x + 2, dy, wall.w - 4, 4);
       }
     } else {
+      const spineH = 4;
+      const spineY = wall.y + (wall.h - spineH) * 0.5;
+      const sideSpace = Math.max(4, (wall.h - spineH) * 0.5 - 3);
+
+      // North face & South face book rows facing cleanly outward on each side of the divider
       for (let bx = wall.x + 6, idx = 0; bx < wall.x + wall.w - 10; bx += 8, idx++) {
-        const rnd = seededRand(shelfSeed + idx * 19);
-        const thickness = 5 + Math.floor(rnd * 2.5);
-        const depth = Math.max(8, wall.h - 10 - Math.floor(seededRand(shelfSeed + idx * 37) * 5));
-        const protrude = rnd > 0.87 ? (idx % 2 === 0 ? -3 : 3) : 0;
-        const by = wall.y + (wall.h - depth) * 0.5 + protrude;
+        const rndN = seededRand(shelfSeed + idx * 19);
+        const rndS = seededRand(shelfSeed + idx * 29 + 11);
+        const thickN = 5 + Math.floor(rndN * 2.5);
+        const thickS = 5 + Math.floor(rndS * 2.5);
+        const depthN = Math.max(4, sideSpace - Math.floor(rndN * 3));
+        const depthS = Math.max(4, sideSpace - Math.floor(rndS * 3));
+        const protN = rndN > 0.88 ? -2 : 0;
+        const protS = rndS > 0.88 ? 2 : 0;
 
-        ctx.fillStyle = darkBooks[(idx + Math.floor(rnd * 5)) % darkBooks.length];
-        ctx.fillRect(bx, by, thickness, depth);
-
+        // North-facing row
+        const ny = spineY - depthN + protN;
+        ctx.fillStyle = darkBooks[(idx + Math.floor(rndN * 5)) % darkBooks.length];
+        ctx.fillRect(bx, ny, thickN, depthN);
         if (idx % 4 === 0) {
-          ctx.fillStyle = 'rgba(217, 179, 108, 0.14)';
-          ctx.fillRect(bx + 1, by + 2, thickness - 2, 2);
+          ctx.fillStyle = 'rgba(217, 179, 108, 0.16)';
+          ctx.fillRect(bx + 1, ny + 1, thickN - 2, 2);
+        }
+
+        // South-facing row
+        const sy = spineY + spineH + protS;
+        ctx.fillStyle = darkBooks[(idx + 3 + Math.floor(rndS * 5)) % darkBooks.length];
+        ctx.fillRect(bx, sy, thickS, depthS);
+        if ((idx + 2) % 4 === 0) {
+          ctx.fillStyle = 'rgba(217, 179, 108, 0.16)';
+          ctx.fillRect(bx + 1, sy + depthS - 3, thickS - 2, 2);
         }
       }
-      // Carved vertical shelf dividers
+
+      // Central solid dark mahogany partition wall (~4px) separating North & South faces
+      ctx.fillStyle = '#2B1207';
+      ctx.fillRect(wall.x + 2, spineY, wall.w - 4, spineH);
+      ctx.fillStyle = 'rgba(217, 119, 6, 0.18)';
+      ctx.fillRect(wall.x + 2, spineY + 1, wall.w - 4, 1);
+
+      // Carved vertical bay dividers
       ctx.fillStyle = '#2B1207';
       for (let dx = wall.x + 88; dx < wall.x + wall.w - 28; dx += 90) {
         ctx.fillRect(dx, wall.y + 2, 4, wall.h - 4);
@@ -1618,6 +1669,52 @@ function drawLibraryPillar(ctx: CanvasRenderingContext2D, wall: WallRect, world?
       ctx.beginPath();
       ctx.arc(cx + 16, dy + 7, 3.2, 0, Math.PI * 2);
       ctx.fill();
+    }
+
+    if (unlocked) {
+      // Golden Escape Crown + Finisher Rank beside the unlocked gate
+      const crownX =
+        door.side === 'W' ? wall.x - 24 : door.side === 'E' ? wall.x + wall.w + 24 : cx;
+      const crownY =
+        door.side === 'N' ? wall.y - 24 : door.side === 'S' ? wall.y + wall.h + 24 : cy;
+
+      ctx.save();
+      ctx.translate(crownX, crownY);
+      const glowR = ctx.createRadialGradient(0, 0, 2, 0, 0, 22);
+      glowR.addColorStop(0, 'rgba(250, 204, 21, 0.65)');
+      glowR.addColorStop(1, 'rgba(250, 204, 21, 0)');
+      ctx.fillStyle = glowR;
+      ctx.beginPath();
+      ctx.arc(0, 0, 22, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = '#FACC15';
+      ctx.strokeStyle = '#451A03';
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.moveTo(-10, 6);
+      ctx.lineTo(-12, -5);
+      ctx.lineTo(-5, 0);
+      ctx.lineTo(0, -9);
+      ctx.lineTo(5, 0);
+      ctx.lineTo(12, -5);
+      ctx.lineTo(10, 6);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      const rank = prog?.escapedRank ?? (libState?.escapedOrder?.indexOf(door.playerId) ?? -1) + 1;
+      if (rank > 0) {
+        ctx.fillStyle = '#FEF9C3';
+        ctx.strokeStyle = '#140804';
+        ctx.lineWidth = 2.6;
+        ctx.font = '900 10px "JetBrains Mono", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.strokeText(`#${rank}`, 0, 14);
+        ctx.fillText(`#${rank}`, 0, 14);
+      }
+      ctx.restore();
     }
     ctx.restore();
   }
@@ -2373,9 +2470,14 @@ export function renderArena(
   const isExtraDark = isImmersive && Boolean(world.extraDark);
   const isLibrary = map.id === 'library' && Boolean(world.libraryState);
   const localPlayer = world.players.find((p) => p.id === localPlayerId) ?? world.players[0];
-  const localFloor: FloorLevel = isLibrary ? (localPlayer?.floor ?? 0) : 0;
+  const spectatePlayer =
+    isLibrary && cursorOverlay?.spectateTargetId != null && !localPlayer?.alive
+      ? world.players.find((p) => p.id === cursorOverlay.spectateTargetId && p.alive)
+      : undefined;
+  const cameraPlayer = spectatePlayer ?? localPlayer;
+  const localFloor: FloorLevel = isLibrary ? (cameraPlayer?.floor ?? 0) : 0;
   const libraryBlend = isLibrary
-    ? Math.max(0, Math.min(1, localPlayer?.stairBlend ?? (localFloor === 1 ? 1 : 0)))
+    ? Math.max(0, Math.min(1, cameraPlayer?.stairBlend ?? (localFloor === 1 ? 1 : 0)))
     : 0;
 
   const isWallOnFloor = (wall: WallRect, target: FloorLevel): boolean => {
@@ -2406,7 +2508,7 @@ export function renderArena(
     isImmersive,
     canvasWidth,
     canvasHeight,
-    localPlayer,
+    cameraPlayer,
     camera,
     true
   );
@@ -2553,19 +2655,125 @@ export function renderArena(
     }
 
     const bodyR = 30.5;
-    const bodyGrad = ctx.createRadialGradient(-9, -10, 4, 0, 0, bodyR);
-    bodyGrad.addColorStop(0, '#FFFFFF');
-    bodyGrad.addColorStop(0.24, accentColor);
-    bodyGrad.addColorStop(0.7, skinColor);
-    bodyGrad.addColorStop(1, '#0F172A');
+    const finish: PlayerSkinFinish = player.finish ?? 'solid';
 
-    ctx.fillStyle = bodyGrad;
+    if (finish === 'metal') {
+      const shimmerAngle = Math.sin(world.elapsedTime * 1.6 + player.id) * 10;
+      const metalGrad = ctx.createLinearGradient(-bodyR, -bodyR + shimmerAngle, bodyR, bodyR - shimmerAngle);
+      metalGrad.addColorStop(0, '#F8FAFC');
+      metalGrad.addColorStop(0.28, accentColor);
+      metalGrad.addColorStop(0.52, '#475569');
+      metalGrad.addColorStop(0.76, '#E2E8F0');
+      metalGrad.addColorStop(1, '#1E293B');
+      ctx.fillStyle = metalGrad;
+    } else if (finish === 'animated_sparkle') {
+      const pulse = 0.5 + 0.5 * Math.sin(world.elapsedTime * 4.2);
+      const sparkGrad = ctx.createRadialGradient(-8, -9, 3, 0, 0, bodyR);
+      sparkGrad.addColorStop(0, '#FFFFFF');
+      sparkGrad.addColorStop(0.22, pulse > 0.5 ? '#FEF9C3' : accentColor);
+      sparkGrad.addColorStop(0.68, skinColor);
+      sparkGrad.addColorStop(1, '#451A03');
+      ctx.fillStyle = sparkGrad;
+    } else {
+      const bodyGrad = ctx.createRadialGradient(-9, -10, 4, 0, 0, bodyR);
+      bodyGrad.addColorStop(0, '#FFFFFF');
+      bodyGrad.addColorStop(0.24, accentColor);
+      bodyGrad.addColorStop(0.7, skinColor);
+      bodyGrad.addColorStop(1, '#0F172A');
+      ctx.fillStyle = bodyGrad;
+    }
+
     ctx.strokeStyle = '#090D16';
     ctx.lineWidth = 3.4;
     ctx.beginPath();
     ctx.arc(0, 0, bodyR, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
+
+    // Textured & animated surface finish overlay clipped to player sphere
+    if (finish !== 'solid') {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(0, 0, bodyR - 1.5, 0, Math.PI * 2);
+      ctx.clip();
+
+      if (finish === 'fish_scale') {
+        const scR = 8.5;
+        ctx.lineWidth = 1.6;
+        for (let row = -3; row <= 3; row++) {
+          const sx = row * 9;
+          const yOff = (Math.abs(row) % 2) * 7;
+          for (let col = -3; col <= 3; col++) {
+            const sy = col * 14 + yOff;
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.34)';
+            ctx.beginPath();
+            ctx.arc(sx, sy, scR, -Math.PI * 0.45, Math.PI * 0.45);
+            ctx.stroke();
+            ctx.strokeStyle = 'rgba(15, 23, 42, 0.38)';
+            ctx.beginPath();
+            ctx.arc(sx + 1.4, sy, scR, -Math.PI * 0.42, Math.PI * 0.42);
+            ctx.stroke();
+          }
+        }
+      } else if (finish === 'wood') {
+        ctx.fillStyle = 'rgba(120, 53, 15, 0.24)';
+        ctx.fillRect(-bodyR, -bodyR, bodyR * 2, bodyR * 2);
+        ctx.strokeStyle = 'rgba(28, 10, 2, 0.56)';
+        ctx.lineWidth = 1.6;
+        for (let gy = -24; gy <= 24; gy += 8) {
+          ctx.beginPath();
+          ctx.moveTo(-bodyR, gy);
+          ctx.bezierCurveTo(-10, gy + ((gy % 16 === 0) ? 4 : -4), 10, gy - ((gy % 16 === 0) ? 3 : -3), bodyR, gy + 1);
+          ctx.stroke();
+        }
+        ctx.strokeStyle = 'rgba(253, 224, 71, 0.18)';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.ellipse(-6, -4, 7, 4, 0.2, 0, Math.PI * 2);
+        ctx.stroke();
+      } else if (finish === 'metal') {
+        const sweep = Math.sin(world.elapsedTime * 1.9 + player.id * 1.3) * 14;
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.42)';
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.moveTo(-bodyR + sweep, -bodyR);
+        ctx.lineTo(sweep, bodyR);
+        ctx.stroke();
+
+        ctx.strokeStyle = 'rgba(15, 23, 42, 0.22)';
+        ctx.lineWidth = 1.1;
+        for (let ly = -24; ly <= 24; ly += 6) {
+          ctx.beginPath();
+          ctx.moveTo(-bodyR, ly);
+          ctx.lineTo(bodyR, ly);
+          ctx.stroke();
+        }
+      } else if (finish === 'animated_sparkle') {
+        for (let s = 0; s < 5; s++) {
+          const phase = world.elapsedTime * 2.8 + s * 1.25;
+          const tw = 0.5 + 0.5 * Math.sin(phase * 2.1);
+          const dist = 10 + (s % 3) * 7.5;
+          const ang = phase * 0.55 + s * 1.3;
+          const sx = Math.cos(ang) * dist;
+          const sy = Math.sin(ang) * dist;
+          const sz = 2.4 + tw * 3.4;
+
+          ctx.fillStyle = `rgba(255, 253, 225, ${0.42 + tw * 0.56})`;
+          ctx.beginPath();
+          ctx.moveTo(sx, sy - sz);
+          ctx.lineTo(sx + sz * 0.28, sy - sz * 0.28);
+          ctx.lineTo(sx + sz, sy);
+          ctx.lineTo(sx + sz * 0.28, sy + sz * 0.28);
+          ctx.lineTo(sx, sy + sz);
+          ctx.lineTo(sx - sz * 0.28, sy + sz * 0.28);
+          ctx.lineTo(sx - sz, sy);
+          ctx.lineTo(sx - sz * 0.28, sy - sz * 0.28);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+      ctx.restore();
+    }
 
     ctx.save();
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
@@ -2960,8 +3168,9 @@ export function renderArena(
     });
   };
 
+  const activeViewId = cameraPlayer?.id ?? localPlayerId;
   const localProg = isLibrary
-    ? world.libraryState?.playerProgress.find((pp) => pp.playerId === localPlayerId)
+    ? world.libraryState?.playerProgress.find((pp) => pp.playerId === activeViewId)
     : undefined;
 
   if (isLibrary && world.libraryState) {
@@ -2991,7 +3200,19 @@ export function renderArena(
           drawSinglePlayer(player);
         }
       }
-      if (monster.floor === 0 && !monsterOnStair) {
+      if (monster.transitioning) {
+        if (monster.fromFloor === 0) {
+          ctx.save();
+          ctx.globalAlpha *= 1 - Math.max(0, Math.min(1, monster.transitionProgress ?? 0));
+          drawLibraryMonster(ctx, monster, world.elapsedTime);
+          ctx.restore();
+        } else if (monster.toFloor === 0) {
+          ctx.save();
+          ctx.globalAlpha *= Math.max(0, Math.min(1, monster.transitionProgress ?? 0));
+          drawLibraryMonster(ctx, monster, world.elapsedTime);
+          ctx.restore();
+        }
+      } else if (monster.floor === 0 && !monsterOnStair) {
         drawLibraryMonster(ctx, monster, world.elapsedTime);
       }
     }
@@ -3009,7 +3230,11 @@ export function renderArena(
         drawSinglePlayer(player);
       }
     }
-    if (monsterOnStair && ((monster.floor === localFloor) || (libraryBlend > 0.05 && libraryBlend < 0.95))) {
+    if (
+      monsterOnStair &&
+      !monster.transitioning &&
+      (monster.floor === localFloor || (libraryBlend > 0.05 && libraryBlend < 0.95))
+    ) {
       drawLibraryMonster(ctx, monster, world.elapsedTime);
     }
 
@@ -3039,7 +3264,19 @@ export function renderArena(
           drawSinglePlayer(player);
         }
       }
-      if (monster.floor === 1 && !monsterOnStair) {
+      if (monster.transitioning) {
+        if (monster.fromFloor === 1) {
+          ctx.save();
+          ctx.globalAlpha *= 1 - Math.max(0, Math.min(1, monster.transitionProgress ?? 0));
+          drawLibraryMonster(ctx, monster, world.elapsedTime);
+          ctx.restore();
+        } else if (monster.toFloor === 1) {
+          ctx.save();
+          ctx.globalAlpha *= Math.max(0, Math.min(1, monster.transitionProgress ?? 0));
+          drawLibraryMonster(ctx, monster, world.elapsedTime);
+          ctx.restore();
+        }
+      } else if (monster.floor === 1 && !monsterOnStair) {
         drawLibraryMonster(ctx, monster, world.elapsedTime);
       }
       ctx.restore();
@@ -3087,7 +3324,7 @@ export function renderArena(
     for (const p of world.players) {
       if (!p.alive) continue;
       if (isLibrary && (p.floor ?? 0) !== localFloor && !isPlayerMidStair(p)) continue;
-      const isLocal = p.id === localPlayerId;
+      const isLocal = p.id === activeViewId;
       const range = isLocal ? 490 : 360;
       const baseFov = isLocal ? 1.32 : 1.08;
       const outerPoly = computeFlashlightPolygon(p.x, p.y, p.angle, baseFov * 1.45, range, shadowWalls);
@@ -3191,20 +3428,78 @@ export function renderArena(
       }
     }
 
+    ctx.restore();
+  }
+
+  // 8b. Universal Split-Second Explosion Blast Light Interaction (ALL Modes & ALL Maps)
+  if (world.explosions.length > 0) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
     for (const ex of world.explosions) {
       if (isLibrary && (ex.floor ?? 0) !== localFloor) continue;
-      const t = ex.age / ex.duration;
-      const r = ex.radius * 1.25;
-      const g = ctx.createRadialGradient(ex.x, ex.y, 6, ex.x, ex.y, r);
-      g.addColorStop(0, `rgba(254, 240, 138, ${0.55 * (1 - t)})`);
-      g.addColorStop(0.5, hexWithAlpha(ex.color, 0.32 * (1 - t)));
-      g.addColorStop(1, 'rgba(0,0,0,0)');
+      const t = Math.min(1, ex.age / Math.max(0.01, ex.duration));
+      // Rapid blinding peak in first 25%, warm realistic amber afterglow taper
+      const flash = t < 0.18 ? t / 0.18 : Math.pow(1 - (t - 0.18) / 0.82, 1.35);
+      const lightR = ex.radius * 1.85;
+
+      // Ambient blast floor & air bounce illumination
+      const g = ctx.createRadialGradient(ex.x, ex.y, 4, ex.x, ex.y, lightR);
+      g.addColorStop(0, `rgba(255, 251, 214, ${0.86 * flash})`);
+      g.addColorStop(0.28, `rgba(254, 240, 138, ${0.62 * flash})`);
+      g.addColorStop(0.62, `rgba(250, 204, 21, ${0.28 * flash})`);
+      g.addColorStop(1, 'rgba(249, 115, 22, 0)');
       ctx.fillStyle = g;
       ctx.beginPath();
-      ctx.arc(ex.x, ex.y, r, 0, Math.PI * 2);
+      ctx.arc(ex.x, ex.y, lightR, 0, Math.PI * 2);
       ctx.fill();
-    }
 
+      // Split-second blast light bouncing off nearby walls & obstacles
+      for (const wall of map.walls) {
+        if (!isWallOnFloor(wall, localFloor)) continue;
+        const cx = Math.max(wall.x, Math.min(ex.x, wall.x + wall.w));
+        const cy = Math.max(wall.y, Math.min(ex.y, wall.y + wall.h));
+        const dist = Math.hypot(ex.x - cx, ex.y - cy);
+        if (dist < lightR) {
+          const bounce = (1 - dist / lightR) * flash * 0.48;
+          const rim = ctx.createRadialGradient(cx, cy, 4, cx, cy, 115);
+          rim.addColorStop(0, `rgba(254, 240, 138, ${bounce})`);
+          rim.addColorStop(0.55, `rgba(250, 204, 21, ${bounce * 0.45})`);
+          rim.addColorStop(1, 'rgba(250, 204, 21, 0)');
+          ctx.fillStyle = rim;
+          ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
+        }
+      }
+
+      // Light bouncing off nearby cover crates
+      for (const box of world.boxes) {
+        if (isLibrary && (box.floor ?? 0) !== localFloor) continue;
+        const dist = Math.hypot(box.x - ex.x, box.y - ex.y);
+        if (dist < lightR) {
+          const bounce = (1 - dist / lightR) * flash * 0.46;
+          ctx.fillStyle = `rgba(254, 240, 138, ${bounce})`;
+          ctx.beginPath();
+          ctx.roundRect(box.x - box.w * 0.5, box.y - box.h * 0.5, box.w, box.h, 5);
+          ctx.fill();
+        }
+      }
+
+      // Warm golden light hitting nearby players
+      for (const pl of world.players) {
+        if (!pl.alive) continue;
+        if (isLibrary && (pl.floor ?? 0) !== localFloor) continue;
+        const dist = Math.hypot(pl.x - ex.x, pl.y - ex.y);
+        if (dist < lightR) {
+          const bounce = (1 - dist / lightR) * flash * 0.58;
+          const pg = ctx.createRadialGradient(pl.x, pl.y, 4, pl.x, pl.y, PLAYER_RADIUS * 1.15);
+          pg.addColorStop(0, `rgba(254, 249, 195, ${bounce})`);
+          pg.addColorStop(1, 'rgba(250, 204, 21, 0)');
+          ctx.fillStyle = pg;
+          ctx.beginPath();
+          ctx.arc(pl.x, pl.y, PLAYER_RADIUS * 1.15, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
     ctx.restore();
   }
 
@@ -3229,14 +3524,14 @@ export function renderArena(
       lctx.scale(scale, scale);
       lctx.globalCompositeOperation = 'destination-out';
 
-      if (localPlayer && localPlayer.alive) {
+      if (cameraPlayer && cameraPlayer.alive) {
         const auraR = 215;
         const aura = lctx.createRadialGradient(
-          localPlayer.x,
-          localPlayer.y,
+          cameraPlayer.x,
+          cameraPlayer.y,
           24,
-          localPlayer.x,
-          localPlayer.y,
+          cameraPlayer.x,
+          cameraPlayer.y,
           auraR
         );
         aura.addColorStop(0, 'rgba(0, 0, 0, 0.98)');
@@ -3245,7 +3540,7 @@ export function renderArena(
         aura.addColorStop(1, 'rgba(0, 0, 0, 0)');
         lctx.fillStyle = aura;
         lctx.beginPath();
-        lctx.arc(localPlayer.x, localPlayer.y, auraR, 0, Math.PI * 2);
+        lctx.arc(cameraPlayer.x, cameraPlayer.y, auraR, 0, Math.PI * 2);
         lctx.fill();
       }
 
@@ -3325,7 +3620,7 @@ export function renderArena(
       for (const ex of world.explosions) {
         if (isLibrary && (ex.floor ?? 0) !== localFloor) continue;
         const t = ex.age / ex.duration;
-        const r = ex.radius * 1.35;
+        const r = ex.radius * 1.65;
         const eg = lctx.createRadialGradient(ex.x, ex.y, 8, ex.x, ex.y, r);
         eg.addColorStop(0, `rgba(0, 0, 0, ${0.95 * (1 - t)})`);
         eg.addColorStop(1, 'rgba(0, 0, 0, 0)');
@@ -3348,7 +3643,7 @@ export function renderArena(
     ctx.scale(scale, scale);
 
     for (const player of world.players) {
-      if (!player.alive || player.id === localPlayerId) continue;
+      if (!player.alive || player.id === activeViewId) continue;
       if (isLibrary && (player.floor ?? 0) !== localFloor && !isPlayerMidStair(player)) continue;
       ctx.save();
       ctx.translate(player.x, player.y);
@@ -3457,35 +3752,57 @@ export function renderArena(
     ctx.restore();
   }
 
-  // 11. Explosions, Particles & Floating Texts
+  // 11. Realistic Incandescent Yellowish Explosions, Billowing Smoke & Floating Texts
   for (const ex of world.explosions) {
     if (isLibrary && (ex.floor ?? 0) !== localFloor) continue;
-    const t = ex.age / ex.duration;
-    const r = ex.radius * (0.35 + 0.65 * Math.pow(t, 0.45));
+    const t = Math.min(1, ex.age / Math.max(0.01, ex.duration));
+    const r = ex.radius * (0.3 + 0.72 * Math.pow(t, 0.42));
+    const fade = 1 - Math.pow(t, 1.15);
+
     ctx.save();
-    ctx.globalAlpha = 1 - t;
-    ctx.fillStyle = hexWithAlpha(ex.color, 0.34);
+    // Outer incandescent yellowish-amber fireball body
+    const fire = ctx.createRadialGradient(ex.x, ex.y, r * 0.06, ex.x, ex.y, r);
+    fire.addColorStop(0, `rgba(255, 255, 240, ${0.95 * fade})`);
+    fire.addColorStop(0.28, `rgba(254, 240, 138, ${0.88 * fade})`);
+    fire.addColorStop(0.6, `rgba(250, 204, 21, ${0.56 * fade})`);
+    fire.addColorStop(0.88, `rgba(234, 88, 12, ${0.26 * fade})`);
+    fire.addColorStop(1, 'rgba(234, 88, 12, 0)');
+    ctx.fillStyle = fire;
     ctx.beginPath();
     ctx.arc(ex.x, ex.y, r, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.strokeStyle = ex.color;
-    ctx.lineWidth = 5 * (1 - t);
+    // Expanding yellow-white shockwave rim
+    ctx.strokeStyle = `rgba(254, 240, 138, ${0.85 * (1 - t)})`;
+    ctx.lineWidth = Math.max(1.5, 6 * (1 - t));
     ctx.beginPath();
-    ctx.arc(ex.x, ex.y, r, 0, Math.PI * 2);
+    ctx.arc(ex.x, ex.y, r * 0.96, 0, Math.PI * 2);
     ctx.stroke();
     ctx.restore();
   }
 
   for (const pt of world.particles) {
     if (isLibrary && (pt.floor ?? 0) !== localFloor) continue;
-    const t = pt.age / pt.duration;
+    const t = Math.min(1, pt.age / Math.max(0.01, pt.duration));
     ctx.save();
-    ctx.globalAlpha = Math.max(0, 1 - t);
-    ctx.fillStyle = pt.color;
-    ctx.beginPath();
-    ctx.arc(pt.x, pt.y, pt.radius * (1 - t * 0.5), 0, Math.PI * 2);
-    ctx.fill();
+    if (pt.isSmoke) {
+      const smokeAlpha = Math.max(0, (1 - Math.pow(t, 1.35)) * 0.52);
+      const sr = pt.radius * (0.85 + t * 1.15);
+      const sg = ctx.createRadialGradient(pt.x, pt.y, sr * 0.12, pt.x, pt.y, sr);
+      sg.addColorStop(0, `rgba(55, 65, 81, ${smokeAlpha})`);
+      sg.addColorStop(0.55, `rgba(30, 41, 59, ${smokeAlpha * 0.65})`);
+      sg.addColorStop(1, 'rgba(15, 23, 42, 0)');
+      ctx.fillStyle = sg;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, sr, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.globalAlpha = Math.max(0, 1 - t);
+      ctx.fillStyle = pt.color;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, pt.radius * (1 - t * 0.5), 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.restore();
   }
 

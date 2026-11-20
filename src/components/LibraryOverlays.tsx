@@ -1,11 +1,26 @@
-import { BookOpen, ChevronDown, ChevronUp, KeyRound, Lock, Volume2, X } from 'lucide-react';
+import {
+  BookOpen,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  Crown,
+  Eye,
+  Footprints,
+  Heart,
+  KeyRound,
+  Lock,
+  Volume2,
+  X,
+} from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type {
   FloorLevel,
   LibraryMatchState,
   LibraryShape,
+  MatchMode,
 } from '../game/types';
-import { LIBRARY_BOOKS_PER_PLAYER, PLAYER_MAX_SPEED } from '../game/types';
+import { LIBRARY_BOOKS_PER_PLAYER, LIBRARY_BRAWL_MAX_HEARTS, PLAYER_MAX_SPEED } from '../game/types';
 
 export function LibraryShapeIcon({
   shape,
@@ -69,6 +84,10 @@ export function LibraryShapeIcon({
 interface LibraryOverlaysProps {
   libraryState: LibraryMatchState;
   localPlayerId: number;
+  mode: MatchMode;
+  isOnline: boolean;
+  isCursorScheme: boolean;
+  stealthEnabled: boolean;
   playerFloor: FloorLevel;
   playerSpeed: number;
   playerAlive: boolean;
@@ -76,6 +95,11 @@ interface LibraryOverlaysProps {
   canUnlockDoor: boolean;
   lockOpen: boolean;
   lockErrorSeq: number;
+  spectateTargetName?: string | null;
+  spectateCount?: number;
+  onToggleStealth: () => void;
+  onCycleSpectate?: (delta: -1 | 1) => void;
+  onFinishSoloMatch?: () => void;
   onCollectBook: () => void;
   onOpenLock: () => void;
   onCloseLock: () => void;
@@ -86,6 +110,10 @@ interface LibraryOverlaysProps {
 export function LibraryOverlays({
   libraryState,
   localPlayerId,
+  mode,
+  isOnline,
+  isCursorScheme,
+  stealthEnabled,
   playerFloor,
   playerSpeed,
   playerAlive,
@@ -93,6 +121,11 @@ export function LibraryOverlays({
   canUnlockDoor,
   lockOpen,
   lockErrorSeq,
+  spectateTargetName,
+  spectateCount = 0,
+  onToggleStealth,
+  onCycleSpectate,
+  onFinishSoloMatch,
   onCollectBook,
   onOpenLock,
   onCloseLock,
@@ -132,27 +165,30 @@ export function LibraryOverlays({
     onDialDigit(idx, next);
   };
 
+  const canSpectate = !playerAlive && (Boolean(prog?.unlocked) || Boolean(prog?.eliminated));
+
   return (
     <>
-      {/* Left-side Semi-Transparent Book & Clue HUD */}
+      {/* Compact High-Transparency Library Telemetry Overlay */}
       <div
-        style={{ left: 'max(0.75rem, env(safe-area-inset-left))' }}
-        className="pointer-events-auto select-none absolute top-[5.25rem] sm:top-[5.75rem] lg:top-4 z-20 flex flex-col gap-1.5 max-w-[11.5rem] sm:max-w-[13.5rem]"
+        style={{ left: 'max(0.65rem, env(safe-area-inset-left))' }}
+        className="pointer-events-auto select-none absolute top-[4.55rem] sm:top-[5.15rem] lg:top-3 z-20 flex flex-col gap-1 max-w-[10.25rem] sm:max-w-[11.75rem]"
       >
-        <div className="rounded-xl border border-amber-500/30 bg-slate-950/55 backdrop-blur-sm px-3 py-2 text-xs text-slate-100 shadow-lg">
+        <div className="rounded-xl border border-amber-400/20 bg-slate-950/30 backdrop-blur-[2px] px-2.5 py-1.5 text-[11px] text-slate-100 drop-shadow-[0_1px_4px_rgba(0,0,0,0.9)]">
           <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-1.5 font-display font-bold text-amber-200">
-              <BookOpen className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <div className="flex items-center gap-1 font-display font-bold text-amber-200">
+              <BookOpen className="w-3 h-3 text-amber-400 shrink-0" />
               <span>
-                Books {prog?.collectedCount ?? 0}/{LIBRARY_BOOKS_PER_PLAYER}
+                {prog?.collectedCount ?? 0}/{LIBRARY_BOOKS_PER_PLAYER}
               </span>
             </div>
-            <span className="font-mono-tabular text-[10px] font-semibold text-amber-300/90">
-              {playerFloor === 1 ? 'UPPER' : 'GROUND'}
+            <span className="font-mono-tabular text-[10px] font-bold text-amber-300/95">
+              {playerFloor === 1 ? 'UP' : 'GND'}
             </span>
           </div>
 
-          <div className="mt-1.5 flex items-center justify-between gap-2 text-[10px] font-mono-tabular">
+          {/* Stealth / Noise & Rage/Stun Status */}
+          <div className="mt-1 flex items-center justify-between gap-1.5 text-[10px] font-mono-tabular">
             <span
               className={
                 noiseLevel === 'LOUD'
@@ -162,43 +198,121 @@ export function LibraryOverlays({
                     : 'font-semibold text-emerald-300'
               }
             >
-              {noiseLevel === 'SILENT'
-                ? `SILENT (${speedPct}%)`
-                : noiseLevel === 'RISKY'
-                  ? `CREAK RISK (${speedPct}%)`
-                  : `AUDIBLE (${speedPct}%)`}
+              {noiseLevel} {speedPct}%
             </span>
             {monsterStunned ? (
               <span className="font-bold text-yellow-300">
                 STUN {Math.ceil(monster.stunTimer)}s
               </span>
             ) : monsterRaging ? (
-              <span className="font-bold text-orange-400 animate-pulse">FIGURE RAGE!</span>
+              <span className="font-bold text-orange-400 animate-pulse">RAGE!</span>
             ) : null}
           </div>
 
-          {/* Collected Clues (Shape = Digit) */}
-          {prog && prog.clues.length > 0 ? (
-            <div className="mt-2 pt-1.5 border-t border-amber-500/20 grid grid-cols-2 gap-1">
+          {/* Library Brawl 8-Heart Limit */}
+          {mode === 'BRAWL' && prog?.hearts !== undefined && (
+            <div className="mt-1 flex items-center justify-between gap-1 text-[10px] font-mono-tabular">
+              <span className="text-rose-200/90 font-semibold flex items-center gap-1">
+                <Heart className="w-2.5 h-2.5 fill-rose-500 text-rose-400 shrink-0" />
+                {prog.hearts}/{LIBRARY_BRAWL_MAX_HEARTS}
+              </span>
+              {prog.unlocked && (
+                <span className="text-amber-300 font-bold flex items-center gap-0.5">
+                  <Crown className="w-2.5 h-2.5" />#{prog.escapedRank ?? 1}
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Compact Clue Grid */}
+          {prog && prog.clues.length > 0 && (
+            <div className="mt-1.5 pt-1 border-t border-amber-400/15 grid grid-cols-2 gap-1">
               {prog.clues.map((c, idx) => (
                 <div
                   key={`${c.shape}_${idx}`}
-                  className="flex items-center gap-1.5 rounded-md bg-slate-900/55 px-1.5 py-0.5 border border-slate-800/70"
+                  className="flex items-center gap-1 rounded bg-slate-950/40 px-1 py-0.5 border border-slate-800/50"
                 >
-                  <LibraryShapeIcon shape={c.shape} className="w-3.5 h-3.5 shrink-0" />
-                  <span className="font-mono-tabular text-[11px] font-bold text-amber-100">
-                    = {c.digit}
+                  <LibraryShapeIcon shape={c.shape} className="w-3 h-3 shrink-0" />
+                  <span className="font-mono-tabular text-[10px] font-bold text-amber-100">
+                    ={c.digit}
                   </span>
                 </div>
               ))}
             </div>
-          ) : (
-            <p className="mt-1.5 text-[10px] text-slate-400 leading-snug">
-              Find books on shelves to reveal shape clues.
-            </p>
           )}
         </div>
+
+        {/* Dedicated PC Stealth Button ([C] hotkey) */}
+        {isCursorScheme && playerAlive && (
+          <button
+            type="button"
+            onClick={onToggleStealth}
+            className={`inline-flex items-center justify-between gap-1.5 rounded-lg border px-2.5 py-1 text-[10px] font-bold backdrop-blur-[2px] transition-colors cursor-pointer whitespace-nowrap ${
+              stealthEnabled
+                ? 'border-emerald-400/55 bg-emerald-950/50 text-emerald-200 hover:bg-emerald-900/60'
+                : 'border-amber-400/30 bg-slate-950/35 text-slate-200 hover:bg-slate-900/55'
+            }`}
+          >
+            <span className="inline-flex items-center gap-1">
+              <Footprints className="w-3 h-3 shrink-0" />
+              {stealthEnabled ? 'Stealth ON' : 'Stealth OFF'}
+            </span>
+            <span className="font-mono-tabular opacity-75">[C]</span>
+          </button>
+        )}
       </div>
+
+      {/* Escaped / Eliminated Spectator Strip (client-side camera switching over existing state) */}
+      {canSpectate && (
+        <div className="pointer-events-auto absolute bottom-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 rounded-xl border border-amber-400/35 bg-slate-950/65 backdrop-blur-sm px-3 py-2 text-xs text-slate-100 shadow-xl">
+          <div className="flex items-center gap-1.5 pr-1">
+            {prog?.unlocked ? (
+              <Crown className="w-4 h-4 text-amber-300 shrink-0" />
+            ) : (
+              <Eye className="w-4 h-4 text-sky-400 shrink-0" />
+            )}
+            <span className="font-semibold text-amber-100 whitespace-nowrap">
+              {prog?.unlocked
+                ? `Escaped #${prog.escapedRank ?? 1}`
+                : 'Eliminated'}
+            </span>
+          </div>
+
+          {spectateCount > 0 && onCycleSpectate && (
+            <div className="flex items-center gap-1 border-l border-slate-700/80 pl-2">
+              <button
+                type="button"
+                onClick={() => onCycleSpectate(-1)}
+                aria-label="Previous player camera"
+                className="h-7 w-7 inline-flex items-center justify-center rounded-md bg-slate-800/80 hover:bg-slate-700 text-slate-200 cursor-pointer"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
+              <span className="px-1.5 font-mono-tabular text-[11px] font-bold text-sky-200 whitespace-nowrap">
+                {spectateTargetName ? `Watching ${spectateTargetName}` : 'Spectating'}
+              </span>
+              <button
+                type="button"
+                onClick={() => onCycleSpectate(1)}
+                aria-label="Next player camera"
+                className="h-7 w-7 inline-flex items-center justify-center rounded-md bg-slate-800/80 hover:bg-slate-700 text-slate-200 cursor-pointer"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {!isOnline && onFinishSoloMatch && (
+            <button
+              type="button"
+              onClick={onFinishSoloMatch}
+              className="ml-1 rounded-lg bg-amber-400 hover:bg-amber-300 px-2.5 py-1 text-[11px] font-extrabold text-slate-950 transition-colors cursor-pointer whitespace-nowrap"
+            >
+              Finish Match
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Bottom-Center Context Action Prompt (Collect Book or Open Door Padlock) */}
       {playerAlive && !lockOpen && (canCollectBook || canUnlockDoor) && (

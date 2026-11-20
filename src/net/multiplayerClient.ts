@@ -2,7 +2,10 @@ import Peer, { type DataConnection } from 'peerjs';
 import { ArenaEngine, PLAYER_PRESETS, pickDistinctColorOption, type SlotSetup } from '../game/engine';
 import { ARENA_MAPS } from '../game/maps';
 import {
+  DEFAULT_MATCH_MODIFIERS,
   type MatchConfig,
+  type MatchModifiers,
+  type ModifierLevel,
   type OnlineLobbySlot,
   type OnlineRoomState,
   PLAYER_COLOR_PALETTE,
@@ -50,6 +53,28 @@ function sanitizeColorId(raw: unknown, fallback: string): string {
   return fallback;
 }
 
+function sanitizeModifierLevel(raw: unknown, fallback: ModifierLevel): ModifierLevel {
+  return raw === 'LOW' || raw === 'MEDIUM' || raw === 'HIGH' ? raw : fallback;
+}
+
+function sanitizeModifiers(raw: Partial<MatchModifiers> | undefined): MatchModifiers {
+  if (!raw || typeof raw !== 'object') return { ...DEFAULT_MATCH_MODIFIERS };
+  return {
+    bulletSpawn: sanitizeModifierLevel(raw.bulletSpawn, DEFAULT_MATCH_MODIFIERS.bulletSpawn),
+    nitroSpawn: sanitizeModifierLevel(raw.nitroSpawn, DEFAULT_MATCH_MODIFIERS.nitroSpawn),
+    tntSpawn: sanitizeModifierLevel(raw.tntSpawn, DEFAULT_MATCH_MODIFIERS.tntSpawn),
+    medkitSpawn: sanitizeModifierLevel(raw.medkitSpawn, DEFAULT_MATCH_MODIFIERS.medkitSpawn),
+    playerSpeed: sanitizeModifierLevel(raw.playerSpeed, DEFAULT_MATCH_MODIFIERS.playerSpeed),
+    bulletSpeed: sanitizeModifierLevel(raw.bulletSpeed, DEFAULT_MATCH_MODIFIERS.bulletSpeed),
+    bulletCapacity: sanitizeModifierLevel(raw.bulletCapacity, DEFAULT_MATCH_MODIFIERS.bulletCapacity),
+    stunTime: sanitizeModifierLevel(raw.stunTime, DEFAULT_MATCH_MODIFIERS.stunTime),
+    keepBulletsOnStun:
+      typeof raw.keepBulletsOnStun === 'boolean'
+        ? raw.keepBulletsOnStun
+        : DEFAULT_MATCH_MODIFIERS.keepBulletsOnStun,
+  };
+}
+
 function sanitizeConfig(raw: Partial<MatchConfig> | undefined): MatchConfig {
   const map =
     raw?.mapId && ARENA_MAPS[raw.mapId] ? ARENA_MAPS[raw.mapId] : ARENA_MAPS.immersive_mansion;
@@ -70,6 +95,7 @@ function sanitizeConfig(raw: Partial<MatchConfig> | undefined): MatchConfig {
       PLAYER_COLOR_PALETTE.some((c) => c.id === raw.playerColorId)
         ? raw.playerColorId
         : undefined,
+    modifiers: sanitizeModifiers(raw?.modifiers),
   };
 }
 
@@ -529,6 +555,7 @@ export class MultiplayerClient {
           name: room.hostName,
           color: col.color,
           colorId: col.id,
+          finish: col.finish ?? 'solid',
           team,
           occupied: true,
           isBot: false,
@@ -541,6 +568,7 @@ export class MultiplayerClient {
         name: member ? member.name : fillBots ? `${preset.defaultName} (Bot)` : 'Open Slot',
         color: col.color,
         colorId: col.id,
+        finish: col.finish ?? 'solid',
         team,
         occupied: Boolean(member),
         isBot: !member && fillBots,

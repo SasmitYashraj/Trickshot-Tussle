@@ -1,5 +1,6 @@
-import { RotateCcw, SlidersHorizontal, Trophy, Users } from 'lucide-react';
+import { Crown, RotateCcw, SlidersHorizontal, Trophy, Users } from 'lucide-react';
 import type { GameSnapshot } from '../game/types';
+import { PlayerAvatar } from './PlayerAvatar';
 
 interface GameOverModalProps {
   snapshot: GameSnapshot;
@@ -19,6 +20,9 @@ export function GameOverModal({
   onReturnToLobby,
 }: GameOverModalProps) {
   const ranked = [...snapshot.players].sort((a, b) => {
+    const aEsc = a.escapedRank ?? Number.POSITIVE_INFINITY;
+    const bEsc = b.escapedRank ?? Number.POSITIVE_INFINITY;
+    if (aEsc !== bEsc) return aEsc - bEsc;
     if (b.kills !== a.kills) return b.kills - a.kills;
     if (a.alive !== b.alive) return a.alive ? -1 : 1;
     return b.damageDealt - a.damageDealt;
@@ -72,11 +76,19 @@ export function GameOverModal({
                 <tr key={p.id} className={p.isHuman ? 'bg-sky-500/5' : ''}>
                   <td className="py-2.5 px-3">
                     <div className="flex items-center gap-2">
-                      <span
-                        className="h-2.5 w-2.5 rounded-sm shrink-0"
-                        style={{ backgroundColor: p.color }}
+                      <PlayerAvatar
+                        color={p.color}
+                        accentColor={p.accentColor}
+                        finish={p.finish}
+                        size={22}
+                        showVisor={false}
                       />
                       <span className="font-semibold text-slate-100">{p.name}</span>
+                      {p.escapedRank && (
+                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-400/15 text-amber-300 font-mono-tabular text-[10px] font-bold">
+                          <Crown className="w-2.5 h-2.5" />#{p.escapedRank}
+                        </span>
+                      )}
                       {p.team !== undefined && (
                         <span
                           className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${

@@ -98,11 +98,47 @@ export interface LibraryClue {
   digit: number;
 }
 
+export type ModifierLevel = 'LOW' | 'MEDIUM' | 'HIGH';
+
+export interface MatchModifiers {
+  bulletSpawn: ModifierLevel;
+  nitroSpawn: ModifierLevel;
+  tntSpawn: ModifierLevel;
+  medkitSpawn: ModifierLevel;
+  playerSpeed: ModifierLevel;
+  bulletSpeed: ModifierLevel;
+  bulletCapacity: ModifierLevel;
+  stunTime: ModifierLevel;
+  keepBulletsOnStun: boolean;
+}
+
+export const DEFAULT_MATCH_MODIFIERS: MatchModifiers = {
+  bulletSpawn: 'MEDIUM',
+  nitroSpawn: 'MEDIUM',
+  tntSpawn: 'MEDIUM',
+  medkitSpawn: 'MEDIUM',
+  playerSpeed: 'MEDIUM',
+  bulletSpeed: 'MEDIUM',
+  bulletCapacity: 'MEDIUM',
+  stunTime: 'MEDIUM',
+  keepBulletsOnStun: true,
+};
+
+export type PlayerSkinFinish =
+  | 'solid'
+  | 'fish_scale'
+  | 'wood'
+  | 'metal'
+  | 'animated_sparkle';
+
+export type LibraryBookFace = 'N' | 'S' | 'E' | 'W';
+
 export interface LibraryBookSpot {
   id: number;
   x: number;
   y: number;
   floor: FloorLevel;
+  face?: LibraryBookFace;
   collected: boolean;
 }
 
@@ -122,6 +158,10 @@ export interface LibraryMonsterState {
   targetX: number;
   targetY: number;
   targetFloor: FloorLevel;
+  transitioning?: boolean;
+  fromFloor?: FloorLevel;
+  toFloor?: FloorLevel;
+  transitionProgress?: number;
 }
 
 export interface LibraryPlayerProgress {
@@ -131,12 +171,16 @@ export interface LibraryPlayerProgress {
   clues: LibraryClue[];
   codeDigits: number[];
   unlocked: boolean;
+  escapedRank?: number | null;
+  hearts?: number;
+  eliminated?: boolean;
 }
 
 export interface LibraryMatchState {
   pillarSequence: LibraryShape[];
   totalCollectedAll: number;
   introTimer: number;
+  escapedOrder: number[];
   monster: LibraryMonsterState;
   playerProgress: LibraryPlayerProgress[];
   doors: LibraryDoor[];
@@ -188,16 +232,27 @@ export interface PlayerColorOption {
   name: string;
   color: string;
   accentColor: string;
+  finish?: PlayerSkinFinish;
 }
 
 export const PLAYER_COLOR_PALETTE: PlayerColorOption[] = [
-  { id: 'cobalt', name: 'Cobalt', color: '#0EA5E9', accentColor: '#7DD3FC' },
-  { id: 'crimson', name: 'Crimson', color: '#EF4444', accentColor: '#FCA5A5' },
-  { id: 'volt', name: 'Volt', color: '#FACC15', accentColor: '#FEF08A' },
-  { id: 'jade', name: 'Jade', color: '#22C55E', accentColor: '#86EFAC' },
-  { id: 'violet', name: 'Violet', color: '#A855F7', accentColor: '#D8B4FE' },
-  { id: 'orange', name: 'Blaze', color: '#F97316', accentColor: '#FDBA74' },
-  { id: 'magenta', name: 'Nova', color: '#EC4899', accentColor: '#F9A8D4' },
+  { id: 'cobalt', name: 'Cobalt', color: '#0EA5E9', accentColor: '#7DD3FC', finish: 'solid' },
+  { id: 'crimson', name: 'Crimson', color: '#EF4444', accentColor: '#FCA5A5', finish: 'solid' },
+  { id: 'volt', name: 'Volt', color: '#FACC15', accentColor: '#FEF08A', finish: 'solid' },
+  { id: 'jade', name: 'Jade', color: '#22C55E', accentColor: '#86EFAC', finish: 'solid' },
+  { id: 'violet', name: 'Violet', color: '#A855F7', accentColor: '#D8B4FE', finish: 'solid' },
+  { id: 'orange', name: 'Blaze', color: '#F97316', accentColor: '#FDBA74', finish: 'solid' },
+  { id: 'magenta', name: 'Nova', color: '#EC4899', accentColor: '#F9A8D4', finish: 'solid' },
+  { id: 'cyan', name: 'Glacier', color: '#06B6D4', accentColor: '#A5F3FC', finish: 'solid' },
+  { id: 'coral', name: 'Coral', color: '#FB7185', accentColor: '#FECDD3', finish: 'solid' },
+  { id: 'lime', name: 'Acid Lime', color: '#84CC16', accentColor: '#D9F99D', finish: 'solid' },
+  { id: 'scale_crimson', name: 'Crimson Scales', color: '#DC2626', accentColor: '#FCA5A5', finish: 'fish_scale' },
+  { id: 'scale_cobalt', name: 'Cobalt Scales', color: '#0284C7', accentColor: '#7DD3FC', finish: 'fish_scale' },
+  { id: 'scale_jade', name: 'Jade Scales', color: '#16A34A', accentColor: '#86EFAC', finish: 'fish_scale' },
+  { id: 'scale_gold', name: 'Gold Scales', color: '#D97706', accentColor: '#FDE047', finish: 'fish_scale' },
+  { id: 'wood_oak', name: 'Timber Oak', color: '#92400E', accentColor: '#F59E0B', finish: 'wood' },
+  { id: 'metal_chrome', name: 'Brushed Chrome', color: '#94A3B8', accentColor: '#F1F5F9', finish: 'metal' },
+  { id: 'sparkle_gold', name: 'Starlight Gold', color: '#F59E0B', accentColor: '#FEF08A', finish: 'animated_sparkle' },
 ];
 
 export interface Player {
@@ -208,6 +263,7 @@ export interface Player {
   isRemote?: boolean;
   color: string;
   accentColor: string;
+  finish?: PlayerSkinFinish;
   x: number;
   y: number;
   vx: number;
@@ -286,6 +342,7 @@ export interface Explosion {
   age: number;
   duration: number;
   color: string;
+  kind?: 'nitro' | 'tnt';
   floor?: FloorLevel;
 }
 
@@ -299,6 +356,7 @@ export interface Particle {
   age: number;
   duration: number;
   floor?: FloorLevel;
+  isSmoke?: boolean;
 }
 
 export interface FloatingText {
@@ -364,6 +422,8 @@ export interface HudPlayerSnapshot {
   team?: number;
   isHuman: boolean;
   color: string;
+  accentColor?: string;
+  finish?: PlayerSkinFinish;
   hp: number;
   maxHp: number;
   ammo: number;
@@ -374,6 +434,9 @@ export interface HudPlayerSnapshot {
   kills: number;
   deaths: number;
   damageDealt: number;
+  hearts?: number;
+  escapedRank?: number | null;
+  eliminated?: boolean;
 }
 
 export interface MatchConfig {
@@ -386,6 +449,7 @@ export interface MatchConfig {
   extraDark?: boolean;
   fillBots?: boolean;
   playerColorId?: string;
+  modifiers?: MatchModifiers;
 }
 
 export interface GameSnapshot {
@@ -403,6 +467,7 @@ export interface OnlineLobbySlot {
   name: string;
   color: string;
   colorId: string;
+  finish?: PlayerSkinFinish;
   team: number;
   occupied: boolean;
   isBot: boolean;
@@ -423,6 +488,7 @@ export interface WorldSyncState {
   immersive: boolean;
   extraDark: boolean;
   teamMode?: TeamMode;
+  modifiers?: MatchModifiers;
   elapsedTime: number;
   screenShake: number;
   winnerId: number | null;
@@ -435,6 +501,7 @@ export interface WorldSyncState {
     team?: number;
     color: string;
     accentColor: string;
+    finish?: PlayerSkinFinish;
     x: number;
     y: number;
     vx: number;
@@ -509,7 +576,8 @@ export const SPAWN_INVULN_DURATION = 0.85;
 export const KILL_STREAK_WINDOW = 3.0;
 
 export const MONSTER_RADIUS = PLAYER_RADIUS * 1.5;
-export const MONSTER_STUN_DURATION = 15.0;
+export const MONSTER_STUN_DURATION = 10.0;
+export const LIBRARY_BRAWL_MAX_HEARTS = 8;
 export const LIBRARY_HEARING_RADIUS = 900;
 export const LIBRARY_BOOKS_PER_PLAYER = 8;
 export const LIBRARY_CODE_LEN = 5;

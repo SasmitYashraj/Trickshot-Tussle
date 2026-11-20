@@ -16,6 +16,7 @@ import {
   CARDBOARD_SIZE,
   type CardboardBox,
   type ControlScheme,
+  DEFAULT_MATCH_MODIFIERS,
   type EngineEvent,
   type Explosion,
   type FloatingText,
@@ -25,10 +26,12 @@ import {
   type JoystickState,
   KILL_STREAK_WINDOW,
   LIBRARY_BOOKS_PER_PLAYER,
+  LIBRARY_BRAWL_MAX_HEARTS,
   LIBRARY_CODE_LEN,
   LIBRARY_HEARING_RADIUS,
   LIBRARY_INTRO_DURATION,
   LIBRARY_SHAPES,
+  type LibraryBookFace,
   type LibraryBookSpot,
   type LibraryClue,
   type LibraryDoor,
@@ -40,6 +43,8 @@ import {
   MONSTER_RADIUS,
   MONSTER_STUN_DURATION,
   type MatchConfig,
+  type MatchModifiers,
+  type ModifierLevel,
   NITRO_BLAST_RADIUS,
   NITRO_DAMAGE,
   NITRO_RADIUS,
@@ -74,6 +79,59 @@ function isWallOnFloor(wall: WallRect, floor: FloorLevel): boolean {
 
 function sameFloor(a?: FloorLevel, b?: FloorLevel): boolean {
   return (a ?? 0) === (b ?? 0);
+}
+
+const SPAWN_RATE_MULTS: Record<ModifierLevel, number> = {
+  LOW: 0.6,
+  MEDIUM: 1.0,
+  HIGH: 1.55,
+};
+
+const PLAYER_SPEED_MULTS: Record<ModifierLevel, number> = {
+  LOW: 0.78,
+  MEDIUM: 1.0,
+  HIGH: 1.26,
+};
+
+const BULLET_SPEED_MULTS: Record<ModifierLevel, number> = {
+  LOW: 0.76,
+  MEDIUM: 1.0,
+  HIGH: 1.32,
+};
+
+const BULLET_CAP_VALUES: Record<ModifierLevel, number> = {
+  LOW: 3,
+  MEDIUM: 5,
+  HIGH: 8,
+};
+
+const STUN_TIME_VALUES: Record<ModifierLevel, number> = {
+  LOW: 0.45,
+  MEDIUM: STUN_DURATION,
+  HIGH: 1.45,
+};
+
+export function canCollectBookSpot(
+  player: { x: number; y: number; floor?: FloorLevel },
+  book: LibraryBookSpot,
+  walls: WallRect[]
+): boolean {
+  const pFloor = player.floor ?? 0;
+  if (book.collected || book.floor !== pFloor) return false;
+  if (Math.hypot(book.x - player.x, book.y - player.y) > 88) return false;
+
+  if (book.face === 'W' && player.x > book.x + 12) return false;
+  if (book.face === 'E' && player.x < book.x - 12) return false;
+  if (book.face === 'N' && player.y > book.y + 12) return false;
+  if (book.face === 'S' && player.y < book.y - 12) return false;
+
+  for (const wall of walls) {
+    if (wall.kind !== 'bookshelf' || !isWallOnFloor(wall, pFloor)) continue;
+    if (segmentIntersectsRect(player.x, player.y, book.x, book.y, wall)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 interface NavNode {
@@ -262,11 +320,27 @@ export class ArenaEngine {
   private monsterLastProgressX = 0;
   private monsterLastProgressY = 0;
   private monsterStuckTimer = 0;
+  private monsterTransFromX = 0;
+  private monsterTransFromY = 0;
+  private monsterTransToX = 0;
+  private monsterTransToY = 0;
   private librarySolutions = new Map<number, number[]>();
   private libraryBookQueues = new Map<number, LibraryClue[]>();
   private libraryCollectedSpots = new Set<number>();
   private botPaths = new Map<number, { nodes: NavNode[]; timer: number; goalX: number; goalY: number; goalFloor: FloorLevel }>();
   private botCodeCooldown = new Map<number, number>();
+
+  private getModifiers(): MatchModifiers {
+    return this.config.modifiers ?? DEFAULT_MATCH_MODIFIERS;
+  }
+
+  private getPlayerMaxSpeed(): number {
+    return PLAYER_MAX_SPEED * PLAYER_SPEED_MULTS[this.getModifiers().playerSpeed];
+  }
+
+  private getBulletSpeed(): number {
+    return BULLET_SPEED * BULLET_SPEED_MULTS[this.getModifiers().bulletSpeed];
+  }
 
   constructor(config: MatchConfig, slots?: SlotSetup[]) {
     this.config = config;
@@ -309,18 +383,23 @@ export class ArenaEngine {
     this.monsterLastProgressX = 0;
     this.monsterLastProgressY = 0;
     this.monsterStuckTimer = 0;
+    this.monsterTransFromX = 0;
+    this.monsterTransFromY = 0;
+    this.monsterTransToX = 0;
+    this.monsterTransToY = 0;
     this.librarySolutions.clear();
     this.libraryBookQueues.clear();
     this.libraryCollectedSpots.clear();
     this.botPaths.clear();
     this.botCodeCooldown.clear();
 
+    const mods = this.getModifiers();
     const isImmersive = this.map.immersive;
     const isLibrary = this.map.id === 'library';
-    this.bulletSpawnTimer = isLibrary ? 1.8 : isImmersive ? 1.5 : 2.0;
-    this.nitroSpawnTimer = isLibrary ? 12.0 : isImmersive ? 11.5 : 6.0;
-    this.tntSpawnTimer = isLibrary ? 9.0 : isImmersive ? 7.5 : 9.0;
-    this.medkitSpawnTimer = isLibrary ? 10.5 : isImmersive ? 9.0 : 11.0;
+    this.bulletSpawnTimer = (isLibrary ? 1.8 : isImmersive ? 1.5 : 2.0) / SPAWN_RATE_MULTS[mods.bulletSpawn];
+    this.nitroSpawnTimer = (isLibrary ? 12.0 : isImmersive ? 11.5 : 6.0) / SPAWN_RATE_MULTS[mods.nitroSpawn];
+    this.tntSpawnTimer = (isLibrary ? 9.0 : isImmersive ? 7.5 : 9.0) / SPAWN_RATE_MULTS[mods.tntSpawn];
+    this.medkitSpawnTimer = (isLibrary ? 10.5 : isImmersive ? 9.0 : 11.0) / SPAWN_RATE_MULTS[mods.medkitSpawn];
     this.boxSpawnTimer = isLibrary ? 3.5 : isImmersive ? 2.5 : 2.4;
 
     this.joystick.active = false;
@@ -359,6 +438,8 @@ export class ArenaEngine {
       assignedColors.set(s.slot, chosen);
     }
 
+    const maxAmmo = BULLET_CAP_VALUES[mods.bulletCapacity] ?? PLAYER_MAX_AMMO;
+
     this.players = activeSlots.map((s) => {
       const palette = assignedColors.get(s.slot) ?? PLAYER_COLOR_PALETTE[s.slot % PLAYER_COLOR_PALETTE.length];
       const spawn = this.map.spawns[s.slot];
@@ -372,6 +453,7 @@ export class ArenaEngine {
         isRemote: Boolean(slots),
         color: palette.color,
         accentColor: palette.accentColor,
+        finish: palette.finish ?? 'solid',
         x: spawn.x,
         y: spawn.y,
         vx: 0,
@@ -382,7 +464,7 @@ export class ArenaEngine {
         hp: PLAYER_MAX_HP,
         maxHp: PLAYER_MAX_HP,
         ammo: 0,
-        maxAmmo: PLAYER_MAX_AMMO,
+        maxAmmo,
         stunTimer: 0,
         hurtFlashTimer: 0,
         respawnTimer: 0,
@@ -586,17 +668,23 @@ export class ArenaEngine {
   }
 
   private updateSpawners(dt: number) {
+    const mods = this.getModifiers();
+    const bMult = SPAWN_RATE_MULTS[mods.bulletSpawn];
+    const nMult = SPAWN_RATE_MULTS[mods.nitroSpawn];
+    const tMult = SPAWN_RATE_MULTS[mods.tntSpawn];
+    const mMult = SPAWN_RATE_MULTS[mods.medkitSpawn];
+
     const isImmersive = this.map.immersive;
-    const bulletCap = isImmersive ? 9 : 5;
-    const nitroCap = isImmersive ? 2 : 2;
-    const tntCap = isImmersive ? 2 : 1;
-    const medkitCap = isImmersive ? 2 : 1;
+    const bulletCap = Math.max(2, Math.round((isImmersive ? 9 : 5) * bMult));
+    const nitroCap = Math.max(1, Math.round((isImmersive ? 2 : 2) * nMult));
+    const tntCap = Math.max(1, Math.round((isImmersive ? 2 : 1) * tMult));
+    const medkitCap = Math.max(1, Math.round((isImmersive ? 2 : 1) * mMult));
     const boxCap = isImmersive ? 15 : 9;
 
-    const bulletInterval = isImmersive ? 2.1 : 2.6;
-    const nitroInterval = isImmersive ? 13.5 : 8.0;
-    const tntInterval = isImmersive ? 9.5 : 11.5;
-    const medkitInterval = isImmersive ? 11.5 : 13.5;
+    const bulletInterval = (isImmersive ? 2.1 : 2.6) / bMult;
+    const nitroInterval = (isImmersive ? 13.5 : 8.0) / nMult;
+    const tntInterval = (isImmersive ? 9.5 : 11.5) / tMult;
+    const medkitInterval = (isImmersive ? 11.5 : 13.5) / mMult;
     const boxInterval = isImmersive ? 3.6 : 3.2;
 
     const bulletCount = this.pickups.filter((p) => p.kind === 'bullet').length;
@@ -1084,9 +1172,15 @@ export class ArenaEngine {
     for (const player of this.players) {
       if (!player.alive) {
         if (this.config.mode === 'BRAWL') {
-          player.respawnTimer -= dt;
-          if (player.respawnTimer <= 0) {
-            this.respawnPlayer(player);
+          const prog = this.libraryState?.playerProgress.find((pp) => pp.playerId === player.id);
+          const blockedByLibrary = Boolean(
+            prog && (prog.unlocked || prog.eliminated || (prog.hearts ?? LIBRARY_BRAWL_MAX_HEARTS) <= 0)
+          );
+          if (!blockedByLibrary && player.respawnTimer > 0) {
+            player.respawnTimer -= dt;
+            if (player.respawnTimer <= 0) {
+              this.respawnPlayer(player);
+            }
           }
         }
         continue;
@@ -1410,7 +1504,7 @@ export class ArenaEngine {
       const normalizedRatio =
         magnitude <= deadzone ? 0 : (magnitude - deadzone) / (1 - deadzone);
 
-      const targetSpeed = PLAYER_MAX_SPEED * normalizedRatio;
+      const targetSpeed = this.getPlayerMaxSpeed() * normalizedRatio;
       const targetVx = Math.cos(moveAngle) * targetSpeed;
       const targetVy = Math.sin(moveAngle) * targetSpeed;
 
@@ -1593,7 +1687,7 @@ export class ArenaEngine {
             this.hasLineOfSight(bot.x, bot.y, target.x, target.y, bot.floor ?? 0) &&
             bot.aiHoldShotTimer <= 0
           ) {
-            const travelT = targetDist / BULLET_SPEED;
+            const travelT = targetDist / this.getBulletSpeed();
             const predX = target.x + target.vx * travelT * 0.78;
             const predY = target.y + target.vy * travelT * 0.78;
             wantsToShoot = true;
@@ -1644,7 +1738,7 @@ export class ArenaEngine {
     const angleDiff = normalizeAngle(bot.aiTargetAngle - bot.angle);
     bot.angle = normalizeAngle(bot.angle + clamp(angleDiff, -8 * dt, 8 * dt));
 
-    const targetSpeed = PLAYER_MAX_SPEED * bot.aiMoveRatio;
+    const targetSpeed = this.getPlayerMaxSpeed() * bot.aiMoveRatio;
     const targetVx = Math.cos(bot.aiTargetAngle) * targetSpeed;
     const targetVy = Math.sin(bot.aiTargetAngle) * targetSpeed;
     const dvx = targetVx - bot.vx;
@@ -1680,8 +1774,9 @@ export class ArenaEngine {
       const a = (i / 16) * Math.PI * 2;
       let x = shooter.x + Math.cos(a) * (PLAYER_RADIUS + 8);
       let y = shooter.y + Math.sin(a) * (PLAYER_RADIUS + 8);
-      let vx = Math.cos(a) * BULLET_SPEED;
-      let vy = Math.sin(a) * BULLET_SPEED;
+      const bSpeed = this.getBulletSpeed();
+      let vx = Math.cos(a) * bSpeed;
+      let vy = Math.sin(a) * bSpeed;
       let bounces = 0;
 
       for (let step = 0; step < 58; step++) {
@@ -1722,14 +1817,15 @@ export class ArenaEngine {
     const bx = player.x + Math.cos(player.angle) * muzzleDist;
     const by = player.y + Math.sin(player.angle) * muzzleDist;
 
+    const bSpeed = this.getBulletSpeed();
     const bullet: Bullet = {
       id: this.nextId++,
       ownerId: player.id,
       color: player.color,
       x: bx,
       y: by,
-      vx: Math.cos(player.angle) * BULLET_SPEED,
-      vy: Math.sin(player.angle) * BULLET_SPEED,
+      vx: Math.cos(player.angle) * bSpeed,
+      vy: Math.sin(player.angle) * bSpeed,
       radius: BULLET_RADIUS,
       floor: pFloor,
       bouncesLeft: BULLET_MAX_BOUNCES,
@@ -1951,7 +2047,7 @@ export class ArenaEngine {
       const isTnt = current.item.kind === 'tnt';
       const blastRadius = isTnt ? TNT_BLAST_RADIUS : NITRO_BLAST_RADIUS;
       const blastDamage = isTnt ? TNT_DAMAGE : NITRO_DAMAGE;
-      const blastColor = isTnt ? '#EF4444' : '#FB923C';
+      const blastColor = isTnt ? '#FACC15' : '#FEF08A';
       const blastFloor: FloorLevel = current.item.floor ?? 0;
 
       this.explosions.push({
@@ -1960,15 +2056,17 @@ export class ArenaEngine {
         y: current.item.y,
         radius: blastRadius,
         age: 0,
-        duration: 0.42,
+        duration: 0.62,
         color: blastColor,
+        kind: isTnt ? 'tnt' : 'nitro',
         floor: blastFloor,
       });
 
       this.screenShake = Math.min(16, this.screenShake + (isTnt ? 11 : 8));
       this.emitEvent('explosion', current.item.x, current.item.y, isTnt ? 2 : 1, undefined, blastFloor);
-      this.spawnParticles(current.item.x, current.item.y, blastColor, isTnt ? 26 : 18, 250, blastFloor);
-      this.spawnParticles(current.item.x, current.item.y, '#FEF08A', 10, 170, blastFloor);
+      this.spawnParticles(current.item.x, current.item.y, '#FACC15', isTnt ? 22 : 15, 250, blastFloor);
+      this.spawnParticles(current.item.x, current.item.y, '#FEF08A', isTnt ? 14 : 10, 180, blastFloor);
+      this.spawnSmokeParticles(current.item.x, current.item.y, isTnt ? 12 : 8, 95, blastFloor);
 
       if (this.libraryState) {
         const m = this.libraryState.monster;
@@ -1983,7 +2081,7 @@ export class ArenaEngine {
           m.vy = 0;
           this.monsterPath = [];
           this.emitEvent('monster_stun', m.x, m.y, undefined, undefined, m.floor);
-          this.addFloatingText(m.x, m.y - (m.radius + 14), 'FIGURE STUNNED 15s!', '#FDE047', m.floor);
+          this.addFloatingText(m.x, m.y - (m.radius + 14), 'FIGURE STUNNED 10s!', '#FDE047', m.floor);
         } else {
           // Explosive blasts elsewhere alert The Figure into Rage mode toward the blast site
           this.triggerMonsterRage(current.item.x, current.item.y, blastFloor);
@@ -2057,14 +2155,39 @@ export class ArenaEngine {
     return Boolean(a && b && a.team !== undefined && a.team === b.team);
   }
 
-  private drownPlayer(player: Player, attackerId: number | null) {
-    if (!player.alive) return;
+  private applyDeathPenalty(player: Player): void {
     player.hp = 0;
     player.alive = false;
     player.deaths += 1;
     player.stunTimer = 0;
     player.ammo = 0;
-    player.respawnTimer = RESPAWN_DELAY;
+
+    if (this.libraryState) {
+      const prog = this.libraryState.playerProgress.find((pp) => pp.playerId === player.id);
+      if (this.config.mode === 'BRAWL') {
+        if (prog) {
+          prog.hearts = Math.max(0, (prog.hearts ?? LIBRARY_BRAWL_MAX_HEARTS) - 1);
+          if (prog.hearts <= 0) {
+            prog.eliminated = true;
+            player.respawnTimer = 0;
+            this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 28), 'NO HEARTS LEFT!', '#FB7185', player.floor ?? 0);
+            return;
+          }
+        }
+        player.respawnTimer = RESPAWN_DELAY;
+      } else {
+        if (prog) prog.eliminated = true;
+        player.respawnTimer = 0;
+      }
+      return;
+    }
+
+    player.respawnTimer = this.config.mode === 'BRAWL' ? RESPAWN_DELAY : 0;
+  }
+
+  private drownPlayer(player: Player, attackerId: number | null) {
+    if (!player.alive) return;
+    this.applyDeathPenalty(player);
 
     if (attackerId !== null && attackerId !== player.id && !this.isTeammate(attackerId, player.id)) {
       const attacker = this.players.find((p) => p.id === attackerId);
@@ -2135,18 +2258,18 @@ export class ArenaEngine {
     }
 
     if (player.hp > 0) {
-      player.stunTimer = STUN_DURATION;
+      const mods = this.getModifiers();
+      player.stunTimer = STUN_TIME_VALUES[mods.stunTime] ?? STUN_DURATION;
+      if (!mods.keepBulletsOnStun) {
+        player.ammo = 0;
+      }
       this.emitEvent('hit', player.x, player.y, 3);
       this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 10), `-${amount}`, '#FDA4AF');
       if (player.hp === 1) {
         this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 28), '1 HP CLUTCH!', '#FACC15');
       }
     } else {
-      player.alive = false;
-      player.deaths += 1;
-      player.stunTimer = 0;
-      player.ammo = 0;
-      player.respawnTimer = RESPAWN_DELAY;
+      this.applyDeathPenalty(player);
 
       if (attackerId !== null && attackerId !== player.id) {
         const attacker = this.players.find((p) => p.id === attackerId);
@@ -2201,7 +2324,72 @@ export class ArenaEngine {
     this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 10), 'SPAWN!', player.accentColor, player.floor);
   }
 
+  public finishSoloLibrary() {
+    if (!this.libraryState || this.winnerId !== null) return;
+    if (this.libraryState.escapedOrder.length > 0) {
+      const firstId = this.libraryState.escapedOrder[0];
+      const firstPlayer = this.players.find((p) => p.id === firstId) ?? this.players[0];
+      this.winnerId = firstPlayer.id;
+      this.winnerTeam = this.config.teamMode === '2V2' ? (firstPlayer.team ?? firstPlayer.id % 2) : null;
+      this.winnerReason =
+        firstPlayer.name === 'You'
+          ? 'You escaped The Library in 1st place!'
+          : `${firstPlayer.name} escaped The Library in 1st place!`;
+      this.emitEvent('victory', firstPlayer.x, firstPlayer.y, 1, firstPlayer.id, 0);
+    } else {
+      const sorted = [...this.players].sort((a, b) => {
+        const pa = this.libraryState!.playerProgress.find((pp) => pp.playerId === a.id)?.collectedCount ?? 0;
+        const pb = this.libraryState!.playerProgress.find((pp) => pp.playerId === b.id)?.collectedCount ?? 0;
+        if (pb !== pa) return pb - pa;
+        return b.kills - a.kills || b.damageDealt - a.damageDealt;
+      });
+      const champ = sorted[0] ?? this.players[0];
+      this.winnerId = champ.id;
+      this.winnerTeam = this.config.teamMode === '2V2' ? (champ.team ?? champ.id % 2) : null;
+      this.winnerReason = 'Library match concluded';
+      this.emitEvent('victory', champ.x, champ.y, 1, champ.id, 0);
+    }
+  }
+
   private checkWinConditions() {
+    if (this.players.length === 0 || this.winnerId !== null) return;
+
+    if (this.libraryState) {
+      const activeContenders = this.players.filter((p) => {
+        const prog = this.libraryState!.playerProgress.find((pp) => pp.playerId === p.id);
+        if (!prog || prog.unlocked || prog.eliminated) return false;
+        return this.config.mode === 'BRAWL'
+          ? (prog.hearts ?? LIBRARY_BRAWL_MAX_HEARTS) > 0
+          : p.alive;
+      });
+      if (activeContenders.length === 0) {
+        if (this.libraryState.escapedOrder.length > 0) {
+          const firstId = this.libraryState.escapedOrder[0];
+          const champ = this.players.find((p) => p.id === firstId) ?? this.players[0];
+          this.winnerId = champ.id;
+          this.winnerTeam = this.config.teamMode === '2V2' ? (champ.team ?? champ.id % 2) : null;
+          this.winnerReason =
+            champ.name === 'You'
+              ? 'You escaped The Library in 1st place!'
+              : `${champ.name} escaped The Library in 1st place!`;
+          this.emitEvent('victory', champ.x, champ.y, 1, champ.id, 0);
+        } else {
+          const sorted = [...this.players].sort((a, b) => {
+            const pa = this.libraryState!.playerProgress.find((pp) => pp.playerId === a.id)?.collectedCount ?? 0;
+            const pb = this.libraryState!.playerProgress.find((pp) => pp.playerId === b.id)?.collectedCount ?? 0;
+            if (pb !== pa) return pb - pa;
+            return b.kills - a.kills || b.damageDealt - a.damageDealt;
+          });
+          const best = sorted[0] ?? this.players[0];
+          this.winnerId = best.id;
+          this.winnerTeam = this.config.teamMode === '2V2' ? (best.team ?? best.id % 2) : null;
+          this.winnerReason = `The Library claimed everyone — ${best.name} led with most progress`;
+          this.emitEvent('victory', best.x, best.y, 1, best.id, 0);
+        }
+      }
+      return;
+    }
+
     if (this.players.length <= 1) return;
 
     if (this.config.teamMode === '2V2') {
@@ -2254,9 +2442,13 @@ export class ArenaEngine {
     if (this.config.mode === 'ELIMINATION') {
       const alivePlayers = this.players.filter((p) => p.alive);
       if (alivePlayers.length === 1) {
-        this.winnerId = alivePlayers[0].id;
-        this.winnerReason = `${alivePlayers[0].name} is the last player standing`;
-        this.emitEvent('victory', alivePlayers[0].x, alivePlayers[0].y);
+        const champ = alivePlayers[0];
+        this.winnerId = champ.id;
+        this.winnerReason =
+          champ.name === 'You'
+            ? 'You are the last player standing'
+            : `${champ.name} is the last player standing`;
+        this.emitEvent('victory', champ.x, champ.y);
       } else if (alivePlayers.length === 0) {
         const sorted = [...this.players].sort((a, b) => b.kills - a.kills || b.damageDealt - a.damageDealt);
         this.winnerId = sorted[0].id;
@@ -2270,6 +2462,32 @@ export class ArenaEngine {
         this.winnerReason = `${champ.name} reached ${this.config.targetKills} knockouts`;
         this.emitEvent('victory', champ.x, champ.y);
       }
+    }
+  }
+
+  private spawnSmokeParticles(
+    x: number,
+    y: number,
+    count: number,
+    maxSpeed: number,
+    floor: FloorLevel = 0
+  ) {
+    const smokeShades = ['#374151', '#1F2937', '#4B5563'];
+    for (let i = 0; i < count; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = 18 + Math.random() * maxSpeed;
+      this.particles.push({
+        x: x + (Math.random() - 0.5) * 28,
+        y: y + (Math.random() - 0.5) * 28,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp - 12,
+        radius: 10 + Math.random() * 12,
+        color: smokeShades[i % smokeShades.length],
+        age: 0,
+        duration: 0.55 + Math.random() * 0.45,
+        floor,
+        isSmoke: true,
+      });
     }
   }
 
@@ -2582,22 +2800,22 @@ export class ArenaEngine {
       { playerId: 3, side: 'S', x: pc.x, y: pc.y + 110 },
     ];
 
-    // Collect valid book placement spots tucked tightly against Ground & Upper bookshelf ledges
-    const groundSpots: Array<{ x: number; y: number; floor: FloorLevel }> = [];
-    const upperSpots: Array<{ x: number; y: number; floor: FloorLevel }> = [];
+    // Collect valid book placement spots tucked tightly against Ground & Upper bookshelf ledges (with face side recorded!)
+    const groundSpots: Array<{ x: number; y: number; floor: FloorLevel; face: LibraryBookFace }> = [];
+    const upperSpots: Array<{ x: number; y: number; floor: FloorLevel; face: LibraryBookFace }> = [];
 
     for (const wall of this.map.walls) {
       if (wall.kind !== 'bookshelf' || wall.floor === undefined) continue;
       const fl = wall.floor;
       const vertical = wall.h > wall.w;
-      const candidates: Array<{ x: number; y: number }> = vertical
+      const candidates: Array<{ x: number; y: number; face: LibraryBookFace }> = vertical
         ? [
-            { x: wall.x - 16, y: wall.y + wall.h * 0.28 },
-            { x: wall.x + wall.w + 16, y: wall.y + wall.h * 0.72 },
+            { x: wall.x - 16, y: wall.y + wall.h * 0.28, face: 'W' },
+            { x: wall.x + wall.w + 16, y: wall.y + wall.h * 0.72, face: 'E' },
           ]
         : [
-            { x: wall.x + wall.w * 0.28, y: wall.y - 16 },
-            { x: wall.x + wall.w * 0.72, y: wall.y + wall.h + 16 },
+            { x: wall.x + wall.w * 0.28, y: wall.y - 16, face: 'N' },
+            { x: wall.x + wall.w * 0.72, y: wall.y + wall.h + 16, face: 'S' },
           ];
       for (const c of candidates) {
         if (!this.isPointWalkableOnFloor(c.x, c.y, 14, fl)) continue;
@@ -2608,8 +2826,8 @@ export class ArenaEngine {
         ) {
           continue;
         }
-        if (fl === 0) groundSpots.push({ x: c.x, y: c.y, floor: 0 });
-        else upperSpots.push({ x: c.x, y: c.y, floor: 1 });
+        if (fl === 0) groundSpots.push({ x: c.x, y: c.y, floor: 0, face: c.face });
+        else upperSpots.push({ x: c.x, y: c.y, floor: 1, face: c.face });
       }
     }
 
@@ -2642,6 +2860,7 @@ export class ArenaEngine {
         x: Math.round(spot.x),
         y: Math.round(spot.y),
         floor: spot.floor,
+        face: spot.face,
         collected: false,
       }));
 
@@ -2652,6 +2871,9 @@ export class ArenaEngine {
         clues: [],
         codeDigits: new Array(LIBRARY_CODE_LEN).fill(0),
         unlocked: false,
+        escapedRank: null,
+        hearts: LIBRARY_BRAWL_MAX_HEARTS,
+        eliminated: false,
       };
     });
 
@@ -2674,6 +2896,8 @@ export class ArenaEngine {
       targetX: pc.x + 360,
       targetY: pc.y,
       targetFloor: 0,
+      transitioning: false,
+      transitionProgress: 0,
     };
     this.monsterLastProgressX = spawnX;
     this.monsterLastProgressY = spawnY;
@@ -2683,6 +2907,7 @@ export class ArenaEngine {
       pillarSequence,
       totalCollectedAll: 0,
       introTimer: LIBRARY_INTRO_DURATION,
+      escapedOrder: [],
       monster,
       playerProgress,
       doors,
@@ -2724,11 +2949,11 @@ export class ArenaEngine {
 
     const pFloor = player.floor ?? 0;
     let bestBook: LibraryBookSpot | null = null;
-    let bestD = 98;
+    let bestD = Infinity;
     for (const b of prog.books) {
-      if (b.collected || b.floor !== pFloor) continue;
+      if (!canCollectBookSpot(player, b, this.map.walls)) continue;
       const d = dist(player.x, player.y, b.x, b.y);
-      if (d <= bestD) {
+      if (d < bestD) {
         bestD = d;
         bestBook = b;
       }
@@ -2774,7 +2999,7 @@ export class ArenaEngine {
     const prog = this.libraryState.playerProgress.find((pp) => pp.playerId === playerId);
     const door = this.libraryState.doors.find((d) => d.playerId === playerId);
     const solution = this.librarySolutions.get(playerId);
-    if (!player || !prog || !door || !solution) return false;
+    if (!player || !prog || prog.unlocked || !door || !solution) return false;
 
     if ((player.floor ?? 0) !== 0 || dist(player.x, player.y, door.x, door.y) > 155) {
       return false;
@@ -2792,14 +3017,24 @@ export class ArenaEngine {
     }
 
     prog.unlocked = true;
-    this.emitEvent('door_unlock', door.x, door.y, 1, playerId, 0);
+    this.libraryState.escapedOrder.push(playerId);
+    prog.escapedRank = this.libraryState.escapedOrder.length;
+    player.alive = false;
+    player.respawnTimer = 0;
+    player.vx = 0;
+    player.vy = 0;
+    player.ammo = 0;
+    this.emitEvent('door_unlock', door.x, door.y, prog.escapedRank, playerId, 0);
     this.spawnParticles(door.x, door.y, '#34D399', 26, 200, 0);
-    if (this.config.teamMode === '2V2') {
-      this.winnerTeam = player.team ?? player.id % 2;
-    }
-    this.winnerId = player.id;
-    this.winnerReason = `${player.name} unlocked the Library Padlock and escaped!`;
-    this.emitEvent('victory', door.x, door.y, 1, playerId, 0);
+    this.spawnParticles(door.x, door.y, '#FACC15', 14, 170, 0);
+    this.addFloatingText(
+      door.x,
+      door.y - 36,
+      `#${prog.escapedRank} ESCAPED!`,
+      '#FDE047',
+      0
+    );
+    this.checkWinConditions();
     return true;
   }
 
@@ -2816,6 +3051,7 @@ export class ArenaEngine {
     }
 
     // 1. Calm / Stealth / Loud-Sound Hearing Logic (900px circle on same floor = 40% central map area)
+    const maxPlayerSpd = this.getPlayerMaxSpeed();
     let loudestSound: { x: number; y: number; floor: FloorLevel } | null = null;
     this.monsterHearCheckTimer -= dt;
     const checkProbabilisticStealth = this.monsterHearCheckTimer <= 0;
@@ -2832,7 +3068,7 @@ export class ArenaEngine {
       if (d > LIBRARY_HEARING_RADIUS) continue;
 
       const speed = Math.hypot(p.vx, p.vy);
-      const speedRatio = speed / PLAYER_MAX_SPEED;
+      const speedRatio = speed / maxPlayerSpd;
       if (speedRatio >= 0.96) {
         // 100% walking speed inside 900px hearing circle -> instant rage trigger!
         loudestSound = { x: p.x, y: p.y, floor: pFloor };
@@ -2888,7 +3124,6 @@ export class ArenaEngine {
     this.monsterRageSpeedScale = targetRatio;
     const moveSpeed = PLAYER_MAX_SPEED * targetRatio;
 
-    // 3. Two-Floor A* Pathfinding, Balanced Ground/Upper Roaming & Anti-Stuck Recovery
     const pickCalmDestination = () => {
       const wantFloor: FloorLevel = Math.random() < 0.64 ? 0 : 1;
       const candidates = this.navNodes.filter(
@@ -2909,104 +3144,179 @@ export class ArenaEngine {
       }
     };
 
-    this.monsterPathTimer -= dt;
-    if (m.mode === 'calm') {
-      const closeToPatrol = m.floor === m.targetFloor && dist(m.x, m.y, m.targetX, m.targetY) < 75;
-      if (closeToPatrol || (this.monsterPath.length === 0 && this.monsterPathTimer <= 0)) {
-        pickCalmDestination();
+    // 3. Dedicated 2.0-second Smooth Cross-Floor Staircase Traversal & Fade
+    if (m.transitioning) {
+      const nextP = clamp((m.transitionProgress ?? 0) + dt / 2.0, 0, 1);
+      m.transitionProgress = nextP;
+      const dxT = this.monsterTransToX - this.monsterTransFromX;
+      const dyT = this.monsterTransToY - this.monsterTransFromY;
+      m.x = this.monsterTransFromX + dxT * nextP;
+      m.y = this.monsterTransFromY + dyT * nextP;
+      m.vx = dxT / 2.0;
+      m.vy = dyT / 2.0;
+      if (Math.hypot(dxT, dyT) > 2) {
+        const desiredAngle = Math.atan2(dyT, dxT);
+        const diff = normalizeAngle(desiredAngle - m.angle);
+        m.angle = normalizeAngle(m.angle + clamp(diff, -8 * dt, 8 * dt));
       }
-    } else if (this.monsterPathTimer <= 0 || this.monsterPath.length === 0) {
-      this.monsterPath = this.findNavPath(m.x, m.y, m.floor, m.targetX, m.targetY, m.targetFloor);
-      this.monsterPathTimer = 0.4;
-    }
-
-    let wpX = m.targetX;
-    let wpY = m.targetY;
-    while (this.monsterPath.length > 0) {
-      const next = this.monsterPath[0];
-      const hitDist = next.isStair ? 30 : 42;
-      if (dist(m.x, m.y, next.x, next.y) < hitDist && (next.isStair || next.floor === m.floor)) {
-        this.monsterPath.shift();
-      } else {
-        wpX = next.x;
-        wpY = next.y;
-        break;
-      }
-    }
-
-    const dx = wpX - m.x;
-    const dy = wpY - m.y;
-    const dWp = Math.hypot(dx, dy);
-    if (dWp > 3) {
-      const desiredAngle = Math.atan2(dy, dx);
-      const diff = normalizeAngle(desiredAngle - m.angle);
-      m.angle = normalizeAngle(m.angle + clamp(diff, -6.5 * dt, 6.5 * dt));
-      m.vx = (dx / dWp) * moveSpeed;
-      m.vy = (dy / dWp) * moveSpeed;
-      m.x += m.vx * dt;
-      m.y += m.vy * dt;
-    } else {
-      m.vx *= Math.exp(-8 * dt);
-      m.vy *= Math.exp(-8 * dt);
-    }
-
-    // Update floor & resolve walls on Monster's floor
-    const temp = { x: m.x, y: m.y, floor: m.floor, stairBlend: m.floor };
-    this.updateEntityFloorAndBlend(temp);
-    m.floor = temp.floor ?? 0;
-
-    for (let pass = 0; pass < 2; pass++) {
-      for (const wall of this.map.walls) {
-        if (!isWallOnFloor(wall, m.floor)) continue;
-        const cx = clamp(m.x, wall.x, wall.x + wall.w);
-        const cy = clamp(m.y, wall.y, wall.y + wall.h);
-        const wdx = m.x - cx;
-        const wdy = m.y - cy;
-        const d2 = wdx * wdx + wdy * wdy;
-        if (d2 < m.radius * m.radius) {
-          const d = Math.sqrt(d2);
-          if (d > 0.0001) {
-            const ov = m.radius - d;
-            m.x += (wdx / d) * ov;
-            m.y += (wdy / d) * ov;
-          } else {
-            const lp = m.x - wall.x;
-            const rp = wall.x + wall.w - m.x;
-            const tp = m.y - wall.y;
-            const bp = wall.y + wall.h - m.y;
-            const minP = Math.min(lp, rp, tp, bp);
-            if (minP === lp) m.x = wall.x - m.radius;
-            else if (minP === rp) m.x = wall.x + wall.w + m.radius;
-            else if (minP === tp) m.y = wall.y - m.radius;
-            else m.y = wall.y + wall.h + m.radius;
-          }
-        }
-      }
-    }
-
-    // Stuck detector: if Figure ever fails to make net progress for >0.55s, slide toward clearest nav node & reroute
-    if (dist(m.x, m.y, this.monsterLastProgressX, this.monsterLastProgressY) > 22) {
+      m.floor = nextP < 0.5 ? (m.fromFloor ?? m.floor) : (m.toFloor ?? m.floor);
       this.monsterLastProgressX = m.x;
       this.monsterLastProgressY = m.y;
       this.monsterStuckTimer = 0;
-    } else if (moveSpeed > 40) {
-      this.monsterStuckTimer += dt;
-      if (this.monsterStuckTimer > 0.55) {
-        const nearest = this.findClosestNavNode(m.x, m.y, m.floor);
-        if (nearest) {
-          const dN = dist(m.x, m.y, nearest.x, nearest.y);
-          if (dN > 4) {
-            const pull = Math.min(28, dN);
-            m.x += ((nearest.x - m.x) / dN) * pull;
-            m.y += ((nearest.y - m.y) / dN) * pull;
+
+      if (nextP >= 1) {
+        m.transitioning = false;
+        m.floor = m.toFloor ?? m.floor;
+        m.fromFloor = undefined;
+        m.toFloor = undefined;
+        m.transitionProgress = 0;
+        while (this.monsterPath.length > 0 && this.monsterPath[0].isStair) {
+          this.monsterPath.shift();
+        }
+        if (this.monsterPath.length === 0) {
+          if (m.mode === 'calm') {
+            pickCalmDestination();
+          } else {
+            this.monsterPath = this.findNavPath(m.x, m.y, m.floor, m.targetX, m.targetY, m.targetFloor);
           }
         }
-        this.monsterStuckTimer = 0;
-        this.monsterPathTimer = 0;
-        if (m.mode === 'calm') {
+      }
+    } else {
+      // Normal same-floor A* pathfinding
+      this.monsterPathTimer -= dt;
+      if (m.mode === 'calm') {
+        const closeToPatrol = m.floor === m.targetFloor && dist(m.x, m.y, m.targetX, m.targetY) < 75;
+        if (closeToPatrol || (this.monsterPath.length === 0 && this.monsterPathTimer <= 0)) {
           pickCalmDestination();
+        }
+      } else if (this.monsterPathTimer <= 0 || this.monsterPath.length === 0) {
+        this.monsterPath = this.findNavPath(m.x, m.y, m.floor, m.targetX, m.targetY, m.targetFloor);
+        this.monsterPathTimer = 0.4;
+      }
+
+      // Check if Monster has reached the stair mouth to begin a 2.0s cross-floor climb/descent
+      let startedTransition = false;
+      for (let idx = 0; idx < this.monsterPath.length; idx++) {
+        const stepNode = this.monsterPath[idx];
+        if (stepNode.floor !== m.floor) {
+          const st = (this.map.stairs ?? []).find(
+            (s) =>
+              stepNode.x >= s.x - 24 &&
+              stepNode.x <= s.x + s.w + 24 &&
+              stepNode.y >= s.y - 80 &&
+              stepNode.y <= s.y + s.h + 80
+          );
+          if (st) {
+            const cx = st.x + st.w * 0.5;
+            const groundY = st.upDir === 'up' ? st.y + st.h + 52 : st.y - 52;
+            const upperY = st.upDir === 'up' ? st.y - 52 : st.y + st.h + 52;
+            const entryX = cx;
+            const entryY = m.floor === 0 ? groundY : upperY;
+            if (dist(m.x, m.y, entryX, entryY) <= 56) {
+              m.transitioning = true;
+              m.fromFloor = m.floor;
+              m.toFloor = stepNode.floor;
+              m.transitionProgress = 0;
+              this.monsterTransFromX = m.x;
+              this.monsterTransFromY = m.y;
+              this.monsterTransToX = cx;
+              this.monsterTransToY = stepNode.floor === 1 ? upperY : groundY;
+              startedTransition = true;
+            }
+          }
+          break;
+        }
+      }
+
+      if (!startedTransition) {
+        let wpX = m.targetX;
+        let wpY = m.targetY;
+        while (this.monsterPath.length > 0) {
+          const next = this.monsterPath[0];
+          const hitDist = next.isStair ? 30 : 42;
+          if (
+            next.floor === m.floor &&
+            dist(m.x, m.y, next.x, next.y) < hitDist &&
+            this.monsterPath.length > 1
+          ) {
+            this.monsterPath.shift();
+          } else {
+            wpX = next.x;
+            wpY = next.y;
+            break;
+          }
+        }
+
+        const dx = wpX - m.x;
+        const dy = wpY - m.y;
+        const dWp = Math.hypot(dx, dy);
+        if (dWp > 3) {
+          const desiredAngle = Math.atan2(dy, dx);
+          const diff = normalizeAngle(desiredAngle - m.angle);
+          m.angle = normalizeAngle(m.angle + clamp(diff, -6.5 * dt, 6.5 * dt));
+          m.vx = (dx / dWp) * moveSpeed;
+          m.vy = (dy / dWp) * moveSpeed;
+          m.x += m.vx * dt;
+          m.y += m.vy * dt;
         } else {
-          this.monsterPath = this.findNavPath(m.x, m.y, m.floor, m.targetX, m.targetY, m.targetFloor);
+          m.vx *= Math.exp(-8 * dt);
+          m.vy *= Math.exp(-8 * dt);
+        }
+
+        for (let pass = 0; pass < 2; pass++) {
+          for (const wall of this.map.walls) {
+            if (!isWallOnFloor(wall, m.floor)) continue;
+            const cx = clamp(m.x, wall.x, wall.x + wall.w);
+            const cy = clamp(m.y, wall.y, wall.y + wall.h);
+            const wdx = m.x - cx;
+            const wdy = m.y - cy;
+            const d2 = wdx * wdx + wdy * wdy;
+            if (d2 < m.radius * m.radius) {
+              const d = Math.sqrt(d2);
+              if (d > 0.0001) {
+                const ov = m.radius - d;
+                m.x += (wdx / d) * ov;
+                m.y += (wdy / d) * ov;
+              } else {
+                const lp = m.x - wall.x;
+                const rp = wall.x + wall.w - m.x;
+                const tp = m.y - wall.y;
+                const bp = wall.y + wall.h - m.y;
+                const minP = Math.min(lp, rp, tp, bp);
+                if (minP === lp) m.x = wall.x - m.radius;
+                else if (minP === rp) m.x = wall.x + wall.w + m.radius;
+                else if (minP === tp) m.y = wall.y - m.radius;
+                else m.y = wall.y + wall.h + m.radius;
+              }
+            }
+          }
+        }
+
+        // Stuck detector: if Figure ever fails to make net progress for >0.55s, slide toward clearest nav node & reroute
+        if (dist(m.x, m.y, this.monsterLastProgressX, this.monsterLastProgressY) > 22) {
+          this.monsterLastProgressX = m.x;
+          this.monsterLastProgressY = m.y;
+          this.monsterStuckTimer = 0;
+        } else if (moveSpeed > 40) {
+          this.monsterStuckTimer += dt;
+          if (this.monsterStuckTimer > 0.55) {
+            const nearest = this.findClosestNavNode(m.x, m.y, m.floor);
+            if (nearest) {
+              const dN = dist(m.x, m.y, nearest.x, nearest.y);
+              if (dN > 4) {
+                const pull = Math.min(28, dN);
+                m.x += ((nearest.x - m.x) / dN) * pull;
+                m.y += ((nearest.y - m.y) / dN) * pull;
+              }
+            }
+            this.monsterStuckTimer = 0;
+            this.monsterPathTimer = 0;
+            if (m.mode === 'calm') {
+              pickCalmDestination();
+            } else {
+              this.monsterPath = this.findNavPath(m.x, m.y, m.floor, m.targetX, m.targetY, m.targetFloor);
+            }
+          }
         }
       }
     }
@@ -3022,12 +3332,7 @@ export class ArenaEngine {
     for (const p of this.players) {
       if (!p.alive || (p.floor ?? 0) !== m.floor) continue;
       if (dist(p.x, p.y, m.x, m.y) <= m.radius + PLAYER_RADIUS - 6) {
-        p.hp = 0;
-        p.alive = false;
-        p.deaths += 1;
-        p.stunTimer = 0;
-        p.ammo = 0;
-        p.respawnTimer = RESPAWN_DELAY;
+        this.applyDeathPenalty(p);
         this.emitEvent('monster_kill', p.x, p.y, 1, p.id, m.floor);
         this.spawnParticles(p.x, p.y, '#EF4444', 24, 210, m.floor);
         this.addFloatingText(p.x, p.y - (PLAYER_RADIUS + 12), 'CAUGHT BY FIGURE!', '#FB7185', m.floor);
@@ -3039,15 +3344,17 @@ export class ArenaEngine {
     if (!this.libraryState) return;
     const bFloor = bot.floor ?? 0;
     const prog = this.libraryState.playerProgress.find((pp) => pp.playerId === bot.id);
+    if (prog && (prog.unlocked || prog.eliminated)) return;
+
     const door = this.libraryState.doors.find((d) => d.playerId === bot.id);
     const m = this.libraryState.monster;
     const cooldown = Math.max(0, (this.botCodeCooldown.get(bot.id) ?? 0) - dt);
     this.botCodeCooldown.set(bot.id, cooldown);
 
-    // 1. Collect nearby book automatically if close
+    // 1. Collect nearby book automatically if close and on correct side
     if (prog && prog.collectedCount < LIBRARY_BOOKS_PER_PLAYER) {
       for (const b of prog.books) {
-        if (!b.collected && b.floor === bFloor && dist(bot.x, bot.y, b.x, b.y) <= 78) {
+        if (canCollectBookSpot(bot, b, this.map.walls)) {
           this.collectNearbyBook(bot.id);
           break;
         }
@@ -3176,7 +3483,7 @@ export class ArenaEngine {
     const angleDiff = normalizeAngle(bot.aiTargetAngle - bot.angle);
     bot.angle = normalizeAngle(bot.angle + clamp(angleDiff, -8 * dt, 8 * dt));
 
-    const targetSpeed = PLAYER_MAX_SPEED * bot.aiMoveRatio;
+    const targetSpeed = this.getPlayerMaxSpeed() * bot.aiMoveRatio;
     const targetVx = Math.cos(bot.aiTargetAngle) * targetSpeed;
     const targetVy = Math.sin(bot.aiTargetAngle) * targetSpeed;
     const dvx = targetVx - bot.vx;
@@ -3194,23 +3501,31 @@ export class ArenaEngine {
 
   public getSnapshot(localPlayerId = 0): GameSnapshot {
     return {
-      players: this.players.map((p) => ({
-        id: p.id,
-        name: p.name,
-        team: p.team,
-        isHuman: p.id === localPlayerId,
-        color: p.color,
-        hp: p.hp,
-        maxHp: p.maxHp,
-        ammo: p.ammo,
-        maxAmmo: p.maxAmmo,
-        alive: p.alive,
-        stunTimer: p.stunTimer,
-        respawnTimer: p.respawnTimer,
-        kills: p.kills,
-        deaths: p.deaths,
-        damageDealt: p.damageDealt,
-      })),
+      players: this.players.map((p) => {
+        const prog = this.libraryState?.playerProgress.find((pp) => pp.playerId === p.id);
+        return {
+          id: p.id,
+          name: p.name,
+          team: p.team,
+          isHuman: p.id === localPlayerId,
+          color: p.color,
+          accentColor: p.accentColor,
+          finish: p.finish ?? 'solid',
+          hp: p.hp,
+          maxHp: p.maxHp,
+          ammo: p.ammo,
+          maxAmmo: p.maxAmmo,
+          alive: p.alive,
+          stunTimer: p.stunTimer,
+          respawnTimer: p.respawnTimer,
+          kills: p.kills,
+          deaths: p.deaths,
+          damageDealt: p.damageDealt,
+          hearts: prog?.hearts,
+          escapedRank: prog?.escapedRank ?? null,
+          eliminated: prog?.eliminated ?? false,
+        };
+      }),
       elapsedTime: this.elapsedTime,
       activeBullets: this.bullets.length,
       teamMode: this.config.teamMode ?? 'FFA',
@@ -3227,6 +3542,7 @@ export class ArenaEngine {
       immersive: this.map.immersive,
       extraDark: Boolean(this.config.extraDark),
       teamMode: this.config.teamMode ?? 'FFA',
+      modifiers: this.getModifiers(),
       elapsedTime: this.elapsedTime,
       screenShake: this.screenShake,
       winnerId: this.winnerId,
@@ -3237,6 +3553,7 @@ export class ArenaEngine {
             pillarSequence: this.libraryState.pillarSequence,
             totalCollectedAll: this.libraryState.totalCollectedAll,
             introTimer: Math.round(this.libraryState.introTimer * 100) / 100,
+            escapedOrder: [...this.libraryState.escapedOrder],
             monster: { ...this.libraryState.monster },
             playerProgress: this.libraryState.playerProgress.map((pp) => ({
               playerId: pp.playerId,
@@ -3245,6 +3562,9 @@ export class ArenaEngine {
               clues: pp.clues,
               codeDigits: pp.codeDigits,
               unlocked: pp.unlocked,
+              escapedRank: pp.escapedRank ?? null,
+              hearts: pp.hearts,
+              eliminated: pp.eliminated ?? false,
             })),
             doors: this.libraryState.doors,
           }
@@ -3255,6 +3575,7 @@ export class ArenaEngine {
         team: p.team,
         color: p.color,
         accentColor: p.accentColor,
+        finish: p.finish ?? 'solid',
         x: Math.round(p.x * 10) / 10,
         y: Math.round(p.y * 10) / 10,
         vx: Math.round(p.vx),

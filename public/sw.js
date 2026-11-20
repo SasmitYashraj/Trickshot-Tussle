@@ -1,4 +1,4 @@
-const CACHE_NAME = 'trickshot-tussle-v15';
+const CACHE_NAME = 'trickshot-tussle-v16';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -8,6 +8,13 @@ const APP_SHELL = [
   '/icon-maskable-512.png',
   '/apple-touch-icon.png',
   '/icon.svg',
+  '/assets/maps/crossroads.png',
+  '/assets/maps/pillars.png',
+  '/assets/maps/bunkers.png',
+  '/assets/maps/winter_tussle.png',
+  '/assets/maps/immersive_mansion.jpg',
+  '/assets/maps/immersive_outdoors.jpg',
+  '/assets/maps/library.jpg',
 ];
 
 self.addEventListener('install', (event) => {

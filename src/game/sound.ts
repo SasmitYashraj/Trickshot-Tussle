@@ -13,10 +13,6 @@ interface AmbientNodes {
 
 interface NormalMusicNodes {
   master: GainNode;
-  droneFilter: BiquadFilterNode;
-  droneOscA: OscillatorNode;
-  droneOscB: OscillatorNode;
-  droneLfo: OscillatorNode;
 }
 
 export interface FootstepListener {
@@ -66,6 +62,9 @@ class SoundEngine {
   private libraryRawCache = new Map<string, ArrayBuffer>();
   private libraryDecodeInFlight = new Set<string>();
   private activeRoarSource: AudioBufferSourceNode | null = null;
+  private activeStepSources = new Set<AudioBufferSourceNode>();
+  private activeStepOscs = new Set<OscillatorNode>();
+  private monsterStepSilenceUntil = 0;
   private libraryMusicActive = false;
   private libraryMusicProgress = 0;
   private libraryMusicInRage = false;
@@ -361,77 +360,19 @@ class SoundEngine {
     if (!ctx) return;
 
     const now = ctx.currentTime;
-    const masterLevel = 0.105 + tension * 0.08;
-    const droneCutoff =
-      floorTheme === 'winter_snow'
-        ? 270 + tension * 500
-        : floorTheme === 'maple_cargo'
-          ? 195 + tension * 540
-          : 230 + tension * 460;
-
-    // Distinct pedal root per map
-    const droneRootHz =
-      floorTheme === 'winter_snow'
-        ? 92.5 // F#2
-        : floorTheme === 'mansion_wood'
-          ? 65.41 // C2
-          : floorTheme === 'grass_outdoors'
-            ? 82.41 // E2
-            : 73.42; // D2
+    const masterLevel = 0.115 + tension * 0.08;
 
     if (!this.normalMusicNodes) {
       const master = ctx.createGain();
       master.gain.setValueAtTime(0.0005, now);
-      master.gain.linearRampToValueAtTime(masterLevel, now + 0.55);
+      master.gain.linearRampToValueAtTime(masterLevel, now + 0.35);
       master.connect(ctx.destination);
 
-      const droneFilter = ctx.createBiquadFilter();
-      droneFilter.type = 'lowpass';
-      droneFilter.frequency.setValueAtTime(droneCutoff, now);
-      droneFilter.Q.setValueAtTime(floorTheme === 'maple_cargo' ? 2.4 : 1.5, now);
-      droneFilter.connect(master);
-
-      const droneOscA = ctx.createOscillator();
-      droneOscA.type = floorTheme === 'grass_outdoors' ? 'triangle' : 'sawtooth';
-      droneOscA.frequency.setValueAtTime(droneRootHz, now);
-      const gainA = ctx.createGain();
-      gainA.gain.setValueAtTime(0.32, now);
-      droneOscA.connect(gainA);
-      gainA.connect(droneFilter);
-
-      const droneOscB = ctx.createOscillator();
-      droneOscB.type = floorTheme === 'winter_snow' ? 'sine' : 'triangle';
-      droneOscB.frequency.setValueAtTime(droneRootHz * 2, now);
-      const gainB = ctx.createGain();
-      gainB.gain.setValueAtTime(0.24, now);
-      droneOscB.connect(gainB);
-      gainB.connect(droneFilter);
-
-      const droneLfo = ctx.createOscillator();
-      droneLfo.type = 'sine';
-      droneLfo.frequency.setValueAtTime(0.35, now);
-      const lfoGain = ctx.createGain();
-      lfoGain.gain.setValueAtTime(floorTheme === 'maple_cargo' ? 75 : 55, now);
-      droneLfo.connect(lfoGain);
-      lfoGain.connect(droneFilter.frequency);
-
-      droneOscA.start(now);
-      droneOscB.start(now);
-      droneLfo.start(now);
-
-      this.normalMusicNodes = {
-        master,
-        droneFilter,
-        droneOscA,
-        droneOscB,
-        droneLfo,
-      };
+      this.normalMusicNodes = { master };
       this.musicStepTimer = 0.04;
       this.musicStepIndex = 0;
     } else {
-      this.normalMusicNodes.master.gain.setTargetAtTime(masterLevel, now, 0.28);
-      this.normalMusicNodes.droneFilter.frequency.setTargetAtTime(droneCutoff, now, 0.3);
-      this.normalMusicNodes.droneLfo.frequency.setTargetAtTime(0.35 + tension * 0.9, now, 0.3);
+      this.normalMusicNodes.master.gain.setTargetAtTime(masterLevel, now, 0.25);
     }
 
     if (dt <= 0) return;
@@ -966,12 +907,9 @@ class SoundEngine {
     const nodes = this.normalMusicNodes;
     this.normalMusicNodes = null;
     try {
-      nodes.droneOscA.stop();
-      nodes.droneOscB.stop();
-      nodes.droneLfo.stop();
       nodes.master.disconnect();
     } catch {
-      // Ignore already stopped audio nodes
+      // Ignore already disconnected audio nodes
     }
   }
 
@@ -1893,8 +1831,35 @@ class SoundEngine {
     });
   }
 
+  /** Isolate Figure jumpscare kill audio by halting any overlapping footstep thuds briefly */
+  public silenceMonsterSteps(ms = 1400) {
+    this.monsterStepSilenceUntil = Math.max(
+      this.monsterStepSilenceUntil,
+      performance.now() + ms
+    );
+    for (const src of this.activeStepSources) {
+      try {
+        src.stop();
+        src.disconnect();
+      } catch {
+        // Ignore already finished sources
+      }
+    }
+    this.activeStepSources.clear();
+    for (const osc of this.activeStepOscs) {
+      try {
+        osc.stop();
+        osc.disconnect();
+      } catch {
+        // Ignore already finished oscillators
+      }
+    }
+    this.activeStepOscs.clear();
+  }
+
   /** Heavy monstrous Figure footstep using uploaded DOORS thud + chest-shaking sub-bass weight */
   public playMonsterStep(opts?: SpatialAudioOpts, rage = false) {
+    if (performance.now() < this.monsterStepSilenceUntil) return;
     const ctx = this.ensureCtx();
     if (!ctx) return;
     this.preloadLibraryAudio();
@@ -1920,6 +1885,10 @@ class SoundEngine {
       src.connect(bassBoost);
       bassBoost.connect(gain);
       gain.connect(out);
+      this.activeStepSources.add(src);
+      src.onended = () => {
+        this.activeStepSources.delete(src);
+      };
       src.start(now);
     }
 
@@ -1934,6 +1903,10 @@ class SoundEngine {
     sg.gain.exponentialRampToValueAtTime(0.0008, now + (rage ? 0.2 : 0.26));
     sub.connect(sg);
     sg.connect(out);
+    this.activeStepOscs.add(sub);
+    sub.onended = () => {
+      this.activeStepOscs.delete(sub);
+    };
     sub.start(now);
     sub.stop(now + 0.27);
   }
@@ -2004,6 +1977,7 @@ class SoundEngine {
 
   /** Terrifying Figure jumpscare sound when catching and killing the local player */
   public playMonsterJumpscare() {
+    this.silenceMonsterSteps(1400);
     const ctx = this.ensureCtx();
     if (!ctx) return;
     this.preloadLibraryAudio();

@@ -87,7 +87,7 @@ export function LibraryLoadingScreen({ introTimer }: LibraryLoadingScreenProps) 
                   He only hears
                 </div>
                 <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">
-                  The Figure is blind and bullet-proof—he charges full-speed steps and blasts in Rage mode. Use Nitro or TNT blasts to stun him for 15 seconds.
+                  The Figure is blind and bullet-proof—he charges full-speed steps and blasts in Rage mode. Use Nitro or TNT blasts to stun him for 10 seconds.
                 </p>
               </div>
             </div>

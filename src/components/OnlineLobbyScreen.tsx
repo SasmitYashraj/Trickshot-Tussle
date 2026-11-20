@@ -1,8 +1,9 @@
-import { ArrowLeftRight, Check, Copy, Lock, LogOut, Play, Users } from 'lucide-react';
+import { ArrowLeftRight, Check, Copy, Lock, LogOut, Play, Sliders, Users } from 'lucide-react';
 import { useState } from 'react';
-import { IMMERSIVE_MAP_LIST, SOLO_MAP_LIST } from '../game/maps';
+import { ARENA_MAPS, IMMERSIVE_MAP_LIST, MAP_PREVIEW_URLS, SOLO_MAP_LIST } from '../game/maps';
 import {
   type BotDifficulty,
+  DEFAULT_MATCH_MODIFIERS,
   type MapId,
   type MatchConfig,
   type MatchMode,
@@ -10,6 +11,8 @@ import {
   PLAYER_COLOR_PALETTE,
   type TeamMode,
 } from '../game/types';
+import { ModifiersScreen } from './ModifiersScreen';
+import { PlayerAvatar } from './PlayerAvatar';
 
 interface OnlineLobbyScreenProps {
   room: OnlineRoomState;
@@ -31,6 +34,8 @@ export function OnlineLobbyScreen({
   onLeave,
 }: OnlineLobbyScreenProps) {
   const [copied, setCopied] = useState(false);
+  const [modifiersOpen, setModifiersOpen] = useState(false);
+  const [previewFailed, setPreviewFailed] = useState<Record<string, boolean>>({});
   const isHost = room.mySlot === room.hostSlot;
   const is2v2 = room.config.teamMode === '2V2';
   const occupiedCount = room.slots.filter((s) => s.occupied).length;
@@ -164,9 +169,12 @@ export function OnlineLobbyScreen({
                   >
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2.5 min-w-0">
-                        <span
-                          className="h-3.5 w-3.5 rounded-sm shrink-0 border border-slate-950"
-                          style={{ backgroundColor: slot.color }}
+                        <PlayerAvatar
+                          color={slot.color}
+                          accentColor={PLAYER_COLOR_PALETTE.find((c) => c.id === slot.colorId)?.accentColor}
+                          finish={slot.finish}
+                          size={22}
+                          showVisor={false}
                         />
                         <span className="font-display text-sm font-bold text-slate-100 truncate">
                           {slot.name}
@@ -196,10 +204,12 @@ export function OnlineLobbyScreen({
 
             <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/60 p-3.5">
               <div className="flex items-center justify-between gap-2 mb-2">
-                <span className="text-xs font-semibold text-slate-300">Your Fighter Color</span>
-                <span className="text-[11px] text-slate-400">Unique per player</span>
+                <span className="text-xs font-semibold text-slate-300">Fighter Color &amp; Finish</span>
+                <span className="text-[11px] text-slate-400">
+                  {PLAYER_COLOR_PALETTE.find((c) => c.id === mySlotObj?.colorId)?.name ?? 'Unique per player'}
+                </span>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="grid grid-cols-9 gap-1.5">
                 {PLAYER_COLOR_PALETTE.map((opt) => {
                   const isMine = mySlotObj?.colorId === opt.id;
                   const takenByHuman = humanTakenColors.has(opt.id);
@@ -209,18 +219,27 @@ export function OnlineLobbyScreen({
                       type="button"
                       disabled={takenByHuman}
                       title={takenByHuman ? `${opt.name} (taken)` : opt.name}
-                      aria-label={`Choose ${opt.name} color`}
+                      aria-label={`Choose ${opt.name}`}
                       onClick={() => onUpdateColor(opt.id)}
-                      className={`h-8 flex-1 rounded-lg border-2 flex items-center justify-center transition-all ${
+                      className={`h-8 rounded-lg border flex items-center justify-center transition-all ${
                         isMine
-                          ? 'border-white scale-105 shadow-[0_0_0_2px_rgba(14,165,233,0.45)] cursor-pointer'
+                          ? 'bg-slate-800 border-white scale-105 shadow-[0_0_0_2px_rgba(14,165,233,0.45)] cursor-pointer'
                           : takenByHuman
-                            ? 'border-slate-900 opacity-30 cursor-not-allowed'
-                            : 'border-slate-950/80 opacity-80 hover:opacity-100 cursor-pointer'
+                            ? 'bg-slate-950 border-slate-900 opacity-30 cursor-not-allowed'
+                            : 'bg-slate-950/60 border-slate-800 opacity-85 hover:opacity-100 cursor-pointer'
                       }`}
-                      style={{ backgroundColor: opt.color }}
                     >
-                      {takenByHuman && <Lock className="w-3 h-3 text-slate-950" />}
+                      {takenByHuman ? (
+                        <Lock className="w-3 h-3 text-slate-500" />
+                      ) : (
+                        <PlayerAvatar
+                          color={opt.color}
+                          accentColor={opt.accentColor}
+                          finish={opt.finish}
+                          size={22}
+                          showVisor={false}
+                        />
+                      )}
                     </button>
                   );
                 })}
@@ -268,6 +287,38 @@ export function OnlineLobbyScreen({
                 >
                   Immersive Camera
                 </button>
+              </div>
+            </div>
+
+            {/* Feathered Selected Map Preview Banner */}
+            <div className="rounded-xl border border-slate-800 bg-[#0D1424] overflow-hidden">
+              <div className="relative h-20 w-full bg-slate-950 overflow-hidden">
+                {!previewFailed[room.config.mapId] ? (
+                  <img
+                    src={MAP_PREVIEW_URLS[room.config.mapId]}
+                    alt={ARENA_MAPS[room.config.mapId].name}
+                    referrerPolicy="no-referrer"
+                    onError={() => setPreviewFailed((prev) => ({ ...prev, [room.config.mapId]: true }))}
+                    className="h-full w-full object-cover object-center"
+                  />
+                ) : (
+                  <div className="h-full w-full bg-slate-900" />
+                )}
+                <div
+                  className="pointer-events-none absolute inset-0"
+                  style={{
+                    background:
+                      'linear-gradient(180deg, rgba(13,20,36,0.08) 10%, rgba(13,20,36,0.75) 70%, #0D1424 100%)',
+                  }}
+                />
+              </div>
+              <div className="px-3 pb-2.5 -mt-4 relative z-10 flex items-center justify-between gap-2">
+                <span className="font-display text-sm font-extrabold text-slate-50 truncate">
+                  {ARENA_MAPS[room.config.mapId].name}
+                </span>
+                <span className="text-[10px] font-mono-tabular text-sky-300 shrink-0">
+                  {room.config.immersive ? 'Immersive' : '2D'}
+                </span>
               </div>
             </div>
 
@@ -428,6 +479,15 @@ export function OnlineLobbyScreen({
               </div>
             )}
 
+            <button
+              type="button"
+              onClick={() => setModifiersOpen(true)}
+              className="w-full inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 hover:bg-slate-800 px-4 py-2 text-xs font-semibold text-slate-200 transition-colors cursor-pointer whitespace-nowrap"
+            >
+              <Sliders className="w-3.5 h-3.5 text-sky-400" />
+              {isHost ? 'Arena Modifiers' : 'View Host Modifiers'}
+            </button>
+
             {isHost ? (
               <button
                 type="button"
@@ -447,6 +507,15 @@ export function OnlineLobbyScreen({
         </div>
         </div>
       </div>
+
+      {modifiersOpen && (
+        <ModifiersScreen
+          modifiers={room.config.modifiers ?? DEFAULT_MATCH_MODIFIERS}
+          readOnly={!isHost}
+          onChange={(nextMods) => onUpdateConfig({ ...room.config, modifiers: nextMods })}
+          onClose={() => setModifiersOpen(false)}
+        />
+      )}
     </div>
   );
 }

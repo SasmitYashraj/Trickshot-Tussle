@@ -3,11 +3,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { GameOverModal } from './components/GameOverModal';
 import { LibraryLoadingScreen } from './components/LibraryLoadingScreen';
 import { LibraryOverlays } from './components/LibraryOverlays';
+import { MapSelectScreen } from './components/MapSelectScreen';
 import { OnlineLobbyScreen } from './components/OnlineLobbyScreen';
 import { PlayerHealthBar } from './components/PlayerHealthBar';
 import { TitleScreen } from './components/TitleScreen';
 import { TouchControls } from './components/TouchControls';
-import { ArenaEngine } from './game/engine';
+import { ArenaEngine, canCollectBookSpot } from './game/engine';
 import { ARENA_MAPS } from './game/maps';
 import {
   type CameraState,
@@ -18,6 +19,7 @@ import {
 import { sound } from './game/sound';
 import {
   type ControlScheme,
+  DEFAULT_MATCH_MODIFIERS,
   type EngineEvent,
   type FloorLevel,
   type GameSnapshot,
@@ -41,6 +43,7 @@ interface LibraryUiSnapshot {
   playerAlive: boolean;
   canCollectBook: boolean;
   canUnlockDoor: boolean;
+  spectateCandidates: Array<{ id: number; name: string }>;
 }
 
 const DEFAULT_SOLO_CONFIG: MatchConfig = {
@@ -51,6 +54,7 @@ const DEFAULT_SOLO_CONFIG: MatchConfig = {
   targetKills: 8,
   immersive: false,
   playerColorId: 'cobalt',
+  modifiers: { ...DEFAULT_MATCH_MODIFIERS },
 };
 
 const DEFAULT_ONLINE_CONFIG: MatchConfig = {
@@ -63,6 +67,7 @@ const DEFAULT_ONLINE_CONFIG: MatchConfig = {
   extraDark: false,
   fillBots: true,
   playerColorId: 'cobalt',
+  modifiers: { ...DEFAULT_MATCH_MODIFIERS },
 };
 
 function formatClock(seconds: number): string {
@@ -240,23 +245,31 @@ function playEngineEvents(
 
 function worldToSnapshot(world: WorldSyncState, localSlot: number): GameSnapshot {
   return {
-    players: world.players.map((p) => ({
-      id: p.id,
-      name: p.name,
-      team: p.team,
-      isHuman: p.id === localSlot,
-      color: p.color,
-      hp: p.hp,
-      maxHp: p.maxHp,
-      ammo: p.ammo,
-      maxAmmo: p.maxAmmo,
-      alive: p.alive,
-      stunTimer: p.stunTimer,
-      respawnTimer: p.respawnTimer,
-      kills: p.kills,
-      deaths: p.deaths,
-      damageDealt: p.damageDealt,
-    })),
+    players: world.players.map((p) => {
+      const libProg = world.libraryState?.playerProgress.find((pp) => pp.playerId === p.id);
+      return {
+        id: p.id,
+        name: p.name,
+        team: p.team,
+        isHuman: p.id === localSlot,
+        color: p.color,
+        accentColor: p.accentColor,
+        finish: p.finish,
+        hp: p.hp,
+        maxHp: p.maxHp,
+        ammo: p.ammo,
+        maxAmmo: p.maxAmmo,
+        alive: p.alive,
+        stunTimer: p.stunTimer,
+        respawnTimer: p.respawnTimer,
+        kills: p.kills,
+        deaths: p.deaths,
+        damageDealt: p.damageDealt,
+        hearts: libProg?.hearts,
+        escapedRank: libProg?.escapedRank ?? null,
+        eliminated: libProg?.eliminated,
+      };
+    }),
     elapsedTime: world.elapsedTime,
     activeBullets: world.bullets.length,
     teamMode: world.teamMode,
@@ -273,6 +286,7 @@ export default function App() {
       : '';
 
   const [gameState, setGameState] = useState<GameState>('TITLE_MENU');
+  const [menuStep, setMenuStep] = useState<'HUB' | 'MAP_SELECT'>('HUB');
   const [config, setConfig] = useState<MatchConfig>(DEFAULT_SOLO_CONFIG);
   const [muted, setMuted] = useState(false);
   const [hasUsedJoystick, setHasUsedJoystick] = useState(false);
@@ -301,6 +315,7 @@ export default function App() {
   const [streakNow, setStreakNow] = useState<number>(0);
 
   const [pcSpeedLimit, setPcSpeedLimit] = useState<number>(100);
+  const [spectateTargetId, setSpectateTargetId] = useState<number | null>(null);
   const [libraryLockOpen, setLibraryLockOpen] = useState<boolean>(false);
   const [lockErrorSeq, setLockErrorSeq] = useState<number>(0);
   const [jumpscareFlash, setJumpscareFlash] = useState<boolean>(false);
@@ -336,6 +351,7 @@ export default function App() {
   const roomStateRef = useRef<OnlineRoomState | null>(roomState);
   const controlSchemeRef = useRef<ControlScheme>(controlScheme);
   const pcSpeedLimitRef = useRef<number>(pcSpeedLimit);
+  const spectateTargetIdRef = useRef<number | null>(spectateTargetId);
   const libraryLockOpenRef = useRef<boolean>(libraryLockOpen);
   const libraryUiRef = useRef<LibraryUiSnapshot | null>(libraryUi);
   const jumpscareTimerRef = useRef<number | null>(null);
@@ -360,10 +376,20 @@ export default function App() {
     pcSpeedLimitRef.current = pcSpeedLimit;
   }, [pcSpeedLimit]);
 
+  useEffect(() => {
+    spectateTargetIdRef.current = spectateTargetId;
+  }, [spectateTargetId]);
+
   const updatePcSpeedLimit = useCallback((nextVal: number) => {
     const clamped = Math.max(35, Math.min(100, Math.round(nextVal)));
     pcSpeedLimitRef.current = clamped;
     setPcSpeedLimit(clamped);
+  }, []);
+
+  const togglePcStealth = useCallback(() => {
+    const next = pcSpeedLimitRef.current < 80 ? 100 : 72;
+    pcSpeedLimitRef.current = next;
+    setPcSpeedLimit(next);
   }, []);
 
   useEffect(() => {
@@ -411,6 +437,7 @@ export default function App() {
           setSelfKillPopup(null);
           setLibraryLockOpen(false);
           setLockErrorSeq(0);
+          setSpectateTargetId(null);
           setLibraryUi(null);
           libraryUiRef.current = null;
           setGameState('ONLINE_LOBBY');
@@ -424,6 +451,7 @@ export default function App() {
           setSelfKillPopup(null);
           setLibraryLockOpen(false);
           setLockErrorSeq(0);
+          setSpectateTargetId(null);
           setLibraryUi(null);
           libraryUiRef.current = null;
           setGameState('PLAYING');
@@ -508,6 +536,7 @@ export default function App() {
       }
       setIsOnline(false);
       setRoomState(null);
+      setMenuStep('HUB');
       cameraRef.current.initialized = false;
       engineRef.current.reset(nextCfg);
       engineRef.current.setControlScheme(controlSchemeRef.current);
@@ -517,6 +546,7 @@ export default function App() {
       setSelfKillPopup(null);
       setLibraryLockOpen(false);
       setLockErrorSeq(0);
+      setSpectateTargetId(null);
       setJumpscareFlash(false);
       setLibraryUi(null);
       libraryUiRef.current = null;
@@ -637,6 +667,14 @@ export default function App() {
 
       if (gameStateRef.current !== 'PLAYING') return;
 
+      if (e.code === 'KeyC' && !e.repeat && controlSchemeRef.current === 'CURSOR_SPACE') {
+        const libUi = libraryUiRef.current;
+        if (libUi && libUi.state.introTimer <= 0 && libUi.playerAlive) {
+          togglePcStealth();
+          return;
+        }
+      }
+
       if (e.code === 'KeyE' && !e.repeat) {
         const libUi = libraryUiRef.current;
         if (libUi && libUi.state.introTimer <= 0 && libUi.playerAlive) {
@@ -698,7 +736,7 @@ export default function App() {
       window.removeEventListener('keyup', onKeyUp, { capture: true });
       window.removeEventListener('blur', onBlur);
     };
-  }, [togglePause]);
+  }, [togglePause, togglePcStealth]);
 
   // High-DPI Canvas ResizeObserver
   useEffect(() => {
@@ -836,9 +874,10 @@ export default function App() {
         };
       }
 
-      // Sync Library HUD / proximity / audio track availability cleanly
+      // Sync Library HUD / proximity / spectate targets / audio track availability cleanly
       if (worldToRender && worldToRender.mapId === 'library' && worldToRender.libraryState) {
         const libState = worldToRender.libraryState;
+        const libWalls = ARENA_MAPS[worldToRender.mapId].walls;
         const localP = worldToRender.players.find((p) => p.id === localId);
         const pFloor = (localP?.floor ?? 0) as FloorLevel;
         const pSpeed = localP ? Math.hypot(localP.vx ?? 0, localP.vy ?? 0) : 0;
@@ -850,9 +889,7 @@ export default function App() {
           pAlive &&
             localP &&
             prog &&
-            prog.books.some(
-              (b) => !b.collected && b.floor === pFloor && Math.hypot(localP.x - b.x, localP.y - b.y) <= 98
-            )
+            prog.books.some((b) => canCollectBookSpot(localP, b, libWalls))
         );
         const canUnlockDoor = Boolean(
           pAlive &&
@@ -862,6 +899,24 @@ export default function App() {
             !prog?.unlocked &&
             Math.hypot(localP.x - door.x, localP.y - door.y) <= 155
         );
+
+        const spectateCandidates = worldToRender.players
+          .filter((p) => p.id !== localId && p.alive)
+          .map((p) => ({ id: p.id, name: p.name }));
+
+        if (!pAlive && (prog?.unlocked || prog?.eliminated)) {
+          const curTarget = spectateTargetIdRef.current;
+          if (
+            spectateCandidates.length > 0 &&
+            !spectateCandidates.some((c) => c.id === curTarget)
+          ) {
+            spectateTargetIdRef.current = spectateCandidates[0].id;
+            setSpectateTargetId(spectateCandidates[0].id);
+          }
+        } else if (spectateTargetIdRef.current !== null) {
+          spectateTargetIdRef.current = null;
+          setSpectateTargetId(null);
+        }
 
         if (!pAlive && libraryLockOpenRef.current) {
           setLibraryLockOpen(false);
@@ -874,6 +929,7 @@ export default function App() {
           playerAlive: pAlive,
           canCollectBook,
           canUnlockDoor,
+          spectateCandidates,
         };
         const prevUi = libraryUiRef.current;
         libraryUiRef.current = nextLibUi;
@@ -887,7 +943,8 @@ export default function App() {
           prevUi.state.playerProgress.find((pp) => pp.playerId === localId)?.collectedCount !==
             prog?.collectedCount ||
           prevUi.playerFloor !== pFloor ||
-          prevUi.playerAlive !== pAlive;
+          prevUi.playerAlive !== pAlive ||
+          prevUi.spectateCandidates.length !== spectateCandidates.length;
 
         if (stateFlipped || libHudAccumulator >= 0.08) {
           libHudAccumulator = 0;
@@ -1041,6 +1098,7 @@ export default function App() {
               controlScheme: controlSchemeRef.current,
               cursorScreen: cursorScreenRef.current,
               hideJoystick: controlSchemeRef.current === 'DRAG_STICK',
+              spectateTargetId: spectateTargetIdRef.current,
             }
           );
           ctx.restore();
@@ -1106,6 +1164,17 @@ export default function App() {
   };
 
   if (gameState === 'TITLE_MENU') {
+    if (menuStep === 'MAP_SELECT') {
+      return (
+        <MapSelectScreen
+          config={config}
+          onSelectMap={setConfig}
+          onConfirmAndLaunch={() => startSoloMatch(config)}
+          onBack={() => setMenuStep('HUB')}
+        />
+      );
+    }
+
     return (
       <TitleScreen
         config={config}
@@ -1113,6 +1182,7 @@ export default function App() {
         onlineError={onlineError}
         onlineConnecting={onlineConnecting}
         onChangeConfig={setConfig}
+        onOpenMapSelect={() => setMenuStep('MAP_SELECT')}
         onStartSolo={() => startSoloMatch(config)}
         onCreateOnlineRoom={handleCreateOnlineRoom}
         onJoinOnlineRoom={handleJoinOnlineRoom}
@@ -1637,7 +1707,7 @@ export default function App() {
               </div>
             )}
 
-          {/* Library HUD, Collect/Unlock Prompt, & Semi-Transparent 5-Wheel Padlock */}
+          {/* Library HUD, Collect/Unlock Prompt, PC Stealth & Spectate, & Semi-Transparent 5-Wheel Padlock */}
           {activeConfig.mapId === 'library' &&
             libraryUi &&
             libraryUi.state.introTimer <= 0 &&
@@ -1645,6 +1715,10 @@ export default function App() {
               <LibraryOverlays
                 libraryState={libraryUi.state}
                 localPlayerId={localSlot}
+                mode={activeConfig.mode}
+                isOnline={isOnline}
+                isCursorScheme={controlScheme === 'CURSOR_SPACE'}
+                stealthEnabled={pcSpeedLimit < 80}
                 playerFloor={libraryUi.playerFloor}
                 playerSpeed={libraryUi.playerSpeed}
                 playerAlive={libraryUi.playerAlive}
@@ -1652,6 +1726,27 @@ export default function App() {
                 canUnlockDoor={libraryUi.canUnlockDoor}
                 lockOpen={libraryLockOpen}
                 lockErrorSeq={lockErrorSeq}
+                spectateTargetName={
+                  libraryUi.spectateCandidates.find((c) => c.id === spectateTargetId)?.name ??
+                  libraryUi.spectateCandidates[0]?.name ??
+                  null
+                }
+                spectateCount={libraryUi.spectateCandidates.length}
+                onToggleStealth={togglePcStealth}
+                onCycleSpectate={(delta) => {
+                  const list = libraryUi.spectateCandidates;
+                  if (list.length === 0) return;
+                  const idx = Math.max(0, list.findIndex((c) => c.id === spectateTargetId));
+                  const next = list[(idx + delta + list.length) % list.length];
+                  setSpectateTargetId(next.id);
+                }}
+                onFinishSoloMatch={() => {
+                  if (!isOnline && engineRef.current.finishSoloLibrary()) {
+                    setSnapshot(engineRef.current.getSnapshot(0));
+                    setLibraryLockOpen(false);
+                    setGameState('GAME_OVER');
+                  }
+                }}
                 onCollectBook={() => {
                   sound.unlock();
                   if (isOnlineRef.current) {
