@@ -152,6 +152,8 @@ export interface LibraryMonsterState {
   radius: number;
   mode: 'calm' | 'rage';
   stunTimer: number;
+  slowTimer?: number;
+  speedRatio?: number;
   rageTimer: number;
   rageFadeTimer: number;
   reachedHoldTimer: number;
@@ -577,6 +579,7 @@ export const KILL_STREAK_WINDOW = 3.0;
 
 export const MONSTER_RADIUS = PLAYER_RADIUS * 1.5;
 export const MONSTER_STUN_DURATION = 10.0;
+export const MONSTER_SLOW_DURATION = 3.0;
 export const LIBRARY_BRAWL_MAX_HEARTS = 8;
 export const LIBRARY_HEARING_RADIUS = 900;
 export const LIBRARY_BOOKS_PER_PLAYER = 8;

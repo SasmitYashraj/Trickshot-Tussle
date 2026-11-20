@@ -1785,6 +1785,9 @@ export default function App() {
               ammo={localSnap?.ammo ?? 0}
               stunned={(localSnap?.stunTimer ?? 0) > 0}
               alive={localSnap?.alive ?? true}
+              playerColor={localSnap?.color}
+              playerAccentColor={localSnap?.accentColor}
+              playerFinish={localSnap?.finish}
               onStickChange={(active, angle, magnitude) => {
                 sound.unlock();
                 if (!hasUsedJoystick) setHasUsedJoystick(true);

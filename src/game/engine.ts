@@ -41,6 +41,7 @@ import {
   MEDKIT_HEAL,
   MEDKIT_RADIUS,
   MONSTER_RADIUS,
+  MONSTER_SLOW_DURATION,
   MONSTER_STUN_DURATION,
   type MatchConfig,
   type MatchModifiers,
@@ -2335,7 +2336,7 @@ export class ArenaEngine {
         }
         if (destroyed) break;
 
-        // Bullets bounce harmlessly off The Figure (bulletproof!)
+        // Bullets bounce off The Figure AND smoothly slow it down to calm speed for 3 seconds!
         if (this.libraryState && sameFloor(this.libraryState.monster.floor, bFloor)) {
           const m = this.libraryState.monster;
           const dx = b.x - m.x;
@@ -2353,8 +2354,18 @@ export class ArenaEngine {
               b.vy -= 2 * dot * ny;
             }
             b.bouncesLeft -= 1;
+
+            const wasSlowed = (m.slowTimer ?? 0) > 1.8;
+            m.slowTimer = MONSTER_SLOW_DURATION;
+            if (!wasSlowed && m.stunTimer <= 0) {
+              this.addFloatingText(m.x, m.y - (m.radius + 14), 'SLOWED 3s!', '#38BDF8', m.floor);
+            }
+            const shooter = this.players.find((pl) => pl.id === b.ownerId);
+            if (shooter) shooter.shotsHit += 1;
+
             this.emitEvent('bounce', b.x, b.y, 2, undefined, bFloor);
             this.spawnParticles(b.x, b.y, '#FB923C', 6, 130, bFloor);
+            this.spawnParticles(b.x, b.y, '#38BDF8', 7, 145, bFloor);
             if (b.bouncesLeft < 0) {
               destroyed = true;
               break;
@@ -3318,6 +3329,8 @@ export class ArenaEngine {
       radius: MONSTER_RADIUS,
       mode: 'calm',
       stunTimer: 0,
+      slowTimer: 0,
+      speedRatio: 0.5,
       rageTimer: 0,
       rageFadeTimer: 0,
       reachedHoldTimer: 0,
@@ -3517,9 +3530,11 @@ export class ArenaEngine {
       this.triggerMonsterRage(loudestSound.x, loudestSound.y, loudestSound.floor);
     }
 
-    // 2. Speed & Mode State Machine (Calm 0.50->0.85x, Rage 1.00->1.50x, 1s smooth fade-out)
+    // 2. Speed & Mode State Machine (Calm 0.50->0.85x, Rage 1.00->1.50x, 1s smooth fade-out, 3s bullet slowdown to calm speed)
     const calmRatio = 0.50 + progFrac * 0.35;
     const rageRatio = 1.00 + progFrac * 0.50;
+
+    m.slowTimer = Math.max(0, (m.slowTimer ?? 0) - dt);
 
     if (m.mode === 'rage') {
       m.rageTimer -= dt;
@@ -3543,14 +3558,21 @@ export class ArenaEngine {
       m.rageFadeTimer = Math.max(0, m.rageFadeTimer - dt);
     }
 
-    const targetRatio =
+    const baseTargetRatio =
       m.mode === 'rage'
         ? rageRatio
         : m.rageFadeTimer > 0
           ? calmRatio + (rageRatio - calmRatio) * m.rageFadeTimer
           : calmRatio;
-    this.monsterRageSpeedScale = targetRatio;
-    const moveSpeed = PLAYER_MAX_SPEED * targetRatio;
+
+    const desiredRatio = (m.slowTimer ?? 0) > 0 ? Math.min(baseTargetRatio, calmRatio) : baseTargetRatio;
+    const currentRatio = m.speedRatio ?? desiredRatio;
+    const blendRate = desiredRatio < currentRatio ? 5.8 : 4.5;
+    const nextRatio = currentRatio + (desiredRatio - currentRatio) * (1 - Math.exp(-blendRate * dt));
+    m.speedRatio = nextRatio;
+
+    this.monsterRageSpeedScale = nextRatio;
+    const moveSpeed = PLAYER_MAX_SPEED * nextRatio;
 
     const pickCalmDestination = () => {
       const wantFloor: FloorLevel = Math.random() < 0.64 ? 0 : 1;
@@ -3969,6 +3991,22 @@ export class ArenaEngine {
             return;
           }
         }
+      }
+
+      // Priority A2 (Ruthless / Tactical): Shoot raging Figure when chasing close to slow it to calm speed for 3s and escape!
+      if (
+        diff !== 'CHILL' &&
+        m.stunTimer <= 0 &&
+        (m.slowTimer ?? 0) <= 0.35 &&
+        m.mode === 'rage' &&
+        sameFloorMonster &&
+        monsterDist < (diff === 'RUTHLESS' ? 370 : 250) &&
+        this.hasLineOfSight(bot.x, bot.y, m.x, m.y, bFloor)
+      ) {
+        bot.angle = Math.atan2(m.y - bot.y, m.x - bot.x);
+        this.fireBullet(bot);
+        bot.aiHoldShotTimer = 0.7;
+        return;
       }
 
       // Priority B (Ruthless): Shoot Nitro/TNT near rival (either kills rival OR triggers Figure rage toward rival!)
