@@ -143,6 +143,28 @@ interface NavNode {
   neighbors: number[];
 }
 
+interface BotAiMemory {
+  patrolX: number;
+  patrolY: number;
+  patrolFloor: FloorLevel;
+  patrolTimer: number;
+  scanPhase: number;
+  lastSeenEnemyId: number | null;
+  lastSeenX: number;
+  lastSeenY: number;
+  lastSeenFloor: FloorLevel;
+  lastSeenTimer: number;
+  rageBaitTimer: number;
+  rageBaitCooldown: number;
+  dialTimer: number;
+  dialMistakeDone: boolean;
+  lastProgressX: number;
+  lastProgressY: number;
+  stuckTimer: number;
+  unstickTimer: number;
+  unstickAngle: number;
+}
+
 const TNT_HALF_SIZE = 29;
 
 export const PLAYER_PRESETS = [
@@ -312,6 +334,7 @@ export class ArenaEngine {
   private rapidStreaks = new Map<number, { count: number; lastKillAt: number }>();
 
   private navNodes: NavNode[] = [];
+  private botNavNodes: NavNode[] = [];
   private monsterPath: NavNode[] = [];
   private monsterPathTimer = 0;
   private monsterStepTimer = 0.25;
@@ -329,6 +352,7 @@ export class ArenaEngine {
   private libraryCollectedSpots = new Set<number>();
   private botPaths = new Map<number, { nodes: NavNode[]; timer: number; goalX: number; goalY: number; goalFloor: FloorLevel }>();
   private botCodeCooldown = new Map<number, number>();
+  private botAiMemory = new Map<number, BotAiMemory>();
 
   private getModifiers(): MatchModifiers {
     return this.config.modifiers ?? DEFAULT_MATCH_MODIFIERS;
@@ -375,6 +399,7 @@ export class ArenaEngine {
     this.rapidStreaks.clear();
     this.libraryState = undefined;
     this.navNodes = [];
+    this.botNavNodes = [];
     this.monsterPath = [];
     this.monsterPathTimer = 0;
     this.monsterStepTimer = 0.25;
@@ -392,6 +417,7 @@ export class ArenaEngine {
     this.libraryCollectedSpots.clear();
     this.botPaths.clear();
     this.botCodeCooldown.clear();
+    this.botAiMemory.clear();
 
     const mods = this.getModifiers();
     const isImmersive = this.map.immersive;
@@ -1530,89 +1556,433 @@ export class ArenaEngine {
     }
   }
 
+  private getBotMemory(bot: Player): BotAiMemory {
+    let mem = this.botAiMemory.get(bot.id);
+    if (!mem) {
+      mem = {
+        patrolX: this.map.width * 0.5,
+        patrolY: this.map.height * 0.5,
+        patrolFloor: bot.floor ?? 0,
+        patrolTimer: 0,
+        scanPhase: bot.id * 1.7,
+        lastSeenEnemyId: null,
+        lastSeenX: bot.x,
+        lastSeenY: bot.y,
+        lastSeenFloor: bot.floor ?? 0,
+        lastSeenTimer: 0,
+        rageBaitTimer: 0,
+        rageBaitCooldown: 2.5,
+        dialTimer: 0,
+        dialMistakeDone: false,
+        lastProgressX: bot.x,
+        lastProgressY: bot.y,
+        stuckTimer: 0,
+        unstickTimer: 0,
+        unstickAngle: bot.angle,
+      };
+      this.botAiMemory.set(bot.id, mem);
+    }
+    return mem;
+  }
+
+  private canBotSeePoint(
+    bot: Player,
+    tx: number,
+    ty: number,
+    targetFloor: FloorLevel = 0,
+    isGlowingObject = false
+  ): boolean {
+    const bFloor = bot.floor ?? 0;
+    if (!sameFloor(bFloor, targetFloor)) return false;
+    const d = dist(bot.x, bot.y, tx, ty);
+    if (this.map.immersive) {
+      const maxRange = this.config.extraDark ? (isGlowingObject ? 470 : 450) : 560;
+      if (d > maxRange) return false;
+      if (this.config.extraDark) {
+        const ambientAura = isGlowingObject ? 290 : 208;
+        if (d > ambientAura) {
+          const angDiff = Math.abs(normalizeAngle(Math.atan2(ty - bot.y, tx - bot.x) - bot.angle));
+          if (angDiff > 0.68) return false;
+        }
+      }
+    }
+    return this.hasLineOfSight(bot.x, bot.y, tx, ty, bFloor);
+  }
+
+  private pickClearMoveAngle(
+    bot: Player,
+    desiredAngle: number,
+    probeDist = 72,
+    strafeBias = 1
+  ): number {
+    const bFloor = bot.floor ?? 0;
+    const clearR = PLAYER_RADIUS + 4;
+    if (
+      this.isSegmentClearOnFloor(
+        bot.x,
+        bot.y,
+        bot.x + Math.cos(desiredAngle) * probeDist,
+        bot.y + Math.sin(desiredAngle) * probeDist,
+        clearR,
+        bFloor
+      )
+    ) {
+      return desiredAngle;
+    }
+
+    const offsets = [0.45, -0.45, 0.9, -0.9, 1.35, -1.35, 1.85, -1.85, 2.45, -2.45, Math.PI];
+    let bestAngle = desiredAngle + strafeBias * 1.15;
+    let bestScore = -Infinity;
+    for (const off of offsets) {
+      const cand = normalizeAngle(desiredAngle + off * strafeBias);
+      const px = bot.x + Math.cos(cand) * probeDist;
+      const py = bot.y + Math.sin(cand) * probeDist;
+      if (!this.isPointWalkableOnFloor(px, py, clearR, bFloor)) continue;
+      if (!this.isSegmentClearOnFloor(bot.x, bot.y, px, py, clearR - 2, bFloor)) continue;
+      const align = Math.cos(normalizeAngle(cand - desiredAngle));
+      if (align > bestScore) {
+        bestScore = align;
+        bestAngle = cand;
+      }
+    }
+    return bestAngle;
+  }
+
+  private pickArenaPatrolPoint(bot: Player): Vec2 {
+    const pad = ARENA_WALL_THICKNESS + PLAYER_RADIUS + 40;
+    const minDist = this.map.immersive ? 380 : 220;
+    for (let tries = 0; tries < 20; tries++) {
+      const x = pad + Math.random() * (this.map.width - pad * 2);
+      const y = pad + Math.random() * (this.map.height - pad * 2);
+      if (
+        dist(bot.x, bot.y, x, y) >= minDist &&
+        this.isPointWalkableOnFloor(x, y, PLAYER_RADIUS + 10, bot.floor ?? 0)
+      ) {
+        return { x, y };
+      }
+    }
+    return { x: this.map.width * 0.5, y: this.map.height * 0.5 };
+  }
+
+  private findTrickshotToPoint(
+    shooter: Player,
+    tx: number,
+    ty: number,
+    hitRadius = PLAYER_RADIUS + 14
+  ): number | null {
+    const floor = shooter.floor ?? 0;
+    const bSpeed = this.getBulletSpeed();
+    for (let i = 0; i < 20; i++) {
+      const a = (i / 20) * Math.PI * 2;
+      let x = shooter.x + Math.cos(a) * (PLAYER_RADIUS + 8);
+      let y = shooter.y + Math.sin(a) * (PLAYER_RADIUS + 8);
+      let vx = Math.cos(a) * bSpeed;
+      let vy = Math.sin(a) * bSpeed;
+      let bounces = 0;
+
+      for (let step = 0; step < 58; step++) {
+        const subDt = 0.02;
+        x += vx * subDt;
+        y += vy * subDt;
+
+        for (const wall of this.map.walls) {
+          if (!isWallOnFloor(wall, floor)) continue;
+          const cx = clamp(x, wall.x, wall.x + wall.w);
+          const cy = clamp(y, wall.y, wall.y + wall.h);
+          const dx = x - cx;
+          const dy = y - cy;
+          if (dx * dx + dy * dy < BULLET_RADIUS * BULLET_RADIUS) {
+            bounces++;
+            if (Math.abs(dx) > Math.abs(dy)) vx = -vx;
+            else vy = -vy;
+            x += Math.sign(dx || vx) * 4;
+            y += Math.sign(dy || vy) * 4;
+            break;
+          }
+        }
+        if (bounces > 2) break;
+        if (bounces >= 1 && dist(x, y, tx, ty) < hitRadius) {
+          return a;
+        }
+      }
+    }
+    return null;
+  }
+
   private applyBotControls(bot: Player, dt: number) {
     if (this.libraryState) {
       this.applyLibraryBotControls(bot, dt);
       return;
     }
     const diff: BotDifficulty = this.config.difficulty;
-    const reactionInterval = diff === 'RUTHLESS' ? 0.14 : diff === 'TACTICAL' ? 0.24 : 0.4;
-    const aimSpread = diff === 'RUTHLESS' ? 0.04 : diff === 'TACTICAL' ? 0.11 : 0.24;
+    const reactionInterval = diff === 'RUTHLESS' ? 0.12 : diff === 'TACTICAL' ? 0.24 : 0.48;
+    const aimSpread = diff === 'RUTHLESS' ? 0.02 : diff === 'TACTICAL' ? 0.11 : 1.05;
+    const bFloor = bot.floor ?? 0;
+    const mem = this.getBotMemory(bot);
 
     bot.aiThinkTimer -= dt;
     bot.aiHoldShotTimer -= dt;
+    mem.patrolTimer = Math.max(0, mem.patrolTimer - dt);
+    mem.lastSeenTimer = Math.max(0, mem.lastSeenTimer - dt);
+    mem.unstickTimer = Math.max(0, mem.unstickTimer - dt);
+    mem.scanPhase += dt * (this.config.extraDark ? 2.1 : 1.3);
+
+    // Stuck detection
+    if (dist(bot.x, bot.y, mem.lastProgressX, mem.lastProgressY) > 18) {
+      mem.lastProgressX = bot.x;
+      mem.lastProgressY = bot.y;
+      mem.stuckTimer = 0;
+    } else if (bot.aiMoveRatio > 0.25) {
+      mem.stuckTimer += dt;
+      if (mem.stuckTimer > 0.65) {
+        mem.stuckTimer = 0;
+        bot.aiStrafeDir *= -1;
+        mem.unstickTimer = 0.5;
+        mem.unstickAngle = this.pickClearMoveAngle(
+          bot,
+          normalizeAngle(bot.aiTargetAngle + bot.aiStrafeDir * 1.7),
+          84,
+          bot.aiStrafeDir
+        );
+        const np = this.pickArenaPatrolPoint(bot);
+        mem.patrolX = np.x;
+        mem.patrolY = np.y;
+        mem.patrolTimer = 3.2;
+      }
+    }
 
     let evadeX = 0;
     let evadeY = 0;
 
+    // 1. Incoming bullet evasion (Chill barely dodges; Ruthless reacts early & cleanly)
+    const bulletLookDist = diff === 'RUTHLESS' ? 255 : diff === 'TACTICAL' ? 210 : 115;
+    const bulletWeight = diff === 'RUTHLESS' ? 2.65 : diff === 'TACTICAL' ? 2.2 : 0.75;
     for (const b of this.bullets) {
       if (b.ownerId === bot.id && b.age < BULLET_SELF_GRACE) continue;
-      if (!sameFloor(b.floor, bot.floor)) continue;
+      if (!sameFloor(b.floor, bFloor)) continue;
       const d = dist(bot.x, bot.y, b.x, b.y);
-      if (d < 210) {
+      if (d < bulletLookDist) {
         const bSpeed = Math.hypot(b.vx, b.vy) || 1;
         const relX = bot.x - b.x;
         const relY = bot.y - b.y;
         const dot = (relX * b.vx + relY * b.vy) / bSpeed;
-        if (dot > -15 && dot < 210) {
+        if (dot > -15 && dot < bulletLookDist) {
           const perp = Math.abs((relX * b.vy - relY * b.vx) / bSpeed);
           if (perp < PLAYER_RADIUS + 34) {
             const side = relX * b.vy - relY * b.vx >= 0 ? 1 : -1;
-            const weight = (210 - d) / 210;
-            evadeX += (b.vy / bSpeed) * side * weight * 2.2;
-            evadeY += (-b.vx / bSpeed) * side * weight * 2.2;
+            const weight = (bulletLookDist - d) / bulletLookDist;
+            evadeX += (b.vy / bSpeed) * side * weight * bulletWeight;
+            evadeY += (-b.vx / bSpeed) * side * weight * bulletWeight;
           }
         }
       }
     }
 
+    // 2. Explosive hazard evasion (Chill clumsily ignores unexploded Nitro so they can blow themselves up!)
     for (const p of this.pickups) {
-      if (!sameFloor(p.floor, bot.floor)) continue;
+      if (!sameFloor(p.floor, bFloor)) continue;
       if (p.kind === 'tnt' && p.armed) {
         const d = dist(bot.x, bot.y, p.x, p.y);
-        if (d < TNT_BLAST_RADIUS + 42) {
+        const fleeR = diff === 'CHILL' ? 105 : diff === 'RUTHLESS' ? TNT_BLAST_RADIUS + 56 : TNT_BLAST_RADIUS + 42;
+        if (d < fleeR) {
           const away = Math.atan2(bot.y - p.y, bot.x - p.x);
-          const urgency = ((TNT_BLAST_RADIUS + 42 - d) / TNT_BLAST_RADIUS) * 2.6;
+          const mult = diff === 'CHILL' ? 1.2 : 2.6;
+          const urgency = ((fleeR - d) / TNT_BLAST_RADIUS) * mult;
           evadeX += Math.cos(away) * urgency;
           evadeY += Math.sin(away) * urgency;
         }
-      } else if (p.kind === 'nitro') {
+      } else if (p.kind === 'nitro' && diff !== 'CHILL') {
         const d = dist(bot.x, bot.y, p.x, p.y);
-        if (d < NITRO_RADIUS + PLAYER_RADIUS + 20) {
+        const safeDist = diff === 'RUTHLESS' ? NITRO_RADIUS + PLAYER_RADIUS + 34 : NITRO_RADIUS + PLAYER_RADIUS + 20;
+        if (d < safeDist) {
           const away = Math.atan2(bot.y - p.y, bot.x - p.x);
-          evadeX += Math.cos(away) * 2.0;
-          evadeY += Math.sin(away) * 2.0;
+          evadeX += Math.cos(away) * 2.1;
+          evadeY += Math.sin(away) * 2.1;
         }
       }
     }
 
+    // 3. Broken ice pit evasion
     for (const pit of this.icePits) {
-      if (pit.broken && isPointInIcePit(bot.x, bot.y, pit, PLAYER_RADIUS + 42)) {
+      const margin = diff === 'CHILL' ? PLAYER_RADIUS + 14 : PLAYER_RADIUS + 42;
+      if (pit.broken && isPointInIcePit(bot.x, bot.y, pit, margin)) {
         const away = Math.atan2(bot.y - pit.y, bot.x - pit.x);
         evadeX += Math.cos(away) * 3.0;
         evadeY += Math.sin(away) * 3.0;
       }
     }
 
+    // Check visible enemies using fair Immersive visibility (NO wallhack/darkness ESP)
+    const allEnemies = this.players.filter(
+      (p) => p.id !== bot.id && p.alive && !this.isTeammate(bot.id, p.id) && sameFloor(p.floor, bFloor)
+    );
+    const visibleEnemies = allEnemies.filter((e) => this.canBotSeePoint(bot, e.x, e.y, e.floor ?? 0));
+    let activeAimAngle: number | null = null;
+
+    if (visibleEnemies.length > 0) {
+      let bestVisible = visibleEnemies[0];
+      let bestScore = -Infinity;
+      for (const e of visibleEnemies) {
+        const d = dist(bot.x, bot.y, e.x, e.y);
+        const finishBonus = e.hp <= BULLET_DAMAGE ? 150 : 0;
+        const score = -d * 0.35 + (e.stunTimer > 0 ? 120 : 0) + finishBonus + (100 - e.hp) * 1.0 + e.kills * 25;
+        if (score > bestScore) {
+          bestScore = score;
+          bestVisible = e;
+        }
+      }
+      mem.lastSeenEnemyId = bestVisible.id;
+      mem.lastSeenX = bestVisible.x;
+      mem.lastSeenY = bestVisible.y;
+      mem.lastSeenFloor = bestVisible.floor ?? 0;
+      mem.lastSeenTimer = diff === 'RUTHLESS' ? 1.55 : 1.05;
+    }
+
     const evading = Math.hypot(evadeX, evadeY) > 0.35;
     if (evading) {
-      bot.aiTargetAngle = Math.atan2(evadeY, evadeX);
+      const rawEvade = Math.atan2(evadeY, evadeX);
+      bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawEvade, 74, bot.aiStrafeDir);
       bot.aiMoveRatio = 1.0;
+    } else if (mem.unstickTimer > 0) {
+      bot.aiTargetAngle = mem.unstickAngle;
+      bot.aiMoveRatio = 0.9;
     } else if (bot.aiThinkTimer <= 0) {
-      bot.aiThinkTimer = reactionInterval + Math.random() * 0.12;
-      if (Math.random() < 0.25) bot.aiStrafeDir *= -1;
+      bot.aiThinkTimer = reactionInterval + Math.random() * 0.1;
+      if (Math.random() < 0.24) bot.aiStrafeDir *= -1;
 
-      let goalX = this.map.width / 2;
-      let goalY = this.map.height / 2;
-      let moveRatio = 0.78;
+      let goalX = mem.patrolX;
+      let goalY = mem.patrolY;
+      let moveRatio = 0.82;
       let wantsToShoot = false;
       let shootAngle = bot.angle;
 
-      const medkits = this.pickups.filter((p) => p.kind === 'medkit' && sameFloor(p.floor, bot.floor));
-      if (bot.hp <= 55 && medkits.length > 0) {
-        let best = medkits[0];
+      // Refresh patrol point if reached or expired
+      if (mem.patrolTimer <= 0 || dist(bot.x, bot.y, mem.patrolX, mem.patrolY) < 95) {
+        const np = this.pickArenaPatrolPoint(bot);
+        mem.patrolX = np.x;
+        mem.patrolY = np.y;
+        mem.patrolTimer = 3.5 + Math.random() * 2.5;
+        goalX = np.x;
+        goalY = np.y;
+      }
+
+      const visibleMedkits = this.pickups.filter(
+        (p) =>
+          p.kind === 'medkit' &&
+          sameFloor(p.floor, bFloor) &&
+          (!this.map.immersive || this.canBotSeePoint(bot, p.x, p.y, bFloor, true))
+      );
+      const visibleBullets = this.pickups.filter(
+        (p) =>
+          p.kind === 'bullet' &&
+          sameFloor(p.floor, bFloor) &&
+          (!this.map.immersive || this.canBotSeePoint(bot, p.x, p.y, bFloor, true))
+      );
+
+      // Helper: pick best visible enemy
+      let target: Player | null = null;
+      let targetDist = Infinity;
+      if (visibleEnemies.length > 0) {
+        let bestScore = -Infinity;
+        for (const e of visibleEnemies) {
+          const d = dist(bot.x, bot.y, e.x, e.y);
+          let score = -d * 0.35 + (e.stunTimer > 0 ? 120 : 0) + (100 - e.hp) * 1.1 + e.kills * 25;
+          if (diff === 'RUTHLESS' && e.hp <= BULLET_DAMAGE) score += 160;
+          if (e.spawnInvulnTimer > 0) score -= 50;
+          if (score > bestScore) {
+            bestScore = score;
+            target = e;
+            targetDist = d;
+          }
+        }
+      }
+
+      // Check strategic Nitro/TNT plays
+      let explosiveShotAngle: number | null = null;
+      let explosiveClusterCount = 0;
+      const checkCandidates = visibleEnemies.length > 0 ? visibleEnemies : [];
+      if (bot.ammo > 0 && checkCandidates.length > 0) {
+        let bestBlastScore = 0;
+        for (const n of this.pickups) {
+          if (!sameFloor(n.floor, bFloor)) continue;
+          if (n.kind !== 'nitro' && !(n.kind === 'tnt' && !n.armed)) continue;
+          if (this.map.immersive && !this.canBotSeePoint(bot, n.x, n.y, bFloor, true)) continue;
+
+          const blastR = n.kind === 'tnt' ? TNT_BLAST_RADIUS : NITRO_BLAST_RADIUS;
+          const selfDist = dist(n.x, n.y, bot.x, bot.y);
+
+          if (diff === 'CHILL') {
+            // Chill bot clumsily blasts nitro/TNT even when standing TOO close!
+            const nearEnemy = checkCandidates.find((e) => dist(n.x, n.y, e.x, e.y) < blastR + 40);
+            if (nearEnemy && selfDist < blastR + 85 && this.hasLineOfSight(bot.x, bot.y, n.x, n.y, bFloor)) {
+              if (Math.random() < 0.55) {
+                explosiveShotAngle = Math.atan2(n.y - bot.y, n.x - bot.x);
+                explosiveClusterCount = 1;
+                break;
+              }
+            }
+            continue;
+          }
+
+          // Tactical & Ruthless NEVER self-blast or friendly-fire teammates
+          const safeSelfMargin = diff === 'RUTHLESS' ? blastR + 24 : blastR + 20;
+          if (selfDist <= safeSelfMargin) continue;
+          const teammateInBlast = this.players.some(
+            (tm) => tm.alive && tm.id !== bot.id && this.isTeammate(bot.id, tm.id) && dist(n.x, n.y, tm.x, tm.y) <= blastR + 24
+          );
+          if (teammateInBlast) continue;
+
+          const hitMargin = diff === 'RUTHLESS' ? blastR + 8 : blastR - 10;
+          const enemiesInBlast = checkCandidates.filter((e) => dist(n.x, n.y, e.x, e.y) <= hitMargin);
+          if (enemiesInBlast.length === 0) continue;
+
+          const directLos = this.hasLineOfSight(bot.x, bot.y, n.x, n.y, bFloor);
+          const shotA = directLos
+            ? Math.atan2(n.y - bot.y, n.x - bot.x)
+            : diff === 'RUTHLESS'
+              ? this.findTrickshotToPoint(bot, n.x, n.y, n.radius + 14)
+              : null;
+
+          if (shotA !== null) {
+            const score = enemiesInBlast.length * 100 + (n.kind === 'nitro' ? 30 : 15);
+            if (score > bestBlastScore) {
+              bestBlastScore = score;
+              explosiveShotAngle = shotA;
+              explosiveClusterCount = enemiesInBlast.length;
+            }
+          }
+        }
+      }
+
+      // Ruthless ammo stockpiling check: collect 2-3 bullets before firing unless immediate kill / threat / Nitro cluster!
+      const nearestBullet = visibleBullets.reduce<{ p: Pickup; d: number } | null>((best, p) => {
+        const d = dist(bot.x, bot.y, p.x, p.y);
+        return !best || d < best.d ? { p, d } : best;
+      }, null);
+
+      const immediateDanger = Boolean(
+        target &&
+          (targetDist < 310 ||
+            (target.ammo > 0 && Math.abs(normalizeAngle(Math.atan2(bot.y - target.y, bot.x - target.x) - target.angle)) < 0.42 && targetDist < 420))
+      );
+      const guaranteedFinish = Boolean(target && (target.hp <= BULLET_DAMAGE || target.stunTimer > 0));
+      const closeCluster = visibleEnemies.filter((e) => dist(bot.x, bot.y, e.x, e.y) < 380).length >= 2;
+      const stockpileAmmoGoal = Math.min(bot.maxAmmo, 3);
+      const shouldStockpileRuthless =
+        diff === 'RUTHLESS' &&
+        bot.ammo > 0 &&
+        bot.ammo < stockpileAmmoGoal &&
+        nearestBullet !== null &&
+        nearestBullet.d < 720 &&
+        !immediateDanger &&
+        !guaranteedFinish &&
+        explosiveClusterCount === 0 &&
+        !closeCluster;
+
+      if (bot.hp <= 55 && visibleMedkits.length > 0) {
+        let best = visibleMedkits[0];
         let bestD = dist(bot.x, bot.y, best.x, best.y);
-        for (const m of medkits) {
+        for (const m of visibleMedkits) {
           const d = dist(bot.x, bot.y, m.x, m.y);
           if (d < bestD) {
             best = m;
@@ -1622,91 +1992,73 @@ export class ArenaEngine {
         goalX = best.x;
         goalY = best.y;
         moveRatio = 0.95;
-      } else if (bot.ammo === 0) {
-        const ammoPickups = this.pickups.filter((p) => p.kind === 'bullet' && sameFloor(p.floor, bot.floor));
-        if (ammoPickups.length > 0) {
-          let best = ammoPickups[0];
-          let bestD = dist(bot.x, bot.y, best.x, best.y);
-          for (const a of ammoPickups) {
-            const d = dist(bot.x, bot.y, a.x, a.y);
-            if (d < bestD) {
-              best = a;
-              bestD = d;
+      } else if (bot.ammo === 0 || shouldStockpileRuthless) {
+        if (nearestBullet) {
+          goalX = nearestBullet.p.x;
+          goalY = nearestBullet.p.y;
+          moveRatio = shouldStockpileRuthless ? 0.96 : 0.92;
+        } else if (mem.lastSeenTimer > 0 && !shouldStockpileRuthless) {
+          goalX = mem.lastSeenX;
+          goalY = mem.lastSeenY;
+          moveRatio = 0.85;
+        }
+      } else if (target) {
+        if (explosiveShotAngle !== null && bot.aiHoldShotTimer <= 0) {
+          wantsToShoot = true;
+          shootAngle = explosiveShotAngle + (Math.random() - 0.5) * aimSpread * 0.45;
+          activeAimAngle = shootAngle;
+        } else if (bot.aiHoldShotTimer <= 0 && this.hasLineOfSight(bot.x, bot.y, target.x, target.y, bFloor)) {
+          const travelT = targetDist / this.getBulletSpeed();
+          const leadScale = diff === 'RUTHLESS' ? 0.72 : diff === 'TACTICAL' ? 0.78 : 0.1;
+          let predX = target.x + target.vx * travelT * leadScale;
+          let predY = target.y + target.vy * travelT * leadScale;
+          if (!this.isPointWalkableOnFloor(predX, predY, PLAYER_RADIUS, bFloor)) {
+            predX = target.x;
+            predY = target.y;
+          }
+          wantsToShoot = true;
+
+          if (diff === 'CHILL' && Math.random() < 0.65) {
+            // Chill frequently panics and shoots in random directions!
+            shootAngle = Math.random() * Math.PI * 2 - Math.PI;
+          } else {
+            shootAngle = Math.atan2(predY - bot.y, predX - bot.x) + (Math.random() - 0.5) * aimSpread;
+          }
+          activeAimAngle = shootAngle;
+        } else {
+          // Strafe / close distance on visible target
+          const toTarget = Math.atan2(target.y - bot.y, target.x - bot.x);
+          const strafeAngle = toTarget + bot.aiStrafeDir * 0.6;
+          goalX = bot.x + Math.cos(strafeAngle) * 190;
+          goalY = bot.y + Math.sin(strafeAngle) * 190;
+          moveRatio = diff === 'RUTHLESS' ? 0.92 : 0.8;
+          activeAimAngle = toTarget;
+
+          const trickChance = diff === 'RUTHLESS' ? 0.35 : diff === 'TACTICAL' ? 0.2 : 0;
+          if (trickChance > 0 && bot.aiHoldShotTimer <= 0 && Math.random() < trickChance) {
+            const bounceAngle = this.findTrickshotAngle(bot, target);
+            if (bounceAngle !== null) {
+              wantsToShoot = true;
+              shootAngle = bounceAngle + (Math.random() - 0.5) * aimSpread * 0.35;
+              activeAimAngle = shootAngle;
             }
           }
-          goalX = best.x;
-          goalY = best.y;
-          moveRatio = 0.92;
         }
       } else {
-        const enemies = this.players.filter(
-          (p) => p.id !== bot.id && p.alive && !this.isTeammate(bot.id, p.id) && sameFloor(p.floor, bot.floor)
-        );
-        if (enemies.length > 0) {
-          let target = enemies[0];
-          let bestScore = -Infinity;
-          for (const e of enemies) {
-            const d = dist(bot.x, bot.y, e.x, e.y);
-            // In immersive large map, bots don't magically snipe across 1200px fog
-            const maxVision = this.map.immersive ? 650 : 1800;
-            const visible = d < maxVision;
-            const los = visible && this.hasLineOfSight(bot.x, bot.y, e.x, e.y, bot.floor ?? 0);
-            let score = -d * 0.35 + (los ? 190 : 0) + (e.stunTimer > 0 ? 110 : 0) + (100 - e.hp) * 1.0 + e.kills * 30;
-            if (e.spawnInvulnTimer > 0) score -= 40;
-            if (score > bestScore) {
-              bestScore = score;
-              target = e;
-            }
-          }
-
-          const targetDist = dist(bot.x, bot.y, target.x, target.y);
-          const inRange = !this.map.immersive || targetDist < 680;
-
-          let explosiveShotAngle: number | null = null;
-          if (inRange) {
-            for (const n of this.pickups) {
-              if (!sameFloor(n.floor, bot.floor)) continue;
-              if (n.kind !== 'nitro' && !(n.kind === 'tnt' && !n.armed)) continue;
-              const blastR = n.kind === 'tnt' ? TNT_BLAST_RADIUS : NITRO_BLAST_RADIUS;
-              if (
-                dist(n.x, n.y, target.x, target.y) < blastR - 10 &&
-                dist(n.x, n.y, bot.x, bot.y) > blastR + 20 &&
-                this.hasLineOfSight(bot.x, bot.y, n.x, n.y, bot.floor ?? 0)
-              ) {
-                explosiveShotAngle = Math.atan2(n.y - bot.y, n.x - bot.x);
-                break;
-              }
-            }
-          }
-
-          if (explosiveShotAngle !== null && bot.aiHoldShotTimer <= 0) {
-            wantsToShoot = true;
-            shootAngle = explosiveShotAngle + (Math.random() - 0.5) * aimSpread * 0.6;
-          } else if (
-            inRange &&
-            this.hasLineOfSight(bot.x, bot.y, target.x, target.y, bot.floor ?? 0) &&
-            bot.aiHoldShotTimer <= 0
-          ) {
-            const travelT = targetDist / this.getBulletSpeed();
-            const predX = target.x + target.vx * travelT * 0.78;
-            const predY = target.y + target.vy * travelT * 0.78;
-            wantsToShoot = true;
-            shootAngle = Math.atan2(predY - bot.y, predX - bot.x) + (Math.random() - 0.5) * aimSpread;
-          } else {
-            const toTarget = Math.atan2(target.y - bot.y, target.x - bot.x);
-            const strafeAngle = toTarget + bot.aiStrafeDir * 0.6;
-            goalX = bot.x + Math.cos(strafeAngle) * 180;
-            goalY = bot.y + Math.sin(strafeAngle) * 180;
-            moveRatio = 0.8;
-
-            if (inRange && diff !== 'CHILL' && bot.aiHoldShotTimer <= 0 && Math.random() < 0.2) {
-              const bounceAngle = this.findTrickshotAngle(bot, target);
-              if (bounceAngle !== null) {
-                wantsToShoot = true;
-                shootAngle = bounceAngle + (Math.random() - 0.5) * aimSpread * 0.5;
-              }
-            }
-          }
+        // No visible enemies! Look for nearby visible ammo/medkits or investigate brief last-seen / patrol
+        if (diff === 'CHILL' && bot.ammo > 0 && bot.aiHoldShotTimer <= 0 && Math.random() < 0.22) {
+          // Chill randomly fires occasional stray shots in arbitrary directions!
+          wantsToShoot = true;
+          shootAngle = Math.random() * Math.PI * 2 - Math.PI;
+        } else if (mem.lastSeenTimer > 0 && (!this.map.immersive || dist(bot.x, bot.y, mem.lastSeenX, mem.lastSeenY) > 65)) {
+          goalX = mem.lastSeenX;
+          goalY = mem.lastSeenY;
+          moveRatio = 0.88;
+          activeAimAngle = Math.atan2(mem.lastSeenY - bot.y, mem.lastSeenX - bot.x);
+        } else if (nearestBullet && bot.ammo < bot.maxAmmo && (diff === 'RUTHLESS' || bot.ammo < 2)) {
+          goalX = nearestBullet.p.x;
+          goalY = nearestBullet.p.y;
+          moveRatio = 0.9;
         }
       }
 
@@ -1715,28 +2067,37 @@ export class ArenaEngine {
         bot.vx = 0;
         bot.vy = 0;
         this.fireBullet(bot);
-        bot.aiHoldShotTimer = diff === 'RUTHLESS' ? 0.45 : diff === 'TACTICAL' ? 0.7 : 1.05;
+        bot.aiHoldShotTimer =
+          diff === 'RUTHLESS'
+            ? bot.ammo >= 1
+              ? 0.28
+              : 0.42
+            : diff === 'TACTICAL'
+              ? 0.7
+              : 1.1;
         return;
       }
 
-      let moveAngle = Math.atan2(goalY - bot.y, goalX - bot.x);
-      const probeX = bot.x + Math.cos(moveAngle) * 50;
-      const probeY = bot.y + Math.sin(moveAngle) * 50;
-      const botFloor = bot.floor ?? 0;
-      for (const wall of this.map.walls) {
-        if (!isWallOnFloor(wall, botFloor)) continue;
-        if (circleIntersectsRect(probeX, probeY, PLAYER_RADIUS + 8, wall)) {
-          moveAngle += bot.aiStrafeDir * 1.15;
-          break;
-        }
-      }
-
-      bot.aiTargetAngle = moveAngle;
+      const rawMoveAngle = Math.atan2(goalY - bot.y, goalX - bot.x);
+      bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawMoveAngle, 68, bot.aiStrafeDir);
       bot.aiMoveRatio = moveRatio;
     }
 
-    const angleDiff = normalizeAngle(bot.aiTargetAngle - bot.angle);
-    bot.angle = normalizeAngle(bot.angle + clamp(angleDiff, -8 * dt, 8 * dt));
+    // Smooth aiming / flashlight search sweep in Extra Dark Immersive mode
+    let desiredFacing = bot.aiTargetAngle;
+    if (activeAimAngle !== null) {
+      desiredFacing = activeAimAngle;
+    } else if (this.map.immersive && visibleEnemies.length === 0 && !evading) {
+      if (mem.lastSeenTimer > 0) {
+        desiredFacing = Math.atan2(mem.lastSeenY - bot.y, mem.lastSeenX - bot.x);
+      } else {
+        desiredFacing = normalizeAngle(bot.aiTargetAngle + Math.sin(mem.scanPhase) * (this.config.extraDark ? 0.58 : 0.32));
+      }
+    }
+
+    const angleDiff = normalizeAngle(desiredFacing - bot.angle);
+    const turnSpeed = diff === 'RUTHLESS' ? 11.5 : 8;
+    bot.angle = normalizeAngle(bot.angle + clamp(angleDiff, -turnSpeed * dt, turnSpeed * dt));
 
     const targetSpeed = this.getPlayerMaxSpeed() * bot.aiMoveRatio;
     const targetVx = Math.cos(bot.aiTargetAngle) * targetSpeed;
@@ -2589,16 +2950,12 @@ export class ArenaEngine {
     ent.stairBlend = ent.floor === 1 ? 1 : 0;
   }
 
-  private buildLibraryNavGraph() {
-    const cell = 48;
+  private buildGridNavGraph(cell: number, testR: number): NavNode[] {
     const cols = Math.floor(this.map.width / cell);
     const rows = Math.floor(this.map.height / cell);
     const nodes: NavNode[] = [];
     const lookup = new Map<string, number>();
-
     const key = (gx: number, gy: number, fl: FloorLevel) => `${fl}:${gx}:${gy}`;
-    // Full Monster clearance + 3px buffer so A* paths never scrape bookshelf corners or rails
-    const testR = MONSTER_RADIUS + 3;
 
     for (const fl of [0, 1] as FloorLevel[]) {
       for (let gy = 0; gy < rows; gy++) {
@@ -2618,7 +2975,6 @@ export class ArenaEngine {
 
     const baseGridCount = nodes.length;
 
-    // Connect same-floor grid neighbors with explicit segment clearance verification
     for (const fl of [0, 1] as FloorLevel[]) {
       for (let gy = 0; gy < rows; gy++) {
         for (let gx = 0; gx < cols; gx++) {
@@ -2654,7 +3010,6 @@ export class ArenaEngine {
       }
     }
 
-    // Add aligned staircase entry/exit chains so Monster & bots traverse Ground <-> Upper cleanly
     for (const st of this.map.stairs ?? []) {
       const cx = st.x + st.w * 0.5;
       const groundApproachY = st.upDir === 'up' ? st.y + st.h + 72 : st.y - 72;
@@ -2683,7 +3038,6 @@ export class ArenaEngine {
       nodes[uEntId].neighbors.push(m1Id, uAppId);
       nodes[uAppId].neighbors.push(uEntId);
 
-      // Connect stair approach nodes to unobstructed nearby grid nodes on each floor
       for (let i = 0; i < baseGridCount; i++) {
         const n = nodes[i];
         if (n.floor === 0) {
@@ -2712,21 +3066,142 @@ export class ArenaEngine {
       }
     }
 
-    this.navNodes = nodes;
+    return nodes;
+  }
+
+  private buildLibraryNavGraph() {
+    this.navNodes = this.buildGridNavGraph(32, MONSTER_RADIUS + 2);
+    this.botNavNodes = this.buildGridNavGraph(36, PLAYER_RADIUS + 4);
+  }
+
+  private findClosestNavNodeOnGraph(
+    graph: NavNode[],
+    x: number,
+    y: number,
+    floor: FloorLevel,
+    preferLos = true
+  ): NavNode | null {
+    let bestLos: NavNode | null = null;
+    let bestLosD = Infinity;
+    let bestAny: NavNode | null = null;
+    let bestAnyD = Infinity;
+
+    for (const n of graph) {
+      if (n.floor !== floor) continue;
+      const d = dist(x, y, n.x, n.y);
+      if (d < bestAnyD) {
+        bestAnyD = d;
+        bestAny = n;
+      }
+      if (preferLos && d < 240 && d < bestLosD && this.hasLineOfSight(x, y, n.x, n.y, floor)) {
+        bestLosD = d;
+        bestLos = n;
+      }
+    }
+    return bestLos ?? bestAny;
   }
 
   private findClosestNavNode(x: number, y: number, floor: FloorLevel): NavNode | null {
-    let best: NavNode | null = null;
-    let bestD = Infinity;
-    for (const n of this.navNodes) {
-      if (n.floor !== floor) continue;
-      const d = dist(x, y, n.x, n.y);
-      if (d < bestD) {
-        bestD = d;
-        best = n;
+    return this.findClosestNavNodeOnGraph(this.navNodes, x, y, floor, true);
+  }
+
+  private findNavPathOnGraph(
+    graph: NavNode[],
+    fromX: number,
+    fromY: number,
+    fromFloor: FloorLevel,
+    toX: number,
+    toY: number,
+    toFloor: FloorLevel
+  ): NavNode[] {
+    if (graph.length === 0) return [];
+    const start = this.findClosestNavNodeOnGraph(graph, fromX, fromY, fromFloor, true);
+    const goal = this.findClosestNavNodeOnGraph(graph, toX, toY, toFloor, true);
+    if (!start || !goal) return [];
+    if (start.id === goal.id) return [goal];
+
+    const nCount = graph.length;
+    const gScore = new Float32Array(nCount).fill(Infinity);
+    const fScore = new Float32Array(nCount).fill(Infinity);
+    const cameFrom = new Int32Array(nCount).fill(-1);
+    const closed = new Uint8Array(nCount);
+    const inOpen = new Uint8Array(nCount);
+
+    const heap: number[] = [start.id];
+    const pushHeap = (id: number) => {
+      heap.push(id);
+      let idx = heap.length - 1;
+      while (idx > 0) {
+        const parent = (idx - 1) >> 1;
+        if (fScore[heap[parent]] <= fScore[heap[idx]]) break;
+        const tmp = heap[parent];
+        heap[parent] = heap[idx];
+        heap[idx] = tmp;
+        idx = parent;
+      }
+    };
+    const popHeap = (): number => {
+      const top = heap[0];
+      const last = heap.pop()!;
+      if (heap.length > 0) {
+        heap[0] = last;
+        let idx = 0;
+        const len = heap.length;
+        while (true) {
+          let smallest = idx;
+          const l = idx * 2 + 1;
+          const r = idx * 2 + 2;
+          if (l < len && fScore[heap[l]] < fScore[heap[smallest]]) smallest = l;
+          if (r < len && fScore[heap[r]] < fScore[heap[smallest]]) smallest = r;
+          if (smallest === idx) break;
+          const tmp = heap[idx];
+          heap[idx] = heap[smallest];
+          heap[smallest] = tmp;
+          idx = smallest;
+        }
+      }
+      return top;
+    };
+
+    gScore[start.id] = 0;
+    fScore[start.id] = dist(start.x, start.y, goal.x, goal.y) + (start.floor !== goal.floor ? 320 : 0);
+    inOpen[start.id] = 1;
+
+    while (heap.length > 0) {
+      const currId = popHeap();
+      inOpen[currId] = 0;
+      if (closed[currId]) continue;
+      if (currId === goal.id) {
+        const path: NavNode[] = [];
+        let trace = goal.id;
+        while (trace !== -1 && trace !== start.id) {
+          path.push(graph[trace]);
+          trace = cameFrom[trace];
+        }
+        path.reverse();
+        return path;
+      }
+      closed[currId] = 1;
+      const curr = graph[currId];
+      for (const nbId of curr.neighbors) {
+        if (closed[nbId]) continue;
+        const nb = graph[nbId];
+        const stepCost = curr.floor !== nb.floor ? 120 : dist(curr.x, curr.y, nb.x, nb.y);
+        const tentative = gScore[currId] + stepCost;
+        if (tentative < gScore[nbId]) {
+          cameFrom[nbId] = currId;
+          gScore[nbId] = tentative;
+          fScore[nbId] = tentative + dist(nb.x, nb.y, goal.x, goal.y) + (nb.floor !== goal.floor ? 320 : 0);
+          if (!inOpen[nbId]) {
+            inOpen[nbId] = 1;
+            pushHeap(nbId);
+          } else {
+            pushHeap(nbId);
+          }
+        }
       }
     }
-    return best;
+    return [];
   }
 
   private findNavPath(
@@ -2737,54 +3212,7 @@ export class ArenaEngine {
     toY: number,
     toFloor: FloorLevel
   ): NavNode[] {
-    if (this.navNodes.length === 0) return [];
-    const start = this.findClosestNavNode(fromX, fromY, fromFloor);
-    const goal = this.findClosestNavNode(toX, toY, toFloor);
-    if (!start || !goal) return [];
-    if (start.id === goal.id) return [goal];
-
-    const nCount = this.navNodes.length;
-    const gScore = new Float32Array(nCount).fill(Infinity);
-    const fScore = new Float32Array(nCount).fill(Infinity);
-    const cameFrom = new Int32Array(nCount).fill(-1);
-    const closed = new Uint8Array(nCount);
-    const open: number[] = [start.id];
-
-    gScore[start.id] = 0;
-    fScore[start.id] = dist(start.x, start.y, goal.x, goal.y) + (start.floor !== goal.floor ? 320 : 0);
-
-    while (open.length > 0) {
-      let bestIdx = 0;
-      for (let i = 1; i < open.length; i++) {
-        if (fScore[open[i]] < fScore[open[bestIdx]]) bestIdx = i;
-      }
-      const currId = open.splice(bestIdx, 1)[0];
-      if (currId === goal.id) {
-        const path: NavNode[] = [];
-        let trace = goal.id;
-        while (trace !== -1 && trace !== start.id) {
-          path.push(this.navNodes[trace]);
-          trace = cameFrom[trace];
-        }
-        path.reverse();
-        return path;
-      }
-      closed[currId] = 1;
-      const curr = this.navNodes[currId];
-      for (const nbId of curr.neighbors) {
-        if (closed[nbId]) continue;
-        const nb = this.navNodes[nbId];
-        const stepCost = curr.floor !== nb.floor ? 120 : dist(curr.x, curr.y, nb.x, nb.y);
-        const tentative = gScore[currId] + stepCost;
-        if (tentative < gScore[nbId]) {
-          cameFrom[nbId] = currId;
-          gScore[nbId] = tentative;
-          fScore[nbId] = tentative + dist(nb.x, nb.y, goal.x, goal.y) + (nb.floor !== goal.floor ? 320 : 0);
-          if (!open.includes(nbId)) open.push(nbId);
-        }
-      }
-    }
-    return [];
+    return this.findNavPathOnGraph(this.navNodes, fromX, fromY, fromFloor, toX, toY, toFloor);
   }
 
   private initLibraryMatchState() {
@@ -3340,148 +3768,403 @@ export class ArenaEngine {
     }
   }
 
+  private getBookApproachPoint(book: LibraryBookSpot): Vec2 {
+    const offset = 44;
+    if (book.face === 'W') return { x: book.x - offset, y: book.y };
+    if (book.face === 'E') return { x: book.x + offset, y: book.y };
+    if (book.face === 'N') return { x: book.x, y: book.y - offset };
+    if (book.face === 'S') return { x: book.x, y: book.y + offset };
+    return { x: book.x, y: book.y };
+  }
+
+  private pickLibraryEscapeAngle(bot: Player, monster: LibraryMonsterState, floor: FloorLevel): number {
+    const clearR = PLAYER_RADIUS + 4;
+    let bestAngle = Math.atan2(bot.y - monster.y, bot.x - monster.x);
+    let bestScore = -Infinity;
+
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2;
+      const px = bot.x + Math.cos(a) * 110;
+      const py = bot.y + Math.sin(a) * 110;
+      if (!this.isPointWalkableOnFloor(px, py, clearR, floor)) continue;
+      if (!this.isSegmentClearOnFloor(bot.x, bot.y, px, py, clearR - 2, floor)) continue;
+
+      const nextD = dist(px, py, monster.x, monster.y);
+      let score = nextD;
+      // Bonus if heading toward an open staircase entry to shake Figure across floors
+      for (const st of this.map.stairs ?? []) {
+        const entryX = st.x + st.w * 0.5;
+        const entryY =
+          floor === 0
+            ? st.upDir === 'up'
+              ? st.y + st.h + 24
+              : st.y - 24
+            : st.upDir === 'up'
+              ? st.y - 24
+              : st.y + st.h + 24;
+        if (dist(px, py, entryX, entryY) < dist(bot.x, bot.y, entryX, entryY)) {
+          score += 55;
+        }
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        bestAngle = a;
+      }
+    }
+    return bestAngle;
+  }
+
   private applyLibraryBotControls(bot: Player, dt: number) {
     if (!this.libraryState) return;
+    const diff: BotDifficulty = this.config.difficulty;
     const bFloor = bot.floor ?? 0;
     const prog = this.libraryState.playerProgress.find((pp) => pp.playerId === bot.id);
     if (prog && (prog.unlocked || prog.eliminated)) return;
 
+    const mem = this.getBotMemory(bot);
     const door = this.libraryState.doors.find((d) => d.playerId === bot.id);
     const m = this.libraryState.monster;
     const cooldown = Math.max(0, (this.botCodeCooldown.get(bot.id) ?? 0) - dt);
     this.botCodeCooldown.set(bot.id, cooldown);
+
+    mem.scanPhase += dt * (this.config.extraDark ? 2.0 : 1.3);
+    mem.rageBaitTimer = Math.max(0, mem.rageBaitTimer - dt);
+    mem.rageBaitCooldown = Math.max(0, mem.rageBaitCooldown - dt);
+    mem.unstickTimer = Math.max(0, mem.unstickTimer - dt);
 
     // 1. Collect nearby book automatically if close and on correct side
     if (prog && prog.collectedCount < LIBRARY_BOOKS_PER_PLAYER) {
       for (const b of prog.books) {
         if (canCollectBookSpot(bot, b, this.map.walls)) {
           this.collectNearbyBook(bot.id);
+          this.botPaths.delete(bot.id);
           break;
         }
       }
     }
 
-    // 2. If all 8 books collected and near own door, solve & escape!
+    const sameFloorMonster = sameFloor(m.floor, bFloor);
+    const monsterDist = sameFloorMonster ? dist(bot.x, bot.y, m.x, m.y) : 9999;
+
+    // 2. If all 8 books collected and near own door, dial & solve cleanly!
     if (prog && door && prog.collectedCount >= LIBRARY_BOOKS_PER_PLAYER && bFloor === 0 && dist(bot.x, bot.y, door.x, door.y) <= 135 && cooldown <= 0) {
-      const solution = this.librarySolutions.get(bot.id);
-      if (solution) {
-        this.botCodeCooldown.set(bot.id, 1.8);
-        this.submitDoorCode(bot.id, solution);
+      const figureTooClose = m.stunTimer <= 0 && sameFloorMonster && monsterDist < 245;
+      if (!figureTooClose) {
+        const dialNeed = diff === 'RUTHLESS' ? 0.55 : diff === 'TACTICAL' ? 1.0 : 1.55;
+        mem.dialTimer += dt;
+        const digitIdx = Math.min(LIBRARY_CODE_LEN - 1, Math.floor((mem.dialTimer / dialNeed) * LIBRARY_CODE_LEN));
+        const solution = this.librarySolutions.get(bot.id);
+        if (solution && mem.dialTimer >= dialNeed) {
+          mem.dialTimer = 0;
+          this.botCodeCooldown.set(bot.id, 1.5);
+          if (diff === 'CHILL' && !mem.dialMistakeDone && Math.random() < 0.28) {
+            mem.dialMistakeDone = true;
+            const bad = [...solution];
+            bad[0] = (bad[0] + 1) % 10;
+            this.submitDoorCode(bot.id, bad);
+          } else {
+            this.submitDoorCode(bot.id, solution);
+          }
+          return;
+        } else if (solution && Math.random() < dt * 3.5) {
+          this.setDoorDialDigit(bot.id, digitIdx, solution[digitIdx]);
+        }
+        // Slow down briefly while dialing at the safe pillar door
+        bot.vx *= Math.exp(-10 * dt);
+        bot.vy *= Math.exp(-10 * dt);
         return;
+      }
+    } else {
+      mem.dialTimer = 0;
+    }
+
+    // Stuck detector for Library aisles, stairs, and door corners
+    if (dist(bot.x, bot.y, mem.lastProgressX, mem.lastProgressY) > 16) {
+      mem.lastProgressX = bot.x;
+      mem.lastProgressY = bot.y;
+      mem.stuckTimer = 0;
+    } else if (bot.aiMoveRatio > 0.25) {
+      mem.stuckTimer += dt;
+      if (mem.stuckTimer > 0.65) {
+        mem.stuckTimer = 0;
+        bot.aiStrafeDir *= -1;
+        this.botPaths.delete(bot.id);
+        const nearest = this.findClosestNavNodeOnGraph(this.botNavNodes, bot.x, bot.y, bFloor, true);
+        if (nearest && dist(bot.x, bot.y, nearest.x, nearest.y) > 10) {
+          mem.unstickAngle = Math.atan2(nearest.y - bot.y, nearest.x - bot.x);
+        } else {
+          mem.unstickAngle = this.pickClearMoveAngle(bot, bot.angle + bot.aiStrafeDir * 1.5, 75, bot.aiStrafeDir);
+        }
+        mem.unstickTimer = 0.55;
       }
     }
 
-    // 3. Evade Monster, incoming bullets, and TNT blasts
+    // 3. Evade Monster, incoming bullets, and TNT/Nitro blasts
     let evadeX = 0;
     let evadeY = 0;
-    const monsterDist = sameFloor(m.floor, bFloor) ? dist(bot.x, bot.y, m.x, m.y) : 9999;
-    if (m.stunTimer <= 0 && sameFloor(m.floor, bFloor) && monsterDist < 340) {
-      const away = Math.atan2(bot.y - m.y, bot.x - m.x);
-      evadeX += Math.cos(away) * 3.5;
-      evadeY += Math.sin(away) * 3.5;
+    const monsterBeingTargeted =
+      m.stunTimer <= 0 &&
+      sameFloorMonster &&
+      (monsterDist < (diff === 'RUTHLESS' ? 360 : 320) ||
+        (m.mode === 'rage' && dist(m.targetX, m.targetY, bot.x, bot.y) < 190 && monsterDist < 520));
+
+    if (monsterBeingTargeted) {
+      const escA = this.pickLibraryEscapeAngle(bot, m, bFloor);
+      evadeX += Math.cos(escA) * 3.8;
+      evadeY += Math.sin(escA) * 3.8;
     }
 
+    const bulletLook = diff === 'RUTHLESS' ? 240 : diff === 'TACTICAL' ? 200 : 110;
     for (const b of this.bullets) {
       if (!sameFloor(b.floor, bFloor) || (b.ownerId === bot.id && b.age < BULLET_SELF_GRACE)) continue;
       const d = dist(bot.x, bot.y, b.x, b.y);
-      if (d < 200) {
+      if (d < bulletLook) {
         const bSpd = Math.hypot(b.vx, b.vy) || 1;
         const side = (bot.x - b.x) * b.vy - (bot.y - b.y) * b.vx >= 0 ? 1 : -1;
-        evadeX += (b.vy / bSpd) * side * 2.0;
-        evadeY += (-b.vx / bSpd) * side * 2.0;
+        evadeX += (b.vy / bSpd) * side * (diff === 'CHILL' ? 0.8 : 2.1);
+        evadeY += (-b.vx / bSpd) * side * (diff === 'CHILL' ? 0.8 : 2.1);
+      }
+    }
+
+    for (const p of this.pickups) {
+      if (!sameFloor(p.floor, bFloor)) continue;
+      if (p.kind === 'tnt' && p.armed) {
+        const d = dist(bot.x, bot.y, p.x, p.y);
+        const fleeR = diff === 'CHILL' ? 105 : TNT_BLAST_RADIUS + 46;
+        if (d < fleeR) {
+          const away = Math.atan2(bot.y - p.y, bot.x - p.x);
+          evadeX += Math.cos(away) * 2.8;
+          evadeY += Math.sin(away) * 2.8;
+        }
+      } else if (p.kind === 'nitro' && diff !== 'CHILL') {
+        const d = dist(bot.x, bot.y, p.x, p.y);
+        if (d < NITRO_RADIUS + PLAYER_RADIUS + 26) {
+          const away = Math.atan2(bot.y - p.y, bot.x - p.x);
+          evadeX += Math.cos(away) * 2.1;
+          evadeY += Math.sin(away) * 2.1;
+        }
       }
     }
 
     bot.aiThinkTimer -= dt;
     bot.aiHoldShotTimer -= dt;
 
-    if (Math.hypot(evadeX, evadeY) > 0.35) {
-      bot.aiTargetAngle = Math.atan2(evadeY, evadeX);
-      bot.aiMoveRatio = monsterDist < 240 ? 0.95 : 0.72;
-    } else {
-      // Stealth slow-walk when inside Figure's 900px hearing circle on same floor!
-      const inHearing = m.stunTimer <= 0 && sameFloor(m.floor, bFloor) && monsterDist < LIBRARY_HEARING_RADIUS - 40;
-      const safeWalkRatio = inHearing ? 0.72 : 0.92;
-
-      // Opportunistic shot at visible rival on same floor
-      if (bot.ammo > 0 && bot.aiHoldShotTimer <= 0) {
-        for (const e of this.players) {
-          if (e.id === bot.id || !e.alive || this.isTeammate(bot.id, e.id)) continue;
-          if (!sameFloor(e.floor, bFloor)) continue;
-          const d = dist(bot.x, bot.y, e.x, e.y);
-          if (d < 540 && this.hasLineOfSight(bot.x, bot.y, e.x, e.y, bFloor)) {
-            bot.angle = Math.atan2(e.y - bot.y, e.x - bot.x);
+    // Smart Explosive Use on Library (Stun Figure OR Blast/Bait Rivals!)
+    let activeAimAngle: number | null = null;
+    if (bot.ammo > 0 && bot.aiHoldShotTimer <= 0) {
+      // Priority A (Ruthless / Tactical): Shoot Nitro or TNT to STUN Figure when Figure is chasing or close!
+      if (diff !== 'CHILL' && m.stunTimer <= 0 && sameFloorMonster && monsterDist < 540) {
+        for (const n of this.pickups) {
+          if (!sameFloor(n.floor, bFloor)) continue;
+          if (n.kind !== 'nitro' && !(n.kind === 'tnt' && !n.armed)) continue;
+          const blastR = n.kind === 'tnt' ? TNT_BLAST_RADIUS : NITRO_BLAST_RADIUS;
+          if (
+            dist(n.x, n.y, m.x, m.y) <= blastR + m.radius - 6 &&
+            dist(n.x, n.y, bot.x, bot.y) > blastR + 24 &&
+            this.hasLineOfSight(bot.x, bot.y, n.x, n.y, bFloor)
+          ) {
+            bot.angle = Math.atan2(n.y - bot.y, n.x - bot.x);
             this.fireBullet(bot);
-            bot.aiHoldShotTimer = 0.85;
-            break;
+            bot.aiHoldShotTimer = 0.65;
+            return;
           }
         }
       }
 
+      // Priority B (Ruthless): Shoot Nitro/TNT near rival (either kills rival OR triggers Figure rage toward rival!)
+      const visibleRivals = this.players.filter(
+        (e) =>
+          e.id !== bot.id &&
+          e.alive &&
+          !this.isTeammate(bot.id, e.id) &&
+          this.canBotSeePoint(bot, e.x, e.y, e.floor ?? 0)
+      );
+      if (diff === 'RUTHLESS') {
+        for (const n of this.pickups) {
+          if (!sameFloor(n.floor, bFloor)) continue;
+          if (n.kind !== 'nitro' && !(n.kind === 'tnt' && !n.armed)) continue;
+          const blastR = n.kind === 'tnt' ? TNT_BLAST_RADIUS : NITRO_BLAST_RADIUS;
+          if (dist(n.x, n.y, bot.x, bot.y) <= blastR + 24) continue;
+          const rivalNear = visibleRivals.some((e) => dist(n.x, n.y, e.x, e.y) <= blastR + 25);
+          if (rivalNear && this.hasLineOfSight(bot.x, bot.y, n.x, n.y, bFloor)) {
+            bot.angle = Math.atan2(n.y - bot.y, n.x - bot.x);
+            this.fireBullet(bot);
+            bot.aiHoldShotTimer = 0.55;
+            return;
+          }
+        }
+      }
+
+      // Priority C: Shoot genuinely visible rival on same floor (NO darkness cheat!)
+      if (visibleRivals.length > 0 && (diff !== 'RUTHLESS' || bot.ammo >= 2 || visibleRivals.some((e) => dist(bot.x, bot.y, e.x, e.y) < 260 || e.hp <= BULLET_DAMAGE))) {
+        const target = visibleRivals[0];
+        const aimSpread = diff === 'RUTHLESS' ? 0.03 : diff === 'TACTICAL' ? 0.12 : 0.45;
+        const dT = dist(bot.x, bot.y, target.x, target.y);
+        const travelT = dT / this.getBulletSpeed();
+        const lead = diff === 'RUTHLESS' ? 0.92 : diff === 'TACTICAL' ? 0.72 : 0.15;
+        const predX = target.x + target.vx * travelT * lead;
+        const predY = target.y + target.vy * travelT * lead;
+        bot.angle = Math.atan2(predY - bot.y, predX - bot.x) + (Math.random() - 0.5) * aimSpread;
+        this.fireBullet(bot);
+        bot.aiHoldShotTimer = diff === 'RUTHLESS' ? 0.38 : diff === 'TACTICAL' ? 0.85 : 1.25;
+        return;
+      }
+    }
+
+    if (Math.hypot(evadeX, evadeY) > 0.35) {
+      const rawEvade = Math.atan2(evadeY, evadeX);
+      bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawEvade, 74, bot.aiStrafeDir);
+      // When chased at close range, sprint to break line/cross stairs; once distanced, stealth!
+      bot.aiMoveRatio = monsterDist < 290 ? 0.98 : 0.72;
+    } else if (mem.unstickTimer > 0) {
+      bot.aiTargetAngle = mem.unstickAngle;
+      bot.aiMoveRatio = sameFloorMonster && monsterDist < LIBRARY_HEARING_RADIUS - 40 ? 0.72 : 0.9;
+    } else {
+      const inHearing = m.stunTimer <= 0 && sameFloorMonster && monsterDist < LIBRARY_HEARING_RADIUS - 35;
+
+      // Ruthless Figure Rage Baiting: if Figure is calm and a rival is much closer to Figure while bot has strong escape margin, briefly sprint to wake Figure onto them!
+      if (
+        diff === 'RUTHLESS' &&
+        inHearing &&
+        m.mode === 'calm' &&
+        mem.rageBaitCooldown <= 0 &&
+        monsterDist > 390 &&
+        mem.rageBaitTimer <= 0
+      ) {
+        const rivalNearFigure = this.players.some(
+          (e) =>
+            e.id !== bot.id &&
+            e.alive &&
+            !this.isTeammate(bot.id, e.id) &&
+            sameFloor(e.floor, m.floor) &&
+            dist(e.x, e.y, m.x, m.y) < Math.min(340, monsterDist - 140)
+        );
+        if (rivalNearFigure) {
+          mem.rageBaitTimer = 0.42;
+          mem.rageBaitCooldown = 8.5;
+        }
+      }
+
+      let safeWalkRatio = 0.92;
+      if (mem.rageBaitTimer > 0) {
+        safeWalkRatio = 1.0; // Deliberate sprint noise to rage Figure near rival!
+      } else if (inHearing) {
+        // Chill bots clumsily slip above 80% noise threshold sometimes and accidentally wake Figure!
+        safeWalkRatio = diff === 'CHILL' && Math.random() < 0.04 ? 0.98 : 0.72;
+      }
+
       if (bot.aiThinkTimer <= 0) {
-        bot.aiThinkTimer = 0.26;
+        bot.aiThinkTimer = diff === 'RUTHLESS' ? 0.18 : 0.25;
         let goalX = this.map.width * 0.5;
         let goalY = this.map.height * 0.5;
         let goalFloor: FloorLevel = bFloor;
 
-        if (prog && prog.collectedCount < LIBRARY_BOOKS_PER_PLAYER) {
+        // Opportunistic visible/nearby pickups on Library
+        const medkitTarget =
+          bot.hp <= 55
+            ? this.pickups
+                .filter((p) => p.kind === 'medkit' && sameFloor(p.floor, bFloor) && dist(bot.x, bot.y, p.x, p.y) < 380)
+                .sort((a, b) => dist(bot.x, bot.y, a.x, a.y) - dist(bot.x, bot.y, b.x, b.y))[0]
+            : undefined;
+        const ammoWant = diff === 'RUTHLESS' ? 2 : diff === 'TACTICAL' ? 1 : 0;
+        const ammoTarget =
+          bot.ammo < ammoWant
+            ? this.pickups
+                .filter((p) => p.kind === 'bullet' && sameFloor(p.floor, bFloor) && dist(bot.x, bot.y, p.x, p.y) < 380)
+                .sort((a, b) => dist(bot.x, bot.y, a.x, a.y) - dist(bot.x, bot.y, b.x, b.y))[0]
+            : undefined;
+
+        if (medkitTarget) {
+          goalX = medkitTarget.x;
+          goalY = medkitTarget.y;
+          goalFloor = bFloor;
+        } else if (ammoTarget && (!prog || prog.collectedCount < LIBRARY_BOOKS_PER_PLAYER)) {
+          goalX = ammoTarget.x;
+          goalY = ammoTarget.y;
+          goalFloor = bFloor;
+        } else if (prog && prog.collectedCount < LIBRARY_BOOKS_PER_PLAYER) {
           const remaining = prog.books.filter((b) => !b.collected);
-          remaining.sort(
-            (a, b) =>
-              (a.floor === bFloor ? 0 : 700) +
-              dist(bot.x, bot.y, a.x, a.y) -
-              ((b.floor === bFloor ? 0 : 700) + dist(bot.x, bot.y, b.x, b.y))
-          );
+          remaining.sort((a, b) => {
+            const penaltyA =
+              (a.floor === bFloor ? 0 : 620) +
+              (diff !== 'CHILL' && m.stunTimer <= 0 && a.floor === m.floor && dist(a.x, a.y, m.x, m.y) < 360 ? 550 : 0);
+            const penaltyB =
+              (b.floor === bFloor ? 0 : 620) +
+              (diff !== 'CHILL' && m.stunTimer <= 0 && b.floor === m.floor && dist(b.x, b.y, m.x, m.y) < 360 ? 550 : 0);
+            return penaltyA + dist(bot.x, bot.y, a.x, a.y) - (penaltyB + dist(bot.x, bot.y, b.x, b.y));
+          });
           if (remaining[0]) {
-            goalX = remaining[0].x;
-            goalY = remaining[0].y;
+            const app = this.getBookApproachPoint(remaining[0]);
+            goalX = app.x;
+            goalY = app.y;
             goalFloor = remaining[0].floor;
           }
         } else if (door) {
-          const outX = door.side === 'W' ? door.x - 56 : door.side === 'E' ? door.x + 56 : door.x;
-          const outY = door.side === 'N' ? door.y - 56 : door.side === 'S' ? door.y + 56 : door.y;
+          const outX = door.side === 'W' ? door.x - 58 : door.side === 'E' ? door.x + 58 : door.x;
+          const outY = door.side === 'N' ? door.y - 58 : door.side === 'S' ? door.y + 58 : door.y;
           goalX = outX;
           goalY = outY;
           goalFloor = 0;
         }
 
-        const existing = this.botPaths.get(bot.id);
-        const needNewPath =
-          !existing ||
-          existing.timer <= 0 ||
-          existing.goalFloor !== goalFloor ||
-          dist(existing.goalX, existing.goalY, goalX, goalY) > 90 ||
-          existing.nodes.length === 0;
-        if (needNewPath) {
-          const nodes = this.findNavPath(bot.x, bot.y, bFloor, goalX, goalY, goalFloor);
-          this.botPaths.set(bot.id, { nodes, timer: 1.1, goalX, goalY, goalFloor });
-        } else {
-          existing.timer -= 0.26;
-        }
+        // If already on same floor with short unobstructed line to goal, steer straight to exact goal!
+        const directClear =
+          bFloor === goalFloor &&
+          dist(bot.x, bot.y, goalX, goalY) < 220 &&
+          this.isSegmentClearOnFloor(bot.x, bot.y, goalX, goalY, PLAYER_RADIUS + 2, bFloor);
 
-        const pathState = this.botPaths.get(bot.id);
         let wpX = goalX;
         let wpY = goalY;
-        if (pathState && pathState.nodes.length > 0) {
-          while (pathState.nodes.length > 0) {
-            const next = pathState.nodes[0];
-            const hitDist = next.isStair ? 30 : 42;
-            if (dist(bot.x, bot.y, next.x, next.y) < hitDist && (next.isStair || next.floor === bFloor)) {
-              pathState.nodes.shift();
-            } else {
-              wpX = next.x;
-              wpY = next.y;
-              break;
+
+        if (!directClear) {
+          const existing = this.botPaths.get(bot.id);
+          const needNewPath =
+            !existing ||
+            existing.timer <= 0 ||
+            existing.goalFloor !== goalFloor ||
+            dist(existing.goalX, existing.goalY, goalX, goalY) > 75 ||
+            existing.nodes.length === 0;
+          if (needNewPath) {
+            const nodes = this.findNavPathOnGraph(this.botNavNodes, bot.x, bot.y, bFloor, goalX, goalY, goalFloor);
+            this.botPaths.set(bot.id, { nodes, timer: 1.0, goalX, goalY, goalFloor });
+          } else {
+            existing.timer -= diff === 'RUTHLESS' ? 0.18 : 0.25;
+          }
+
+          const pathState = this.botPaths.get(bot.id);
+          if (pathState && pathState.nodes.length > 0) {
+            while (pathState.nodes.length > 0) {
+              const next = pathState.nodes[0];
+              const hitDist = next.isStair ? 42 : 44;
+              if (
+                dist(bot.x, bot.y, next.x, next.y) < hitDist &&
+                ((next.isStair && (next.floor === bFloor || pathState.nodes.length > 1)) || next.floor === bFloor)
+              ) {
+                pathState.nodes.shift();
+              } else {
+                wpX = next.x;
+                wpY = next.y;
+                break;
+              }
             }
           }
         }
-        bot.aiTargetAngle = Math.atan2(wpY - bot.y, wpX - bot.x);
+
+        const rawAngle = Math.atan2(wpY - bot.y, wpX - bot.x);
+        bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawAngle, 58, bot.aiStrafeDir);
         bot.aiMoveRatio = safeWalkRatio;
       }
     }
 
-    const angleDiff = normalizeAngle(bot.aiTargetAngle - bot.angle);
-    bot.angle = normalizeAngle(bot.angle + clamp(angleDiff, -8 * dt, 8 * dt));
+    const desiredFacing =
+      activeAimAngle !== null
+        ? activeAimAngle
+        : this.config.extraDark
+          ? normalizeAngle(bot.aiTargetAngle + Math.sin(mem.scanPhase) * 0.42)
+          : bot.aiTargetAngle;
+    const angleDiff = normalizeAngle(desiredFacing - bot.angle);
+    const turnSpeed = diff === 'RUTHLESS' ? 11 : 8;
+    bot.angle = normalizeAngle(bot.angle + clamp(angleDiff, -turnSpeed * dt, turnSpeed * dt));
 
     const targetSpeed = this.getPlayerMaxSpeed() * bot.aiMoveRatio;
     const targetVx = Math.cos(bot.aiTargetAngle) * targetSpeed;

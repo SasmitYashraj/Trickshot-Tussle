@@ -1,6 +1,12 @@
 import { ArrowLeftRight, Check, Copy, Lock, LogOut, Play, Sliders, Users } from 'lucide-react';
 import { useState } from 'react';
-import { ARENA_MAPS, IMMERSIVE_MAP_LIST, MAP_PREVIEW_URLS, SOLO_MAP_LIST } from '../game/maps';
+import {
+  ARENA_MAPS,
+  IMMERSIVE_DARK_PREVIEW_URLS,
+  IMMERSIVE_MAP_LIST,
+  MAP_PREVIEW_URLS,
+  SOLO_MAP_LIST,
+} from '../game/maps';
 import {
   type BotDifficulty,
   DEFAULT_MATCH_MODIFIERS,
@@ -299,11 +305,32 @@ export function OnlineLobbyScreen({
                     alt={ARENA_MAPS[room.config.mapId].name}
                     referrerPolicy="no-referrer"
                     onError={() => setPreviewFailed((prev) => ({ ...prev, [room.config.mapId]: true }))}
-                    className="h-full w-full object-cover object-center"
+                    className={`absolute inset-0 h-full w-full object-cover object-center transition-all duration-500 ${
+                      room.config.immersive &&
+                      room.config.extraDark &&
+                      IMMERSIVE_DARK_PREVIEW_URLS[room.config.mapId]
+                        ? 'opacity-0'
+                        : 'opacity-100'
+                    }`}
                   />
                 ) : (
                   <div className="h-full w-full bg-slate-900" />
                 )}
+                {room.config.immersive &&
+                  IMMERSIVE_DARK_PREVIEW_URLS[room.config.mapId] &&
+                  !previewFailed[`${room.config.mapId}_dark`] && (
+                    <img
+                      src={IMMERSIVE_DARK_PREVIEW_URLS[room.config.mapId]}
+                      alt={`${ARENA_MAPS[room.config.mapId].name} dark mode`}
+                      referrerPolicy="no-referrer"
+                      onError={() =>
+                        setPreviewFailed((prev) => ({ ...prev, [`${room.config.mapId}_dark`]: true }))
+                      }
+                      className={`absolute inset-0 h-full w-full object-cover object-center transition-all duration-500 ${
+                        room.config.extraDark ? 'opacity-100' : 'opacity-0'
+                      }`}
+                    />
+                  )}
                 <div
                   className="pointer-events-none absolute inset-0"
                   style={{
@@ -317,7 +344,11 @@ export function OnlineLobbyScreen({
                   {ARENA_MAPS[room.config.mapId].name}
                 </span>
                 <span className="text-[10px] font-mono-tabular text-sky-300 shrink-0">
-                  {room.config.immersive ? 'Immersive' : '2D'}
+                  {room.config.immersive
+                    ? room.config.extraDark
+                      ? 'Immersive · Dark'
+                      : 'Immersive · Light'
+                    : '2D'}
                 </span>
               </div>
             </div>
@@ -333,22 +364,56 @@ export function OnlineLobbyScreen({
                     : 'flex flex-col gap-1.5'
                 }
               >
-                {availableMaps.map((m) => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    disabled={!isHost}
-                    onClick={() => setMap(m.id)}
-                    className={`text-left px-3 py-2 rounded-lg border transition-colors ${
-                      room.config.mapId === m.id
-                        ? 'bg-slate-800 border-sky-500/70 text-slate-50'
-                        : 'bg-slate-900/60 border-slate-800 text-slate-300 hover:border-slate-700'
-                    } ${!isHost ? 'opacity-80 cursor-default' : 'cursor-pointer'}`}
-                  >
-                    <div className="text-xs font-semibold">{m.name}</div>
-                    <div className="text-[11px] text-slate-400 mt-0.5 line-clamp-1">{m.description}</div>
-                  </button>
-                ))}
+                {availableMaps.map((m) => {
+                  const darkThumb = IMMERSIVE_DARK_PREVIEW_URLS[m.id];
+                  const showDark = Boolean(m.immersive && room.config.extraDark && darkThumb);
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      disabled={!isHost}
+                      onClick={() => setMap(m.id)}
+                      className={`text-left px-2.5 py-2 rounded-lg border transition-colors flex items-center gap-2.5 ${
+                        room.config.mapId === m.id
+                          ? 'bg-slate-800 border-sky-500/70 text-slate-50'
+                          : 'bg-slate-900/60 border-slate-800 text-slate-300 hover:border-slate-700'
+                      } ${!isHost ? 'opacity-80 cursor-default' : 'cursor-pointer'}`}
+                    >
+                      <div className="relative w-12 h-9 rounded overflow-hidden shrink-0 bg-slate-950 border border-slate-800/80">
+                        {!previewFailed[m.id] && (
+                          <img
+                            src={MAP_PREVIEW_URLS[m.id]}
+                            alt={m.name}
+                            referrerPolicy="no-referrer"
+                            onError={() =>
+                              setPreviewFailed((prev) => ({ ...prev, [m.id]: true }))
+                            }
+                            className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-500 ${
+                              showDark ? 'opacity-0' : 'opacity-100'
+                            }`}
+                          />
+                        )}
+                        {darkThumb && !previewFailed[`${m.id}_dark`] && (
+                          <img
+                            src={darkThumb}
+                            alt={`${m.name} dark`}
+                            referrerPolicy="no-referrer"
+                            onError={() =>
+                              setPreviewFailed((prev) => ({ ...prev, [`${m.id}_dark`]: true }))
+                            }
+                            className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-500 ${
+                              showDark ? 'opacity-100' : 'opacity-0'
+                            }`}
+                          />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold truncate">{m.name}</div>
+                        <div className="text-[11px] text-slate-400 mt-0.5 line-clamp-1">{m.description}</div>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 

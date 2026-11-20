@@ -1,4 +1,4 @@
-import { Pause, Play, RotateCcw, Volume2, VolumeX } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Eye, Pause, Play, RotateCcw, Volume2, VolumeX } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { GameOverModal } from './components/GameOverModal';
 import { LibraryLoadingScreen } from './components/LibraryLoadingScreen';
@@ -320,6 +320,9 @@ export default function App() {
   const [lockErrorSeq, setLockErrorSeq] = useState<number>(0);
   const [jumpscareFlash, setJumpscareFlash] = useState<boolean>(false);
   const [libraryUi, setLibraryUi] = useState<LibraryUiSnapshot | null>(null);
+  const [immersiveSpectateList, setImmersiveSpectateList] = useState<
+    Array<{ id: number; name: string }>
+  >([]);
 
   const engineRef = useRef<ArenaEngine>(new ArenaEngine(DEFAULT_SOLO_CONFIG));
   const [snapshot, setSnapshot] = useState<GameSnapshot>(() => engineRef.current.getSnapshot(0));
@@ -354,6 +357,7 @@ export default function App() {
   const spectateTargetIdRef = useRef<number | null>(spectateTargetId);
   const libraryLockOpenRef = useRef<boolean>(libraryLockOpen);
   const libraryUiRef = useRef<LibraryUiSnapshot | null>(libraryUi);
+  const immersiveSpectateRef = useRef<Array<{ id: number; name: string }>>([]);
   const jumpscareTimerRef = useRef<number | null>(null);
   const clientRef = useRef<MultiplayerClient | null>(null);
 
@@ -438,12 +442,18 @@ export default function App() {
           setLibraryLockOpen(false);
           setLockErrorSeq(0);
           setSpectateTargetId(null);
+          spectateTargetIdRef.current = null;
+          immersiveSpectateRef.current = [];
+          setImmersiveSpectateList([]);
           setLibraryUi(null);
           libraryUiRef.current = null;
           setGameState('ONLINE_LOBBY');
         } else if (room.phase === 'PLAYING') {
+          const roomMapDef = ARENA_MAPS[room.config.mapId];
           if (room.config.mapId === 'library') {
             sound.preloadLibraryAudio();
+          } else if (roomMapDef.immersive) {
+            sound.preloadImmersiveTrack(roomMapDef.floorTheme);
           }
           cameraRef.current.initialized = false;
           setHasUsedJoystick(false);
@@ -452,12 +462,17 @@ export default function App() {
           setLibraryLockOpen(false);
           setLockErrorSeq(0);
           setSpectateTargetId(null);
+          spectateTargetIdRef.current = null;
+          immersiveSpectateRef.current = [];
+          setImmersiveSpectateList([]);
           setLibraryUi(null);
           libraryUiRef.current = null;
           setGameState('PLAYING');
         } else if (room.phase === 'GAME_OVER') {
           setKillStreak((prev) => (prev?.mode === 'ELIMINATION' ? prev : null));
           setLibraryLockOpen(false);
+          immersiveSpectateRef.current = [];
+          setImmersiveSpectateList([]);
           setGameState('GAME_OVER');
         }
       },
@@ -465,12 +480,16 @@ export default function App() {
         onlineWorldRef.current = world;
         onlineLastSyncAtRef.current = performance.now();
         const mySlot = roomStateRef.current?.mySlot ?? 0;
-        const me = world.players.find((p) => p.id === mySlot);
+        const specId = spectateTargetIdRef.current;
+        const listenerP =
+          (specId != null
+            ? world.players.find((p) => p.id === specId && p.alive)
+            : undefined) ?? world.players.find((p) => p.id === mySlot);
         if (world.events && world.events.length > 0) {
           playEngineEvents(
             world.events,
-            me?.x,
-            me?.y,
+            listenerP?.x,
+            listenerP?.y,
             mySlot,
             (streak, streakMode) => {
               const nowMs = performance.now();
@@ -481,7 +500,7 @@ export default function App() {
             () => {
               setSelfKillPopup({ expiresAt: performance.now() + 2800 });
             },
-            me?.floor ?? 0,
+            listenerP?.floor ?? 0,
             () => setLockErrorSeq((prev) => prev + 1),
             triggerJumpscareFlash
           );
@@ -533,6 +552,8 @@ export default function App() {
       sound.unlock();
       if (nextCfg.mapId === 'library') {
         sound.preloadLibraryAudio();
+      } else if (mapDef.immersive) {
+        sound.preloadImmersiveTrack(mapDef.floorTheme);
       }
       setIsOnline(false);
       setRoomState(null);
@@ -547,6 +568,9 @@ export default function App() {
       setLibraryLockOpen(false);
       setLockErrorSeq(0);
       setSpectateTargetId(null);
+      spectateTargetIdRef.current = null;
+      immersiveSpectateRef.current = [];
+      setImmersiveSpectateList([]);
       setJumpscareFlash(false);
       setLibraryUi(null);
       libraryUiRef.current = null;
@@ -822,11 +846,15 @@ export default function App() {
           engine.update(dt);
           const evts = engine.drainEvents();
           if (evts.length > 0) {
-            const human = engine.players[0];
+            const specId = spectateTargetIdRef.current;
+            const listenerP =
+              (specId != null
+                ? engine.players.find((p) => p.id === specId && p.alive)
+                : undefined) ?? engine.players[0];
             playEngineEvents(
               evts,
-              human?.x,
-              human?.y,
+              listenerP?.x,
+              listenerP?.y,
               0,
               (streak, streakMode) => {
                 const nowMs = performance.now();
@@ -837,7 +865,7 @@ export default function App() {
               () => {
                 setSelfKillPopup({ expiresAt: performance.now() + 2800 });
               },
-              human?.floor ?? 0,
+              listenerP?.floor ?? 0,
               () => setLockErrorSeq((prev) => prev + 1),
               triggerJumpscareFlash
             );
@@ -874,8 +902,12 @@ export default function App() {
         };
       }
 
-      // Sync Library HUD / proximity / spectate targets / audio track availability cleanly
+      // Sync Library HUD / proximity / universal immersive spectate targets
       if (worldToRender && worldToRender.mapId === 'library' && worldToRender.libraryState) {
+        if (immersiveSpectateRef.current.length > 0) {
+          immersiveSpectateRef.current = [];
+          setImmersiveSpectateList([]);
+        }
         const libState = worldToRender.libraryState;
         const libWalls = ARENA_MAPS[worldToRender.mapId].walls;
         const localP = worldToRender.players.find((p) => p.id === localId);
@@ -950,9 +982,57 @@ export default function App() {
           libHudAccumulator = 0;
           setLibraryUi(nextLibUi);
         }
-      } else if (libraryUiRef.current !== null) {
-        libraryUiRef.current = null;
-        setLibraryUi(null);
+      } else {
+        if (libraryUiRef.current !== null) {
+          libraryUiRef.current = null;
+          setLibraryUi(null);
+        }
+        const isImmersiveWorld = Boolean(
+          worldToRender && (worldToRender.immersive || ARENA_MAPS[worldToRender.mapId].immersive)
+        );
+        const activeCfg = isOnlineRef.current
+          ? roomStateRef.current?.config ?? DEFAULT_ONLINE_CONFIG
+          : engineRef.current.config;
+        const localP = worldToRender?.players.find((p) => p.id === localId);
+        const canNonLibSpectate = Boolean(
+          worldToRender &&
+            isImmersiveWorld &&
+            gameStateRef.current === 'PLAYING' &&
+            activeCfg.mode === 'ELIMINATION' &&
+            localP &&
+            !localP.alive
+        );
+
+        if (canNonLibSpectate && worldToRender) {
+          const candidates = worldToRender.players
+            .filter((p) => p.id !== localId && p.alive)
+            .map((p) => ({ id: p.id, name: p.name }));
+          const curTarget = spectateTargetIdRef.current;
+          if (candidates.length > 0 && !candidates.some((c) => c.id === curTarget)) {
+            spectateTargetIdRef.current = candidates[0].id;
+            setSpectateTargetId(candidates[0].id);
+          } else if (candidates.length === 0 && curTarget !== null) {
+            spectateTargetIdRef.current = null;
+            setSpectateTargetId(null);
+          }
+          const prevList = immersiveSpectateRef.current;
+          const changed =
+            prevList.length !== candidates.length ||
+            candidates.some((c, i) => prevList[i]?.id !== c.id || prevList[i]?.name !== c.name);
+          if (changed) {
+            immersiveSpectateRef.current = candidates;
+            setImmersiveSpectateList(candidates);
+          }
+        } else {
+          if (spectateTargetIdRef.current !== null) {
+            spectateTargetIdRef.current = null;
+            setSpectateTargetId(null);
+          }
+          if (immersiveSpectateRef.current.length > 0) {
+            immersiveSpectateRef.current = [];
+            setImmersiveSpectateList([]);
+          }
+        }
       }
 
       // WASD / Arrow movement + Shift slow-walk (or PC Speed Slider in Library) + 360-degree pure cursor aim
@@ -1014,6 +1094,7 @@ export default function App() {
 
       if (worldToRender) {
         const isLibrary = worldToRender.mapId === 'library';
+        const mapTheme = ARENA_MAPS[worldToRender.mapId].floorTheme;
         const isImmersivePlaying =
           gameStateRef.current === 'PLAYING' &&
           (worldToRender.immersive || ARENA_MAPS[worldToRender.mapId].immersive);
@@ -1021,8 +1102,8 @@ export default function App() {
           gameStateRef.current === 'PLAYING' &&
           !(worldToRender.immersive || ARENA_MAPS[worldToRender.mapId].immersive);
         const extraDark = Boolean(worldToRender.extraDark);
-        // Never emit synthetic atmospheric/BGM drone in The Library; use Unhinged player + SFX only
-        sound.setImmersiveAmbient(isImmersivePlaying && !isLibrary, extraDark);
+        // Immersive maps now use their dedicated real music tracks (no synthetic ambient drone)
+        sound.setImmersiveAmbient(false, false);
 
         const isLibraryPlaying =
           isLibrary &&
@@ -1034,6 +1115,60 @@ export default function App() {
           : 0;
         const libInRage = worldToRender.libraryState?.monster.mode === 'rage';
         sound.updateLibraryMusic(dt, isLibraryPlaying, libProgress, libInRage);
+
+        // Seamless 2-stage ramping music tracks for Emerald Grove & Wooden Mansion
+        const useImmersiveTrack =
+          isImmersivePlaying &&
+          !isLibrary &&
+          (mapTheme === 'grass_outdoors' || mapTheme === 'mansion_wood');
+        let immersiveProgress = 0;
+        let immersiveFinalStage = false;
+        if (useImmersiveTrack) {
+          const totalPlayers = Math.max(2, worldToRender.players.length);
+          const alivePlayers = worldToRender.players.filter((p) => p.alive).length;
+          const deadPlayers = Math.max(0, totalPlayers - alivePlayers);
+          const deadRatio = deadPlayers / Math.max(1, totalPlayers - 1);
+          const timeBuild = Math.min(0.45, worldToRender.elapsedTime / 70);
+          const activeCfg = isOnlineRef.current
+            ? roomStateRef.current?.config ?? DEFAULT_ONLINE_CONFIG
+            : engineRef.current.config;
+          if (activeCfg.mode === 'ELIMINATION') {
+            immersiveProgress = Math.min(
+              1,
+              Math.max(deadRatio * 0.85, timeBuild) + deadRatio * 0.15
+            );
+            immersiveFinalStage = alivePlayers <= 2;
+          } else {
+            const scorePlayers = isOnlineRef.current
+              ? onlineWorldRef.current?.players ?? []
+              : engineRef.current.players;
+            const leadKills =
+              worldToRender.teamMode === '2V2'
+                ? Math.max(
+                    scorePlayers
+                      .filter((p) => p.team === 0)
+                      .reduce((sum, p) => sum + p.kills, 0),
+                    scorePlayers
+                      .filter((p) => p.team === 1)
+                      .reduce((sum, p) => sum + p.kills, 0)
+                  )
+                : Math.max(0, ...scorePlayers.map((p) => p.kills));
+            const target = Math.max(1, activeCfg.targetKills);
+            const killProg = Math.min(1, leadKills / target);
+            immersiveProgress = Math.min(
+              1,
+              killProg * 0.84 + Math.min(0.16, worldToRender.elapsedTime / 100)
+            );
+            immersiveFinalStage = leadKills >= Math.max(1, Math.ceil(target * 0.7));
+          }
+        }
+        sound.updateImmersiveMapMusic(
+          dt,
+          useImmersiveTrack,
+          mapTheme,
+          immersiveProgress,
+          immersiveFinalStage
+        );
 
         // Compute dynamic tension (0..1) for ramping normal-mode suspense music
         let normalTension = 0;
@@ -1061,19 +1196,18 @@ export default function App() {
             );
           }
         }
-        sound.updateNormalMusic(
-          dt,
-          isNormalPlaying,
-          normalTension,
-          ARENA_MAPS[worldToRender.mapId].floorTheme
-        );
+        sound.updateNormalMusic(dt, isNormalPlaying, normalTension, mapTheme);
 
-        const listener = worldToRender.players.find((p) => p.id === localId);
+        const specId = spectateTargetIdRef.current;
+        const listener =
+          (specId != null
+            ? worldToRender.players.find((p) => p.id === specId && p.alive)
+            : undefined) ?? worldToRender.players.find((p) => p.id === localId);
         sound.updateImmersiveFootsteps(
           dt,
           listener,
           worldToRender.players,
-          ARENA_MAPS[worldToRender.mapId].floorTheme,
+          mapTheme,
           isImmersivePlaying,
           extraDark
         );
@@ -1114,6 +1248,7 @@ export default function App() {
       sound.setImmersiveAmbient(false, false);
       sound.updateNormalMusic(0, false, 0);
       sound.updateLibraryMusic(0, false, 0, false);
+      sound.updateImmersiveMapMusic(0, false, 'mansion_wood', 0, false);
     };
   }, [gameState]);
 
@@ -1777,6 +1912,60 @@ export default function App() {
                   }
                 }}
               />
+            )}
+
+          {/* Universal Immersive Spectating Strip (Wooden Mansion & Emerald Grove Elimination) */}
+          {activeConfig.mapId !== 'library' &&
+            ARENA_MAPS[activeConfig.mapId].immersive &&
+            gameState === 'PLAYING' &&
+            !localSnap?.alive &&
+            immersiveSpectateList.length > 0 && (
+              <div className="pointer-events-auto absolute bottom-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 rounded-xl border border-slate-700/70 bg-slate-950/65 backdrop-blur-sm px-3 py-2 text-xs text-slate-100 shadow-xl">
+                <div className="flex items-center gap-1.5 pr-1">
+                  <Eye className="w-4 h-4 text-sky-400 shrink-0" />
+                  <span className="font-semibold text-slate-200 whitespace-nowrap">
+                    Eliminated
+                  </span>
+                </div>
+                <div className="flex items-center gap-1 border-l border-slate-700/80 pl-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const list = immersiveSpectateList;
+                      if (list.length === 0) return;
+                      const idx = Math.max(0, list.findIndex((c) => c.id === spectateTargetId));
+                      const next = list[(idx - 1 + list.length) % list.length];
+                      spectateTargetIdRef.current = next.id;
+                      setSpectateTargetId(next.id);
+                    }}
+                    aria-label="Previous player camera"
+                    className="h-7 w-7 inline-flex items-center justify-center rounded-md bg-slate-800/80 hover:bg-slate-700 text-slate-200 cursor-pointer shrink-0"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                  </button>
+                  <span className="px-1.5 font-mono-tabular text-[11px] font-bold text-sky-200 whitespace-nowrap">
+                    {`Watching ${
+                      immersiveSpectateList.find((c) => c.id === spectateTargetId)?.name ??
+                      immersiveSpectateList[0].name
+                    }`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const list = immersiveSpectateList;
+                      if (list.length === 0) return;
+                      const idx = Math.max(0, list.findIndex((c) => c.id === spectateTargetId));
+                      const next = list[(idx + 1) % list.length];
+                      spectateTargetIdRef.current = next.id;
+                      setSpectateTargetId(next.id);
+                    }}
+                    aria-label="Next player camera"
+                    className="h-7 w-7 inline-flex items-center justify-center rounded-md bg-slate-800/80 hover:bg-slate-700 text-slate-200 cursor-pointer shrink-0"
+                  >
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
             )}
 
           {/* Brief crimson-orange Figure Jumpscare flash when caught */}

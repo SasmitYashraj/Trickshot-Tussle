@@ -437,3 +437,9 @@ export const MAP_PREVIEW_URLS: Record<MapId, string> = {
   library: '/assets/maps/library.jpg',
 };
 
+export const IMMERSIVE_DARK_PREVIEW_URLS: Partial<Record<MapId, string>> = {
+  immersive_mansion: '/assets/maps/immersive_mansion_dark.jpg',
+  immersive_outdoors: '/assets/maps/immersive_outdoors_dark.jpg',
+  library: '/assets/maps/library_dark.jpg',
+};
+

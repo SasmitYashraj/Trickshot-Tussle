@@ -148,6 +148,7 @@ export function getArenaViewTransform(
 
 const floorCache = new Map<string, HTMLCanvasElement>();
 let sharedLightCanvas: HTMLCanvasElement | null = null;
+let sharedBeamScratchCanvas: HTMLCanvasElement | null = null;
 let sharedFogCanvas: HTMLCanvasElement | null = null;
 let sharedWispCanvas: HTMLCanvasElement | null = null;
 let sharedWaterCanvas: HTMLCanvasElement | null = null;
@@ -161,6 +162,17 @@ function getLightCanvas(width: number, height: number): HTMLCanvasElement {
     sharedLightCanvas.height = height;
   }
   return sharedLightCanvas;
+}
+
+function getBeamScratchCanvas(width: number, height: number): HTMLCanvasElement {
+  if (!sharedBeamScratchCanvas) {
+    sharedBeamScratchCanvas = document.createElement('canvas');
+  }
+  if (sharedBeamScratchCanvas.width !== width || sharedBeamScratchCanvas.height !== height) {
+    sharedBeamScratchCanvas.width = width;
+    sharedBeamScratchCanvas.height = height;
+  }
+  return sharedBeamScratchCanvas;
 }
 
 function getWinterFogCanvas(): HTMLCanvasElement {
@@ -411,7 +423,7 @@ function drawPersianRug(
 }
 
 function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
-  const key = `${map.id}_${map.width}x${map.height}_v5`;
+  const key = `${map.id}_${map.width}x${map.height}_v7`;
   const existing = floorCache.get(key);
   if (existing) return existing;
 
@@ -422,70 +434,155 @@ function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
   if (!ctx) return off;
 
   if (map.floorTheme === 'grass_outdoors') {
-    // Rich sunlit outdoor meadow grass
-    ctx.fillStyle = '#2B723E';
+    // Rich sunlit emerald-to-olive woodland clearing matching Emerald Grove & Meadow Clearing thumbnails
+    const baseGrad = ctx.createRadialGradient(
+      map.width * 0.46,
+      map.height * 0.44,
+      70,
+      map.width * 0.5,
+      map.height * 0.5,
+      Math.max(map.width, map.height) * 0.72
+    );
+    baseGrad.addColorStop(0, '#55992D');
+    baseGrad.addColorStop(0.52, '#316E26');
+    baseGrad.addColorStop(1, '#163D17');
+    ctx.fillStyle = baseGrad;
     ctx.fillRect(0, 0, map.width, map.height);
 
-    // Subtle mown grass diagonal / vertical turf bands
+    // Subtle mown grass turf bands
     const stripeW = 84;
     for (let sx = 0; sx < map.width; sx += stripeW) {
       if (Math.floor(sx / stripeW) % 2 === 0) {
-        ctx.fillStyle = 'rgba(74, 222, 128, 0.065)';
+        ctx.fillStyle = 'rgba(132, 204, 22, 0.055)';
         ctx.fillRect(sx, 0, stripeW, map.height);
       }
     }
 
-    // Organic soft grass patches
-    for (let i = 0; i < (map.immersive ? 110 : 65); i++) {
+    // Organic lush moss & sunlit clover variation patches
+    for (let i = 0; i < (map.immersive ? 130 : 90); i++) {
       const px = seededRand(i * 13 + 1) * map.width;
       const py = seededRand(i * 29 + 3) * map.height;
-      const pr = 40 + seededRand(i * 41 + 7) * 90;
+      const pr = 36 + seededRand(i * 41 + 7) * 95;
       ctx.fillStyle =
-        i % 2 === 0 ? 'rgba(22, 101, 52, 0.22)' : 'rgba(134, 239, 172, 0.09)';
+        i % 3 === 0
+          ? 'rgba(14, 52, 20, 0.30)'
+          : i % 3 === 1
+            ? 'rgba(132, 204, 22, 0.12)'
+            : 'rgba(34, 139, 58, 0.18)';
       ctx.beginPath();
       ctx.arc(px, py, pr, 0, Math.PI * 2);
       ctx.fill();
     }
 
-    // Warm stone & earth footpaths leading toward center clearing
+    // Footpaths: diagonal X stony dirt trails for Meadow Clearing, cardinal clearing paths for Emerald Grove
     ctx.save();
-    ctx.strokeStyle = 'rgba(180, 146, 103, 0.42)';
-    ctx.lineWidth = 64;
     ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(map.width * 0.5, 45);
-    ctx.lineTo(map.width * 0.5, map.height - 45);
-    ctx.moveTo(45, map.height * 0.5);
-    ctx.lineTo(map.width - 45, map.height * 0.5);
-    ctx.stroke();
+    if (!map.immersive) {
+      // Dark earth verge under diagonal X dirt paths
+      ctx.strokeStyle = 'rgba(78, 56, 32, 0.72)';
+      ctx.lineWidth = 86;
+      ctx.beginPath();
+      ctx.moveTo(45, 45);
+      ctx.lineTo(map.width - 45, map.height - 45);
+      ctx.moveTo(map.width - 45, 45);
+      ctx.lineTo(45, map.height - 45);
+      ctx.stroke();
 
-    ctx.strokeStyle = 'rgba(214, 186, 145, 0.24)';
-    ctx.lineWidth = 42;
-    ctx.stroke();
+      // Sunlit sandy-ochre footpath center
+      ctx.strokeStyle = 'rgba(176, 140, 90, 0.74)';
+      ctx.lineWidth = 56;
+      ctx.stroke();
 
-    // Central stone patio circle
-    ctx.fillStyle = 'rgba(176, 152, 118, 0.48)';
-    ctx.beginPath();
-    ctx.arc(map.width / 2, map.height / 2, map.immersive ? 155 : 118, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(226, 206, 176, 0.35)';
-    ctx.lineWidth = 3;
-    ctx.stroke();
+      // Central circular earth junction matching top-right thumbnail
+      const midG = ctx.createRadialGradient(
+        map.width * 0.5,
+        map.height * 0.5,
+        12,
+        map.width * 0.5,
+        map.height * 0.5,
+        142
+      );
+      midG.addColorStop(0, 'rgba(205, 168, 112, 0.85)');
+      midG.addColorStop(0.68, 'rgba(154, 118, 72, 0.68)');
+      midG.addColorStop(1, 'rgba(92, 68, 40, 0)');
+      ctx.fillStyle = midG;
+      ctx.beginPath();
+      ctx.arc(map.width * 0.5, map.height * 0.5, 142, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Natural textured pebbles scattered along the X trails
+      for (let i = 0; i < 160; i++) {
+        const diagA = i % 2 === 0;
+        const t = 0.06 + seededRand(i * 37 + 5) * 0.88;
+        const jitter = (seededRand(i * 53 + 9) - 0.5) * 52;
+        const px = (diagA ? t * map.width : (1 - t) * map.width) + jitter;
+        const py = t * map.height + (seededRand(i * 61 + 3) - 0.5) * 42;
+        const pr = 2 + seededRand(i * 73 + 1) * 4.2;
+        ctx.fillStyle =
+          i % 3 === 0
+            ? 'rgba(104, 78, 48, 0.55)'
+            : i % 3 === 1
+              ? 'rgba(218, 188, 140, 0.45)'
+              : 'rgba(130, 100, 65, 0.48)';
+        ctx.beginPath();
+        ctx.arc(px, py, pr, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else {
+      ctx.strokeStyle = 'rgba(122, 92, 58, 0.48)';
+      ctx.lineWidth = 68;
+      ctx.beginPath();
+      ctx.moveTo(map.width * 0.5, 45);
+      ctx.lineTo(map.width * 0.5, map.height - 45);
+      ctx.moveTo(45, map.height * 0.5);
+      ctx.lineTo(map.width - 45, map.height * 0.5);
+      ctx.stroke();
+
+      ctx.strokeStyle = 'rgba(196, 162, 114, 0.24)';
+      ctx.lineWidth = 40;
+      ctx.stroke();
+
+      ctx.fillStyle = 'rgba(148, 122, 86, 0.44)';
+      ctx.beginPath();
+      ctx.arc(map.width / 2, map.height / 2, 155, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(218, 194, 152, 0.32)';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
+
+    // Diagonal golden morning sun-rays filtering from top-left across both Meadow Clearing & Emerald Grove
+    const sunBeams = map.immersive ? [160, 440, 740, 1280] : [90, 270, 480];
+    for (const bx of sunBeams) {
+      const spanX = map.immersive ? 520 : 410;
+      const spanY = map.height * 0.78;
+      const rayGrad = ctx.createLinearGradient(bx, 0, bx + spanX, spanY);
+      rayGrad.addColorStop(0, 'rgba(254, 240, 138, 0.20)');
+      rayGrad.addColorStop(0.55, 'rgba(250, 204, 21, 0.07)');
+      rayGrad.addColorStop(1, 'rgba(250, 204, 21, 0)');
+      ctx.fillStyle = rayGrad;
+      ctx.beginPath();
+      ctx.moveTo(bx - 55, 0);
+      ctx.lineTo(bx + 115, 0);
+      ctx.lineTo(bx + spanX + 100, spanY);
+      ctx.lineTo(bx + spanX - 150, spanY);
+      ctx.closePath();
+      ctx.fill();
+    }
     ctx.restore();
 
-    // Delicate grass blades & wildflowers
-    for (let i = 0; i < (map.immersive ? 340 : 180); i++) {
+    // Delicate grass blades, moss specks & wildflowers
+    for (let i = 0; i < (map.immersive ? 420 : 240); i++) {
       const gx = 30 + seededRand(i * 7 + 11) * (map.width - 60);
       const gy = 30 + seededRand(i * 19 + 23) * (map.height - 60);
       if (i % 6 === 0) {
-        // Tiny colorful meadow flower
-        const flowerColors = ['#FDE047', '#F472B6', '#F8FAFC', '#FB923C'];
+        const flowerColors = ['#FDE047', '#FB7185', '#FEF9C3', '#F59E0B'];
         ctx.fillStyle = flowerColors[i % flowerColors.length];
         ctx.beginPath();
         ctx.arc(gx, gy, 2.3, 0, Math.PI * 2);
         ctx.fill();
       } else {
-        ctx.strokeStyle = 'rgba(134, 239, 172, 0.24)';
+        ctx.strokeStyle = i % 2 === 0 ? 'rgba(163, 230, 53, 0.26)' : 'rgba(74, 222, 128, 0.22)';
         ctx.lineWidth = 1.4;
         ctx.beginPath();
         ctx.moveTo(gx, gy);
@@ -496,70 +593,62 @@ function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
       }
     }
   } else if (map.floorTheme === 'winter_snow') {
-    // Cool arctic twilight snowfield with rich glacial blue shade & sculpted blue-tinted drifts
-    ctx.fillStyle = '#A8CDF2';
+    // Crisp bright glacier white-to-ice-blue snowfield matching Winter Tussle thumbnail
+    ctx.fillStyle = '#D9EEFF';
     ctx.fillRect(0, 0, map.width, map.height);
 
-    // Cool cerulean-blue color-temperature wash across the arena
-    const skyWash = ctx.createLinearGradient(0, 0, map.width, map.height);
-    skyWash.addColorStop(0, 'rgba(186, 222, 255, 0.42)');
-    skyWash.addColorStop(0.5, 'rgba(96, 165, 250, 0.34)');
-    skyWash.addColorStop(1, 'rgba(37, 99, 235, 0.28)');
-    ctx.fillStyle = skyWash;
+    // Sunlit glacier-white center fading to cool powder-blue corners
+    const snowWash = ctx.createRadialGradient(
+      map.width * 0.5,
+      map.height * 0.48,
+      60,
+      map.width * 0.5,
+      map.height * 0.5,
+      Math.max(map.width, map.height) * 0.72
+    );
+    snowWash.addColorStop(0, 'rgba(248, 252, 255, 0.86)');
+    snowWash.addColorStop(0.55, 'rgba(214, 236, 255, 0.56)');
+    snowWash.addColorStop(1, 'rgba(125, 185, 245, 0.52)');
+    ctx.fillStyle = snowWash;
     ctx.fillRect(0, 0, map.width, map.height);
 
-    // Sculpted wind-carved snowdrifts (deep cobalt-blue shadow side + cool ice-blue crest)
-    for (let i = 0; i < 26; i++) {
+    // Sculpted wind-carved snowdrifts (crisp sky-blue shadow trough + luminous snow ridge)
+    for (let i = 0; i < 30; i++) {
       const dx = 85 + seededRand(i * 17 + 5) * (map.width - 170);
       const dy = 70 + seededRand(i * 31 + 11) * (map.height - 140);
-      const rx = 85 + seededRand(i * 43 + 3) * 115;
-      const ry = 28 + seededRand(i * 59 + 7) * 38;
-      const rot = (seededRand(i * 71 + 9) - 0.5) * 0.45;
+      const rx = 85 + seededRand(i * 43 + 3) * 120;
+      const ry = 26 + seededRand(i * 59 + 7) * 38;
+      const rot = (seededRand(i * 71 + 9) - 0.5) * 0.55;
 
       ctx.save();
       ctx.translate(dx, dy);
       ctx.rotate(rot);
 
-      ctx.fillStyle = i % 2 === 0 ? 'rgba(59, 130, 246, 0.36)' : 'rgba(56, 189, 248, 0.32)';
+      ctx.fillStyle = i % 2 === 0 ? 'rgba(96, 165, 250, 0.28)' : 'rgba(56, 189, 248, 0.24)';
       ctx.beginPath();
-      ctx.ellipse(6, 8, rx, ry, 0, 0, Math.PI * 2);
+      ctx.ellipse(7, 9, rx, ry, 0, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.fillStyle = 'rgba(205, 232, 255, 0.78)';
+      ctx.fillStyle = 'rgba(244, 249, 255, 0.9)';
       ctx.beginPath();
-      ctx.ellipse(0, 0, rx * 0.94, ry * 0.86, 0, 0, Math.PI * 2);
+      ctx.ellipse(0, 0, rx * 0.94, ry * 0.84, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
     }
 
-    // Subtle icy court framing lines & center snow-compass border
-    ctx.save();
-    ctx.strokeStyle = 'rgba(29, 78, 216, 0.24)';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(56, 56, map.width - 112, map.height - 112);
-
-    ctx.strokeStyle = 'rgba(14, 165, 233, 0.28)';
-    ctx.lineWidth = 2.5;
-    ctx.setLineDash([12, 10]);
-    ctx.beginPath();
-    ctx.moveTo(map.width * 0.5, 56);
-    ctx.lineTo(map.width * 0.5, map.height - 56);
-    ctx.stroke();
-    ctx.restore();
-
     // Cool sparkling frost crystals & ice-blue snow glints
-    for (let i = 0; i < 220; i++) {
+    for (let i = 0; i < 240; i++) {
       const fx = 28 + seededRand(i * 23 + 17) * (map.width - 56);
       const fy = 28 + seededRand(i * 37 + 29) * (map.height - 56);
-      const r = 1.2 + seededRand(i * 53 + 3) * 1.9;
-      ctx.fillStyle = i % 3 === 0 ? 'rgba(56, 189, 248, 0.54)' : 'rgba(219, 238, 255, 0.84)';
+      const r = 1.2 + seededRand(i * 53 + 3) * 2.0;
+      ctx.fillStyle = i % 3 === 0 ? 'rgba(56, 189, 248, 0.52)' : 'rgba(255, 255, 255, 0.92)';
       ctx.beginPath();
       ctx.arc(fx, fy, r, 0, Math.PI * 2);
       ctx.fill();
     }
   } else if (map.floorTheme === 'maple_cargo') {
-    // Polished High-Contrast Marble & Dark Slate Tile Floor for Cargo Deck
-    ctx.fillStyle = '#0F172A';
+    // Rich Teal-Slate Armored Metal & Stone Tiles matching Cargo Deck thumbnail
+    ctx.fillStyle = '#0D1720';
     ctx.fillRect(0, 0, map.width, map.height);
 
     const tile = 100;
@@ -573,28 +662,28 @@ function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
         const seed = r * 97 + c * 43;
         const isLight = (r + c) % 2 === 0;
 
-        // Alternating dark obsidian-slate marble and cool silver-granite marble tiles
+        // Alternating cool dark teal-slate & steel-graphite slabs
         const tileGrad = ctx.createLinearGradient(x, y, x + tile, y + tile);
         if (isLight) {
-          tileGrad.addColorStop(0, '#3B4C63');
-          tileGrad.addColorStop(0.55, '#334155');
-          tileGrad.addColorStop(1, '#293548');
+          tileGrad.addColorStop(0, '#304556');
+          tileGrad.addColorStop(0.55, '#253646');
+          tileGrad.addColorStop(1, '#1C2A38');
         } else {
-          tileGrad.addColorStop(0, '#232F42');
-          tileGrad.addColorStop(0.55, '#1B2536');
-          tileGrad.addColorStop(1, '#141C2B');
+          tileGrad.addColorStop(0, '#1D2B38');
+          tileGrad.addColorStop(0.55, '#16212D');
+          tileGrad.addColorStop(1, '#101822');
         }
         ctx.fillStyle = tileGrad;
         ctx.fillRect(x, y, tile, tile);
 
-        // Diagonal marble veining inside each slab
+        // Brushed stone/metal micro-veining & subtle teal reflection
         ctx.save();
         ctx.beginPath();
         ctx.rect(x + 2, y + 2, tile - 4, tile - 4);
         ctx.clip();
 
-        ctx.strokeStyle = isLight ? 'rgba(226, 232, 240, 0.14)' : 'rgba(148, 163, 184, 0.08)';
-        ctx.lineWidth = 1.6;
+        ctx.strokeStyle = isLight ? 'rgba(153, 246, 228, 0.10)' : 'rgba(148, 163, 184, 0.06)';
+        ctx.lineWidth = 1.5;
         for (let v = 0; v < 2; v++) {
           const offset = seededRand(seed + v * 19) * tile * 0.65;
           ctx.beginPath();
@@ -609,45 +698,35 @@ function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
           );
           ctx.stroke();
         }
-
-        // Crisp subtle marble speck / secondary fracture vein on light slabs
-        if (isLight) {
-          ctx.strokeStyle = 'rgba(15, 23, 42, 0.18)';
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(x + 8, y + tile * 0.25);
-          ctx.lineTo(x + tile * 0.65, y + tile * 0.55);
-          ctx.stroke();
-        }
         ctx.restore();
 
-        // Top & left polished bevel highlight
-        ctx.fillStyle = isLight ? 'rgba(248, 250, 252, 0.12)' : 'rgba(148, 163, 184, 0.07)';
+        // Crisp cool-steel top & left bevel rim
+        ctx.fillStyle = isLight ? 'rgba(165, 243, 252, 0.14)' : 'rgba(148, 163, 184, 0.07)';
         ctx.fillRect(x + 1, y + 1, tile - 2, 2);
         ctx.fillRect(x + 1, y + 1, 2, tile - 2);
 
-        // Deep crisp tile grout seam
-        ctx.strokeStyle = 'rgba(6, 10, 19, 0.72)';
-        ctx.lineWidth = 2;
+        // Deep crisp recessed tile grout seam
+        ctx.strokeStyle = 'rgba(4, 8, 14, 0.85)';
+        ctx.lineWidth = 2.2;
         ctx.strokeRect(x, y, tile, tile);
       }
     }
 
-    // Crisp industrial hazard lane border & center ring
-    ctx.strokeStyle = 'rgba(250, 204, 21, 0.28)';
-    ctx.lineWidth = 4;
+    // Subtle cool cyan tactical deck framing & center dock ring
+    ctx.strokeStyle = 'rgba(45, 212, 191, 0.24)';
+    ctx.lineWidth = 3;
     ctx.strokeRect(70, 70, map.width - 140, map.height - 140);
     ctx.beginPath();
     ctx.arc(map.width / 2, map.height / 2, 130, 0, Math.PI * 2);
     ctx.stroke();
   } else if (map.floorTheme === 'library_wood') {
-    // Rich dark mahogany / walnut planks + olive-moss atrium rugs inspired by DOORS Library
-    ctx.fillStyle = '#241108';
+    // Rich burnished mahogany & walnut planks + ornate crimson-gold & olive-gold rugs
+    ctx.fillStyle = '#261107';
     ctx.fillRect(0, 0, map.width, map.height);
 
     const plankH = 34;
     const plankW = 152;
-    const tones = ['#2E160B', '#381B0D', '#261208', '#3F1E0F', '#2B1409'];
+    const tones = ['#32170B', '#3E1D0D', '#281208', '#492210', '#2E1509'];
 
     const rows = Math.ceil(map.height / plankH);
     for (let r = 0; r < rows; r++) {
@@ -663,7 +742,7 @@ function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
         ctx.fillRect(x, y, plankW, plankH);
 
         // Deep mahogany grain
-        ctx.strokeStyle = 'rgba(14, 5, 2, 0.44)';
+        ctx.strokeStyle = 'rgba(12, 4, 1, 0.48)';
         ctx.lineWidth = 1.1;
         for (let g = 0; g < 3; g++) {
           const gy = y + 6 + g * 9 + seededRand(seed + g) * 4;
@@ -681,33 +760,33 @@ function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
         }
 
         // Warm amber wood sheen highlight
-        ctx.fillStyle = 'rgba(251, 191, 36, 0.045)';
+        ctx.fillStyle = 'rgba(251, 191, 36, 0.065)';
         ctx.fillRect(x + 1, y + 1, plankW - 2, 2);
 
-        ctx.strokeStyle = 'rgba(10, 4, 1, 0.72)';
+        ctx.strokeStyle = 'rgba(10, 4, 1, 0.74)';
         ctx.lineWidth = 1.3;
         ctx.strokeRect(x, y, plankW, plankH);
       }
     }
 
-    // Muted olive-moss atrium carpets around central reading hall & stair approaches
-    drawPersianRug(ctx, map.width / 2 - 280, map.height / 2 - 220, 560, 440, '#4A562B', '#8E9C52');
-    drawPersianRug(ctx, 735, 620, 260, 145, '#434F27', '#82904A');
-    drawPersianRug(ctx, map.width - 995, 620, 260, 145, '#434F27', '#82904A');
-    drawPersianRug(ctx, 735, map.height - 765, 260, 145, '#434F27', '#82904A');
-    drawPersianRug(ctx, map.width - 995, map.height - 765, 260, 145, '#434F27', '#82904A');
+    // Ornate Library Persian rugs (deep burgundy/ochre atrium + olive-gold alcove runners matching collage)
+    drawPersianRug(ctx, map.width / 2 - 280, map.height / 2 - 220, 560, 440, '#6B1D1A', '#D4A853');
+    drawPersianRug(ctx, 735, 620, 260, 145, '#4A562B', '#C7B062');
+    drawPersianRug(ctx, map.width - 995, 620, 260, 145, '#6B1D1A', '#D4A853');
+    drawPersianRug(ctx, 735, map.height - 765, 260, 145, '#6B1D1A', '#D4A853');
+    drawPersianRug(ctx, map.width - 995, map.height - 765, 260, 145, '#4A562B', '#C7B062');
 
-    // Subtle olive-moss side hall runners on Ground Floor
-    drawPersianRug(ctx, 110, map.height / 2 - 140, 260, 280, '#4A562B', '#8E9C52');
-    drawPersianRug(ctx, map.width - 370, map.height / 2 - 140, 260, 280, '#4A562B', '#8E9C52');
+    // Side hall woven rugs on Ground Floor
+    drawPersianRug(ctx, 110, map.height / 2 - 140, 260, 280, '#582019', '#C9A154');
+    drawPersianRug(ctx, map.width - 370, map.height / 2 - 140, 260, 280, '#4A562B', '#B8A85A');
   } else {
-    // Rich dark espresso/walnut hardwood planks for Manor Foyer & Wooden Mansion
-    ctx.fillStyle = '#331A0D';
+    // Rich honey-oak to roasted-walnut hardwood planks for Manor Foyer & Wooden Mansion collage
+    ctx.fillStyle = '#381B0C';
     ctx.fillRect(0, 0, map.width, map.height);
 
     const plankH = 34;
     const plankW = 148;
-    const tones = ['#452412', '#522C17', '#3E2010', '#5C321A', '#4A2714'];
+    const tones = ['#4E2712', '#5E3017', '#42200E', '#69361A', '#542A14'];
 
     const rows = Math.ceil(map.height / plankH);
     for (let r = 0; r < rows; r++) {
@@ -723,7 +802,7 @@ function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
         ctx.fillRect(x, y, plankW, plankH);
 
         // Deep dark walnut wood grain
-        ctx.strokeStyle = 'rgba(18, 8, 3, 0.36)';
+        ctx.strokeStyle = 'rgba(18, 7, 2, 0.42)';
         ctx.lineWidth = 1.1;
         for (let g = 0; g < 3; g++) {
           const gy = y + 6 + g * 9 + seededRand(seed + g) * 4;
@@ -741,32 +820,46 @@ function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
         }
 
         // Subtle lacquered varnish sheen highlight
-        ctx.fillStyle = 'rgba(255, 224, 178, 0.065)';
+        ctx.fillStyle = 'rgba(254, 215, 140, 0.08)';
         ctx.fillRect(x + 1, y + 1, plankW - 2, 2);
 
         // Crisp dark plank seam
-        ctx.strokeStyle = 'rgba(15, 6, 2, 0.65)';
+        ctx.strokeStyle = 'rgba(14, 5, 1, 0.7)';
         ctx.lineWidth = 1.3;
         ctx.strokeRect(x, y, plankW, plankH);
       }
     }
 
-    // Brighter jewel-toned Persian carpets creating crisp contrast against dark espresso walnut
+    // Jewel-toned Persian carpets matching Wooden Mansion reference collage (Crimson, Royal Blue, Plum Purple, Emerald)
     drawPersianRug(
       ctx,
       map.width / 2 - (map.immersive ? 260 : 190),
       map.height / 2 - (map.immersive ? 190 : 140),
       map.immersive ? 520 : 380,
       map.immersive ? 380 : 280,
-      '#C81E2E',
-      '#FBBF24'
+      '#B91C1C',
+      '#F59E0B'
     );
 
     if (map.immersive) {
-      drawPersianRug(ctx, 290, 220, 320, 210, '#2563EB', '#FCD34D');
-      drawPersianRug(ctx, map.width - 610, 220, 320, 210, '#10B981', '#FDE047');
-      drawPersianRug(ctx, 290, map.height - 430, 320, 210, '#9333EA', '#FCD34D');
-      drawPersianRug(ctx, map.width - 610, map.height - 430, 320, 210, '#E11D48', '#FDE047');
+      drawPersianRug(ctx, 290, 220, 320, 210, '#1D4ED8', '#FBBF24');
+      drawPersianRug(ctx, map.width - 610, 220, 320, 210, '#047857', '#FCD34D');
+      drawPersianRug(ctx, 290, map.height - 430, 320, 210, '#7E22CE', '#FBBF24');
+      drawPersianRug(ctx, map.width - 610, map.height - 430, 320, 210, '#BE123C', '#FDE047');
+    } else {
+      // Rich warm radial vignette on Manor Foyer so center carpet and twin spotlights pop like thumbnail
+      const vig = ctx.createRadialGradient(
+        map.width * 0.5,
+        map.height * 0.48,
+        map.height * 0.24,
+        map.width * 0.5,
+        map.height * 0.5,
+        map.width * 0.66
+      );
+      vig.addColorStop(0, 'rgba(18, 6, 1, 0)');
+      vig.addColorStop(1, 'rgba(12, 4, 1, 0.48)');
+      ctx.fillStyle = vig;
+      ctx.fillRect(0, 0, map.width, map.height);
     }
   }
 
@@ -1140,61 +1233,78 @@ function drawObstacle(ctx: CanvasRenderingContext2D, wall: WallRect, world?: Ren
     const r = Math.min(wall.w, wall.h) * 0.5;
 
     // Trunk base peeking slightly
-    ctx.fillStyle = '#5C3A21';
+    ctx.fillStyle = '#4A2B14';
     ctx.beginPath();
     ctx.arc(cx, cy + 4, r * 0.32, 0, Math.PI * 2);
     ctx.fill();
 
     // Deep forest canopy base
-    ctx.fillStyle = '#14532D';
+    ctx.fillStyle = '#114424';
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.fill();
 
-    // Leafy perimeter lobes
-    ctx.fillStyle = '#15803D';
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2 + 0.3;
+    // Leafy perimeter clusters matching Emerald Grove reference
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * Math.PI * 2 + 0.25;
+      ctx.fillStyle = i % 2 === 0 ? '#166534' : '#15803D';
       ctx.beginPath();
-      ctx.arc(cx + Math.cos(a) * r * 0.42, cy + Math.sin(a) * r * 0.42, r * 0.54, 0, Math.PI * 2);
+      ctx.arc(cx + Math.cos(a) * r * 0.44, cy + Math.sin(a) * r * 0.44, r * 0.52, 0, Math.PI * 2);
       ctx.fill();
     }
 
     // Sunlit crown highlights
-    ctx.fillStyle = '#22C55E';
+    ctx.fillStyle = '#4D9B2A';
     ctx.beginPath();
     ctx.arc(cx - r * 0.14, cy - r * 0.16, r * 0.52, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.fillStyle = '#4ADE80';
+    ctx.fillStyle = '#84CC16';
     ctx.beginPath();
     ctx.arc(cx - r * 0.22, cy - r * 0.24, r * 0.28, 0, Math.PI * 2);
     ctx.fill();
+
+    // Crisp individual sunlit leaf flecks
+    ctx.fillStyle = 'rgba(217, 249, 157, 0.48)';
+    for (let i = 0; i < 6; i++) {
+      const a = i * 1.05 - 0.7;
+      ctx.beginPath();
+      ctx.arc(cx + Math.cos(a) * r * 0.46, cy + Math.sin(a) * r * 0.46, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.restore();
     return;
   }
 
   if (kind === 'rock') {
     ctx.save();
-    ctx.fillStyle = '#475569';
-    ctx.strokeStyle = '#334155';
-    ctx.lineWidth = 2;
+    const g = ctx.createLinearGradient(wall.x, wall.y, wall.x + wall.w, wall.y + wall.h);
+    g.addColorStop(0, '#64748B');
+    g.addColorStop(0.55, '#475569');
+    g.addColorStop(1, '#334155');
+    ctx.fillStyle = g;
+    ctx.strokeStyle = '#1E293B';
+    ctx.lineWidth = 2.2;
     ctx.beginPath();
-    ctx.roundRect(wall.x + 2, wall.y + 2, wall.w - 4, wall.h - 4, 20);
+    ctx.roundRect(wall.x + 2, wall.y + 2, wall.w - 4, wall.h - 4, 22);
     ctx.fill();
     ctx.stroke();
 
-    // Facet highlight
-    ctx.fillStyle = '#64748B';
+    // Sunlit warm grey ridge facet
+    ctx.fillStyle = 'rgba(203, 213, 225, 0.36)';
     ctx.beginPath();
-    ctx.roundRect(wall.x + 8, wall.y + 8, wall.w * 0.62, wall.h * 0.54, 14);
+    ctx.roundRect(wall.x + 8, wall.y + 8, wall.w * 0.58, wall.h * 0.5, 14);
     ctx.fill();
 
-    // Lush moss patch
-    ctx.fillStyle = '#22C55E';
+    // Rich velvety emerald moss cap
+    ctx.fillStyle = '#3F8F29';
     ctx.beginPath();
-    ctx.arc(wall.x + wall.w * 0.7, wall.y + wall.h * 0.28, 12, 0, Math.PI * 2);
-    ctx.arc(wall.x + wall.w * 0.58, wall.y + wall.h * 0.24, 8, 0, Math.PI * 2);
+    ctx.arc(wall.x + wall.w * 0.68, wall.y + wall.h * 0.3, 13, 0, Math.PI * 2);
+    ctx.arc(wall.x + wall.w * 0.55, wall.y + wall.h * 0.24, 9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#84CC16';
+    ctx.beginPath();
+    ctx.arc(wall.x + wall.w * 0.66, wall.y + wall.h * 0.27, 5, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
     return;
@@ -1258,7 +1368,7 @@ function drawObstacle(ctx: CanvasRenderingContext2D, wall: WallRect, world?: Ren
     }
 
     // Tier 3 (inner bright spruce crown + cool frost-capped peak)
-    ctx.fillStyle = '#10B981';
+    ctx.fillStyle = '#34D399';
     ctx.beginPath();
     ctx.arc(cx - 2, cy - 3, r * 0.42, 0, Math.PI * 2);
     ctx.fill();
@@ -1267,7 +1377,7 @@ function drawObstacle(ctx: CanvasRenderingContext2D, wall: WallRect, world?: Ren
     ctx.beginPath();
     ctx.arc(cx - 4, cy - 5, r * 0.24, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = '#F0F9FF';
+    ctx.fillStyle = '#FFFFFF';
     ctx.beginPath();
     ctx.arc(cx - 6, cy - 7, r * 0.12, 0, Math.PI * 2);
     ctx.fill();
@@ -1278,22 +1388,37 @@ function drawObstacle(ctx: CanvasRenderingContext2D, wall: WallRect, world?: Ren
 
   if (kind === 'hedge') {
     ctx.save();
-    ctx.fillStyle = '#14532D';
+    ctx.fillStyle = '#114424';
+    ctx.strokeStyle = '#092B15';
+    ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.roundRect(wall.x, wall.y, wall.w, wall.h, 12);
     ctx.fill();
+    ctx.stroke();
 
-    ctx.fillStyle = '#16A34A';
+    const hg = ctx.createLinearGradient(wall.x, wall.y, wall.x + wall.w, wall.y + wall.h);
+    hg.addColorStop(0, '#4D9B2A');
+    hg.addColorStop(0.55, '#2E7D2B');
+    hg.addColorStop(1, '#166534');
+    ctx.fillStyle = hg;
     ctx.beginPath();
     ctx.roundRect(wall.x + 5, wall.y + 5, wall.w - 10, wall.h - 10, 9);
     ctx.fill();
 
-    // Berry blossoms
+    // Crisp leaf flecks + berry blossoms matching reference thumbnail
+    ctx.fillStyle = 'rgba(190, 242, 100, 0.35)';
+    for (let hy = wall.y + 12; hy < wall.y + wall.h - 10; hy += 20) {
+      for (let hx = wall.x + 12; hx < wall.x + wall.w - 10; hx += 20) {
+        ctx.beginPath();
+        ctx.arc(hx + ((hx + hy) % 5), hy + 2, 2.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
     ctx.fillStyle = '#FB7185';
     for (let hy = wall.y + 18; hy < wall.y + wall.h - 12; hy += 28) {
       for (let hx = wall.x + 18; hx < wall.x + wall.w - 12; hx += 28) {
         ctx.beginPath();
-        ctx.arc(hx, hy, 3, 0, Math.PI * 2);
+        ctx.arc(hx, hy, 3.1, 0, Math.PI * 2);
         ctx.fill();
       }
     }
@@ -1350,24 +1475,24 @@ function drawObstacle(ctx: CanvasRenderingContext2D, wall: WallRect, world?: Ren
     return;
   }
 
-  // Default: Brushed steel metal crate / safe
+  // Default: Brushed steel metal crate / machined Cargo Deck barrier
   const grad = ctx.createLinearGradient(wall.x, wall.y, wall.x + wall.w, wall.y + wall.h);
-  grad.addColorStop(0, '#64748B');
-  grad.addColorStop(0.5, '#475569');
-  grad.addColorStop(1, '#334155');
+  grad.addColorStop(0, '#788CA3');
+  grad.addColorStop(0.5, '#4B5E73');
+  grad.addColorStop(1, '#2D3A4A');
   ctx.fillStyle = grad;
   ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
 
-  ctx.strokeStyle = '#94A3B8';
-  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#B8E6E2';
+  ctx.lineWidth = 2.2;
   ctx.beginPath();
   ctx.moveTo(wall.x + 1, wall.y + wall.h - 1);
   ctx.lineTo(wall.x + 1, wall.y + 1);
   ctx.lineTo(wall.x + wall.w - 1, wall.y + 1);
   ctx.stroke();
 
-  ctx.strokeStyle = '#1E293B';
-  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#141D29';
+  ctx.lineWidth = 2.2;
   ctx.beginPath();
   ctx.moveTo(wall.x + wall.w - 1, wall.y + 1);
   ctx.lineTo(wall.x + wall.w - 1, wall.y + wall.h - 1);
@@ -1456,7 +1581,7 @@ function computeFlashlightPolygon(
     }
   }
 
-  const rayCount = 34;
+  const rayCount = 48;
   const startAngle = angle - fovRad * 0.5;
   const points: Array<{ x: number; y: number }> = [{ x: ox, y: oy }];
 
@@ -1473,6 +1598,118 @@ function computeFlashlightPolygon(
   }
 
   return points;
+}
+
+function normalizeAngleDiff(a: number, b: number): number {
+  let d = a - b;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
+type ShadowWedgeQuad = [number, number, number, number, number, number, number, number];
+
+function buildCircleFlashlightShadowWedge(
+  ox: number,
+  oy: number,
+  aimAngle: number,
+  fovHalf: number,
+  range: number,
+  cx: number,
+  cy: number,
+  r: number
+): ShadowWedgeQuad | null {
+  const vx = cx - ox;
+  const vy = cy - oy;
+  const d = Math.hypot(vx, vy);
+  if (d <= r + 6 || d >= range) return null;
+
+  const theta = Math.atan2(vy, vx);
+  const alpha = Math.asin(Math.min(0.92, r / d));
+  if (Math.abs(normalizeAngleDiff(theta, aimAngle)) > fovHalf + alpha + 0.14) return null;
+
+  const a0 = theta - alpha;
+  const a1 = theta + alpha;
+  // Offset near boundary slightly past entity center so blocker itself stays illuminated while casting a sharp shadow trail behind it
+  const nearD = d + r * 0.25;
+  const farD = range + 45;
+  return [
+    ox + Math.cos(a0) * nearD,
+    oy + Math.sin(a0) * nearD,
+    ox + Math.cos(a0) * farD,
+    oy + Math.sin(a0) * farD,
+    ox + Math.cos(a1) * farD,
+    oy + Math.sin(a1) * farD,
+    ox + Math.cos(a1) * nearD,
+    oy + Math.sin(a1) * nearD,
+  ];
+}
+
+function buildRectFlashlightShadowWedge(
+  ox: number,
+  oy: number,
+  aimAngle: number,
+  fovHalf: number,
+  range: number,
+  rx: number,
+  ry: number,
+  rw: number,
+  rh: number
+): ShadowWedgeQuad | null {
+  const cx = rx + rw * 0.5;
+  const cy = ry + rh * 0.5;
+  const vx = cx - ox;
+  const vy = cy - oy;
+  const d = Math.hypot(vx, vy);
+  if (d < 14 || d >= range) return null;
+
+  const baseAngle = Math.atan2(vy, vx);
+  const halfDiag = Math.hypot(rw, rh) * 0.5;
+  if (Math.abs(normalizeAngleDiff(baseAngle, aimAngle)) > fovHalf + Math.asin(Math.min(0.95, halfDiag / d)) + 0.16) {
+    return null;
+  }
+
+  const corners = [
+    { x: rx, y: ry },
+    { x: rx + rw, y: ry },
+    { x: rx + rw, y: ry + rh },
+    { x: rx, y: ry + rh },
+  ];
+  let minRel = Infinity;
+  let maxRel = -Infinity;
+  let minC = corners[0];
+  let maxC = corners[0];
+  for (const c of corners) {
+    const rel = normalizeAngleDiff(Math.atan2(c.y - oy, c.x - ox), baseAngle);
+    if (rel < minRel) {
+      minRel = rel;
+      minC = c;
+    }
+    if (rel > maxRel) {
+      maxRel = rel;
+      maxC = c;
+    }
+  }
+
+  const a0 = Math.atan2(minC.y - oy, minC.x - ox);
+  const a1 = Math.atan2(maxC.y - oy, maxC.x - ox);
+  // Nudge anchor forward along ray by 10px so crate/TNT/Nitro face & top label stay clearly illuminated
+  const nx0 = minC.x + Math.cos(a0) * 10;
+  const ny0 = minC.y + Math.sin(a0) * 10;
+  const nx1 = maxC.x + Math.cos(a1) * 10;
+  const ny1 = maxC.y + Math.sin(a1) * 10;
+  const farLen = range + 45;
+
+  return [
+    nx0,
+    ny0,
+    minC.x + Math.cos(a0) * farLen,
+    minC.y + Math.sin(a0) * farLen,
+    maxC.x + Math.cos(a1) * farLen,
+    maxC.y + Math.sin(a1) * farLen,
+    nx1,
+    ny1,
+  ];
 }
 
 function tracePoly(ctx: CanvasRenderingContext2D, pts: Array<{ x: number; y: number }>) {
@@ -1895,25 +2132,24 @@ function drawLibraryBooks(
   ctx: CanvasRenderingContext2D,
   books: LibraryBookSpot[],
   floor: FloorLevel,
-  elapsedTime: number
+  _elapsedTime: number
 ) {
   ctx.save();
   for (const book of books) {
     if (book.collected || book.floor !== floor) continue;
     const tilt = ((book.id % 5) - 2) * 0.11;
-    const subtlePulse = 0.5 + 0.5 * Math.sin(elapsedTime * 2.2 + book.id);
 
     ctx.save();
     ctx.translate(book.x, book.y);
     ctx.rotate(tilt);
 
     // Subtle ground contact shadow matching shelf edge
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.58)';
     ctx.fillRect(-10, -6, 21, 16);
 
-    // Dark antique hardcover that blends naturally into the dark Library shelves
-    ctx.fillStyle = '#4A1B14';
-    ctx.strokeStyle = '#1B0A04';
+    // Matte dark antique leather cover blending naturally with dark shelves (no glow or pulse)
+    ctx.fillStyle = '#3B1510';
+    ctx.strokeStyle = '#140602';
     ctx.lineWidth = 1.6;
     ctx.beginPath();
     ctx.roundRect(-11, -8, 22, 16, 2);
@@ -1921,21 +2157,19 @@ function drawLibraryBooks(
     ctx.stroke();
 
     // Aged muted parchment page edge
-    ctx.fillStyle = '#9C8D74';
+    ctx.fillStyle = '#7C6D58';
     ctx.fillRect(-8, -6.5, 16, 2.2);
 
-    // Slightly tarnished leather spine
-    ctx.fillStyle = '#6A2A1B';
+    // Tarnished dark leather spine
+    ctx.fillStyle = '#532014';
     ctx.fillRect(-10.5, -8, 3.6, 16);
 
-    // Subtle antique pale crescent MOON sign (only sign separating it from regular dark books)
-    const moonAlpha = 0.66 + subtlePulse * 0.16;
-    ctx.fillStyle = `rgba(214, 195, 165, ${moonAlpha})`;
+    // Unlit muted embossed crescent MOON emblem (subtle patina, strictly zero glow)
+    ctx.fillStyle = 'rgba(176, 154, 124, 0.54)';
     ctx.beginPath();
-    ctx.arc(1.5, 0.6, 4.1, 0, Math.PI * 2);
+    ctx.arc(1.5, 0.6, 4.0, 0, Math.PI * 2);
     ctx.fill();
-    // Cutout circle in cover color to form crisp crescent moon
-    ctx.fillStyle = '#4A1B14';
+    ctx.fillStyle = '#3B1510';
     ctx.beginPath();
     ctx.arc(3.3, -0.3, 3.3, 0, Math.PI * 2);
     ctx.fill();
@@ -2471,7 +2705,7 @@ export function renderArena(
   const isLibrary = map.id === 'library' && Boolean(world.libraryState);
   const localPlayer = world.players.find((p) => p.id === localPlayerId) ?? world.players[0];
   const spectatePlayer =
-    isLibrary && cursorOverlay?.spectateTargetId != null && !localPlayer?.alive
+    isImmersive && cursorOverlay?.spectateTargetId != null && !localPlayer?.alive
       ? world.players.find((p) => p.id === cursorOverlay.spectateTargetId && p.alive)
       : undefined;
   const cameraPlayer = spectatePlayer ?? localPlayer;
@@ -3304,74 +3538,213 @@ export function renderArena(
     }
   }
 
-  // 7. Compute Multi-Tier Feathered Flashlight Raycast Polygons in Extra Dark Mode
+  // 7. Compute Multi-Tier Feathered Flashlight Raycast Polygons & Analytic Entity Cast Shadows in Extra Dark Mode
   const flashlightPolys: Array<{
     player: RenderPlayer;
     outerPoly: Array<{ x: number; y: number }>;
     midPoly: Array<{ x: number; y: number }>;
     corePoly: Array<{ x: number; y: number }>;
+    entityShadows: ShadowWedgeQuad[];
     range: number;
     isLocal: boolean;
   }> = [];
 
   if (isExtraDark) {
-    const shadowWalls: WallRect[] = [
-      ...map.walls.filter((w) => isWallOnFloor(w, localFloor)),
-      ...world.boxes
-        .filter((b) => b.state === 'active' && (!isLibrary || (b.floor ?? 0) === localFloor))
-        .map((b) => ({ x: b.x - b.w * 0.5, y: b.y - b.h * 0.5, w: b.w, h: b.h })),
-    ];
+    const shadowWalls: WallRect[] = map.walls.filter((w) => isWallOnFloor(w, localFloor));
+    const monster = isLibrary ? world.libraryState?.monster : undefined;
+
     for (const p of world.players) {
       if (!p.alive) continue;
       if (isLibrary && (p.floor ?? 0) !== localFloor && !isPlayerMidStair(p)) continue;
       const isLocal = p.id === activeViewId;
       const range = isLocal ? 490 : 360;
       const baseFov = isLocal ? 1.32 : 1.08;
-      const outerPoly = computeFlashlightPolygon(p.x, p.y, p.angle, baseFov * 1.45, range, shadowWalls);
+      const outerFov = baseFov * 1.45;
+      const outerPoly = computeFlashlightPolygon(p.x, p.y, p.angle, outerFov, range, shadowWalls);
       const midPoly = computeFlashlightPolygon(p.x, p.y, p.angle, baseFov * 0.96, range * 0.96, shadowWalls);
       const corePoly = computeFlashlightPolygon(p.x, p.y, p.angle, baseFov * 0.54, range * 0.9, shadowWalls);
-      flashlightPolys.push({ player: p, outerPoly, midPoly, corePoly, range, isLocal });
+
+      const entityShadows: ShadowWedgeQuad[] = [];
+      const fovHalf = outerFov * 0.5;
+
+      // Shadows cast by other players on the same floor
+      for (const other of world.players) {
+        if (!other.alive || other.id === p.id) continue;
+        if (isLibrary && (other.floor ?? 0) !== localFloor && !isPlayerMidStair(other)) continue;
+        const w = buildCircleFlashlightShadowWedge(
+          p.x,
+          p.y,
+          p.angle,
+          fovHalf,
+          range,
+          other.x,
+          other.y,
+          PLAYER_RADIUS * 0.86
+        );
+        if (w) entityShadows.push(w);
+      }
+
+      // Shadow cast by The Figure monster in The Library
+      if (monster && (!isLibrary || monster.floor === localFloor || isMonsterOnStair(monster))) {
+        const mw = buildCircleFlashlightShadowWedge(
+          p.x,
+          p.y,
+          p.angle,
+          fovHalf,
+          range,
+          monster.x,
+          monster.y,
+          (monster.radius || MONSTER_RADIUS) * 0.84
+        );
+        if (mw) entityShadows.push(mw);
+      }
+
+      // Shadows cast by Cardboard Boxes
+      for (const box of world.boxes) {
+        if (box.state !== 'active' && box.state !== 'spawning') continue;
+        if (isLibrary && (box.floor ?? 0) !== localFloor) continue;
+        const bw = buildRectFlashlightShadowWedge(
+          p.x,
+          p.y,
+          p.angle,
+          fovHalf,
+          range,
+          box.x - box.w * 0.5,
+          box.y - box.h * 0.5,
+          box.w,
+          box.h
+        );
+        if (bw) entityShadows.push(bw);
+      }
+
+      // Shadows cast by TNT & Nitro crates
+      for (const item of world.pickups) {
+        if (item.kind !== 'tnt' && item.kind !== 'nitro') continue;
+        if (isLibrary && (item.floor ?? 0) !== localFloor) continue;
+        const s = item.kind === 'tnt' ? 28 : 23;
+        const pw = buildRectFlashlightShadowWedge(
+          p.x,
+          p.y,
+          p.angle,
+          fovHalf,
+          range,
+          item.x - s,
+          item.y - s,
+          s * 2,
+          s * 2
+        );
+        if (pw) entityShadows.push(pw);
+      }
+
+      flashlightPolys.push({
+        player: p,
+        outerPoly,
+        midPoly,
+        corePoly,
+        entityShadows,
+        range,
+        isLocal,
+      });
     }
   }
 
-  // 8. Cinematic Additive Light Interaction (Feathered Flashlight Floor Glow + Glowing Bullets + Object Rim Light)
+  // 8. Cinematic Additive Light Interaction (Feathered Flashlight Floor Glow with Cast Shadows + Glowing Bullets + Object Rim Light)
   if (isImmersive) {
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
+    // Subtle floating golden forest fireflies in Emerald Grove matching collage mood
+    if (map.floorTheme === 'grass_outdoors') {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < 42; i++) {
+        const bx = seededRand(i * 41 + 9) * map.width;
+        const by = seededRand(i * 67 + 13) * map.height;
+        const fx = bx + Math.sin(world.elapsedTime * 0.7 + i) * 26;
+        const fy = by + Math.cos(world.elapsedTime * 0.55 + i * 1.4) * 22;
+        const twinkle = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(world.elapsedTime * 2.6 + i * 2.1));
+        const g = ctx.createRadialGradient(fx, fy, 0.5, fx, fy, 11);
+        g.addColorStop(0, `rgba(254, 240, 138, ${0.42 * twinkle})`);
+        g.addColorStop(1, 'rgba(250, 204, 21, 0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(fx, fy, 11, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
 
-    for (const fl of flashlightPolys) {
-      const strength = fl.isLocal ? 0.14 : 0.08;
-      const layers: Array<{ poly: Array<{ x: number; y: number }>; weight: number }> = [
-        { poly: fl.outerPoly, weight: 0.45 },
-        { poly: fl.midPoly, weight: 0.55 },
-        { poly: fl.corePoly, weight: 0.65 },
-      ];
-      for (const layer of layers) {
+    // Draw each flashlight onto a half-res scratch buffer, carve out entity shadow wedges, then composite cleanly
+    if (flashlightPolys.length > 0) {
+      const bScale = 0.5;
+      const bw = Math.max(1, Math.ceil(canvasWidth * bScale));
+      const bh = Math.max(1, Math.ceil(canvasHeight * bScale));
+      const beamCanvas = getBeamScratchCanvas(bw, bh);
+      const bctx = beamCanvas.getContext('2d');
+      if (bctx) {
         ctx.save();
-        tracePoly(ctx, layer.poly);
-        ctx.clip();
-        const grad = ctx.createRadialGradient(
-          fl.player.x,
-          fl.player.y,
-          12,
-          fl.player.x,
-          fl.player.y,
-          fl.range
-        );
-        const s = strength * layer.weight;
-        grad.addColorStop(0, `rgba(255, 244, 204, ${s})`);
-        grad.addColorStop(0.5, `rgba(255, 224, 150, ${s * 0.45})`);
-        grad.addColorStop(1, 'rgba(255, 210, 120, 0)');
-        ctx.fillStyle = grad;
-        ctx.fillRect(
-          fl.player.x - fl.range,
-          fl.player.y - fl.range,
-          fl.range * 2,
-          fl.range * 2
-        );
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.globalCompositeOperation = 'lighter';
+
+        for (const fl of flashlightPolys) {
+          bctx.save();
+          bctx.clearRect(0, 0, bw, bh);
+          bctx.scale(bScale, bScale);
+          bctx.translate(worldTx, worldTy);
+          bctx.scale(scale, scale);
+
+          const strength = fl.isLocal ? 0.14 : 0.08;
+          const layers: Array<{ poly: Array<{ x: number; y: number }>; weight: number }> = [
+            { poly: fl.outerPoly, weight: 0.45 },
+            { poly: fl.midPoly, weight: 0.55 },
+            { poly: fl.corePoly, weight: 0.65 },
+          ];
+          for (const layer of layers) {
+            bctx.save();
+            tracePoly(bctx, layer.poly);
+            bctx.clip();
+            const grad = bctx.createRadialGradient(
+              fl.player.x,
+              fl.player.y,
+              12,
+              fl.player.x,
+              fl.player.y,
+              fl.range
+            );
+            const s = strength * layer.weight;
+            grad.addColorStop(0, `rgba(255, 244, 204, ${s})`);
+            grad.addColorStop(0.5, `rgba(255, 224, 150, ${s * 0.45})`);
+            grad.addColorStop(1, 'rgba(255, 210, 120, 0)');
+            bctx.fillStyle = grad;
+            bctx.fillRect(
+              fl.player.x - fl.range,
+              fl.player.y - fl.range,
+              fl.range * 2,
+              fl.range * 2
+            );
+            bctx.restore();
+          }
+
+          if (fl.entityShadows.length > 0) {
+            bctx.globalCompositeOperation = 'destination-out';
+            bctx.fillStyle = 'rgba(0, 0, 0, 0.92)';
+            for (const q of fl.entityShadows) {
+              bctx.beginPath();
+              bctx.moveTo(q[0], q[1]);
+              bctx.lineTo(q[2], q[3]);
+              bctx.lineTo(q[4], q[5]);
+              bctx.lineTo(q[6], q[7]);
+              bctx.closePath();
+              bctx.fill();
+            }
+          }
+          bctx.restore();
+
+          ctx.drawImage(beamCanvas, 0, 0, canvasWidth, canvasHeight);
+        }
         ctx.restore();
       }
     }
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
 
     const bulletGlowRadius = isExtraDark ? 82 : 52;
     for (const b of world.bullets) {
@@ -3544,37 +3917,69 @@ export function renderArena(
         lctx.fill();
       }
 
-      for (const fl of flashlightPolys) {
-        const peak = fl.isLocal ? 1.0 : 0.6;
-        const tiers: Array<{ poly: Array<{ x: number; y: number }>; weight: number }> = [
-          { poly: fl.outerPoly, weight: 0.36 },
-          { poly: fl.midPoly, weight: 0.48 },
-          { poly: fl.corePoly, weight: 0.65 },
-        ];
-        for (const tier of tiers) {
-          lctx.save();
-          tracePoly(lctx, tier.poly);
-          lctx.clip();
-          const beam = lctx.createRadialGradient(
-            fl.player.x,
-            fl.player.y,
-            14,
-            fl.player.x,
-            fl.player.y,
-            fl.range
-          );
-          const a = Math.min(1, peak * tier.weight);
-          beam.addColorStop(0, `rgba(0, 0, 0, ${a})`);
-          beam.addColorStop(0.62, `rgba(0, 0, 0, ${a * 0.68})`);
-          beam.addColorStop(1, 'rgba(0, 0, 0, 0)');
-          lctx.fillStyle = beam;
-          lctx.fillRect(
-            fl.player.x - fl.range,
-            fl.player.y - fl.range,
-            fl.range * 2,
-            fl.range * 2
-          );
-          lctx.restore();
+      if (flashlightPolys.length > 0) {
+        const beamCanvas = getBeamScratchCanvas(lw, lh);
+        const bctx = beamCanvas.getContext('2d');
+        if (bctx) {
+          for (const fl of flashlightPolys) {
+            bctx.save();
+            bctx.clearRect(0, 0, lw, lh);
+            bctx.scale(lightScale, lightScale);
+            bctx.translate(worldTx, worldTy);
+            bctx.scale(scale, scale);
+
+            const peak = fl.isLocal ? 1.0 : 0.6;
+            const tiers: Array<{ poly: Array<{ x: number; y: number }>; weight: number }> = [
+              { poly: fl.outerPoly, weight: 0.36 },
+              { poly: fl.midPoly, weight: 0.48 },
+              { poly: fl.corePoly, weight: 0.65 },
+            ];
+            for (const tier of tiers) {
+              bctx.save();
+              tracePoly(bctx, tier.poly);
+              bctx.clip();
+              const beam = bctx.createRadialGradient(
+                fl.player.x,
+                fl.player.y,
+                14,
+                fl.player.x,
+                fl.player.y,
+                fl.range
+              );
+              const a = Math.min(1, peak * tier.weight);
+              beam.addColorStop(0, `rgba(0, 0, 0, ${a})`);
+              beam.addColorStop(0.62, `rgba(0, 0, 0, ${a * 0.68})`);
+              beam.addColorStop(1, 'rgba(0, 0, 0, 0)');
+              bctx.fillStyle = beam;
+              bctx.fillRect(
+                fl.player.x - fl.range,
+                fl.player.y - fl.range,
+                fl.range * 2,
+                fl.range * 2
+              );
+              bctx.restore();
+            }
+
+            if (fl.entityShadows.length > 0) {
+              bctx.globalCompositeOperation = 'destination-out';
+              bctx.fillStyle = 'rgba(0, 0, 0, 0.92)';
+              for (const q of fl.entityShadows) {
+                bctx.beginPath();
+                bctx.moveTo(q[0], q[1]);
+                bctx.lineTo(q[2], q[3]);
+                bctx.lineTo(q[4], q[5]);
+                bctx.lineTo(q[6], q[7]);
+                bctx.closePath();
+                bctx.fill();
+              }
+            }
+            bctx.restore();
+
+            lctx.save();
+            lctx.setTransform(1, 0, 0, 1, 0, 0);
+            lctx.drawImage(beamCanvas, 0, 0);
+            lctx.restore();
+          }
         }
       }
 
@@ -3602,19 +4007,6 @@ export function renderArena(
         lctx.beginPath();
         lctx.arc(item.x, item.y, pr, 0, Math.PI * 2);
         lctx.fill();
-      }
-
-      if (localProg) {
-        for (const b of localProg.books) {
-          if (b.collected || b.floor !== localFloor) continue;
-          const bg = lctx.createRadialGradient(b.x, b.y, 2, b.x, b.y, 64);
-          bg.addColorStop(0, 'rgba(0, 0, 0, 0.72)');
-          bg.addColorStop(1, 'rgba(0, 0, 0, 0)');
-          lctx.fillStyle = bg;
-          lctx.beginPath();
-          lctx.arc(b.x, b.y, 64, 0, Math.PI * 2);
-          lctx.fill();
-        }
       }
 
       for (const ex of world.explosions) {
@@ -3972,7 +4364,7 @@ function getConeLightSources(map: ArenaMap): ConeLightSource[] {
   if (map.floorTheme === 'mansion_wood') {
     const topXs = map.immersive
       ? [map.width * 0.25, map.width * 0.5, map.width * 0.75]
-      : [map.width * 0.3, map.width * 0.7];
+      : [map.width * 0.18, map.width * 0.82];
     const botXs = map.immersive
       ? [map.width * 0.35, map.width * 0.65]
       : [map.width * 0.5];
@@ -3982,12 +4374,12 @@ function getConeLightSources(map: ArenaMap): ConeLightSource[] {
         x,
         y: 16,
         dirY: 1,
-        range: 640,
-        beamLen: 530,
-        beamHalfBase: 44,
-        beamHalfEnd: 300,
-        coneMaxHalfAngle: Math.atan2(300, 530) + 0.18,
-        colorRgb: '254, 240, 138',
+        range: map.immersive ? 640 : 690,
+        beamLen: map.immersive ? 530 : 600,
+        beamHalfBase: 46,
+        beamHalfEnd: map.immersive ? 300 : 340,
+        coneMaxHalfAngle: Math.atan2(map.immersive ? 300 : 340, map.immersive ? 530 : 600) + 0.18,
+        colorRgb: map.immersive ? '254, 240, 138' : '253, 200, 92',
       });
     }
     for (const x of botXs) {
@@ -4009,37 +4401,48 @@ function getConeLightSources(map: ArenaMap): ConeLightSource[] {
   if (map.floorTheme === 'maple_cargo') {
     return [
       {
-        x: map.width * 0.32,
+        x: map.width * 0.22,
         y: 16,
         dirY: 1,
-        range: 640,
-        beamLen: 540,
-        beamHalfBase: 48,
-        beamHalfEnd: 290,
-        coneMaxHalfAngle: Math.atan2(290, 540) + 0.18,
-        colorRgb: '134, 239, 172',
+        range: 660,
+        beamLen: 560,
+        beamHalfBase: 50,
+        beamHalfEnd: 310,
+        coneMaxHalfAngle: Math.atan2(310, 560) + 0.18,
+        colorRgb: '94, 234, 212',
       },
       {
-        x: map.width * 0.68,
+        x: map.width * 0.78,
         y: 16,
         dirY: 1,
-        range: 640,
-        beamLen: 540,
-        beamHalfBase: 48,
-        beamHalfEnd: 290,
-        coneMaxHalfAngle: Math.atan2(290, 540) + 0.18,
-        colorRgb: '134, 239, 172',
+        range: 660,
+        beamLen: 560,
+        beamHalfBase: 50,
+        beamHalfEnd: 310,
+        coneMaxHalfAngle: Math.atan2(310, 560) + 0.18,
+        colorRgb: '94, 234, 212',
       },
       {
-        x: map.width * 0.68,
+        x: map.width * 0.22,
         y: map.height - 16,
         dirY: -1,
         range: 640,
         beamLen: 540,
         beamHalfBase: 48,
-        beamHalfEnd: 290,
-        coneMaxHalfAngle: Math.atan2(290, 540) + 0.18,
-        colorRgb: '134, 239, 172',
+        beamHalfEnd: 300,
+        coneMaxHalfAngle: Math.atan2(300, 540) + 0.18,
+        colorRgb: '94, 234, 212',
+      },
+      {
+        x: map.width * 0.78,
+        y: map.height - 16,
+        dirY: -1,
+        range: 640,
+        beamLen: 540,
+        beamHalfBase: 48,
+        beamHalfEnd: 300,
+        coneMaxHalfAngle: Math.atan2(300, 540) + 0.18,
+        colorRgb: '94, 234, 212',
       },
     ];
   }
@@ -4047,29 +4450,29 @@ function getConeLightSources(map: ArenaMap): ConeLightSource[] {
   if (map.floorTheme === 'winter_snow') {
     return [
       {
+        x: map.width * 0.20,
+        y: 16,
+        dirY: 1,
+        range: 700,
+        beamLen: 600,
+        beamHalfBase: 56,
+        beamHalfEnd: 355,
+        coneMaxHalfAngle: Math.atan2(355, 600) + 0.2,
+        colorRgb: '165, 235, 255',
+      },
+      {
+        x: map.width * 0.80,
+        y: 16,
+        dirY: 1,
+        range: 700,
+        beamLen: 600,
+        beamHalfBase: 56,
+        beamHalfEnd: 355,
+        coneMaxHalfAngle: Math.atan2(355, 600) + 0.2,
+        colorRgb: '165, 235, 255',
+      },
+      {
         x: map.width * 0.28,
-        y: 16,
-        dirY: 1,
-        range: 680,
-        beamLen: 580,
-        beamHalfBase: 54,
-        beamHalfEnd: 340,
-        coneMaxHalfAngle: Math.atan2(340, 580) + 0.2,
-        colorRgb: '226, 243, 255',
-      },
-      {
-        x: map.width * 0.72,
-        y: 16,
-        dirY: 1,
-        range: 680,
-        beamLen: 580,
-        beamHalfBase: 54,
-        beamHalfEnd: 340,
-        coneMaxHalfAngle: Math.atan2(340, 580) + 0.2,
-        colorRgb: '226, 243, 255',
-      },
-      {
-        x: map.width * 0.5,
         y: map.height - 16,
         dirY: -1,
         range: 660,
@@ -4077,7 +4480,18 @@ function getConeLightSources(map: ArenaMap): ConeLightSource[] {
         beamHalfBase: 52,
         beamHalfEnd: 330,
         coneMaxHalfAngle: Math.atan2(330, 560) + 0.2,
-        colorRgb: '219, 238, 255',
+        colorRgb: '186, 230, 253',
+      },
+      {
+        x: map.width * 0.72,
+        y: map.height - 16,
+        dirY: -1,
+        range: 660,
+        beamLen: 560,
+        beamHalfBase: 52,
+        beamHalfEnd: 330,
+        coneMaxHalfAngle: Math.atan2(330, 560) + 0.2,
+        colorRgb: '186, 230, 253',
       },
     ];
   }
@@ -4318,6 +4732,24 @@ function collectLightShadowPolys(
     if (poly) out.push(poly);
   }
 
+  if (world.libraryState?.monster) {
+    const m = world.libraryState.monster;
+    if (floorFilter === undefined || m.floor === floorFilter) {
+      const mPoly = buildCircleShadowFromPoint(
+        light.x,
+        light.y,
+        m.x,
+        m.y,
+        (m.radius || MONSTER_RADIUS) * 0.9,
+        light.range,
+        shadowLen * 1.15,
+        light.dirY,
+        light.coneMaxHalfAngle
+      );
+      if (mPoly) out.push(mPoly);
+    }
+  }
+
   if (includeWalls) {
     for (const wall of map.walls) {
       if (wall.kind?.startsWith('perimeter')) continue;
@@ -4351,7 +4783,7 @@ function drawDynamicLightShadows(
 
   if (map.floorTheme === 'grass_outdoors') {
     // Diagonal sunbeams cast angled directional floor shadows for players, crates, TNT & Nitro
-    const sunSpots = map.immersive ? [450, 1200, 1850] : [360, 980];
+    const sunSpots = map.immersive ? [450, 1200, 1850] : [220, 620];
     const dirX = 0.41;
     const dirY = 0.912;
 
@@ -4508,27 +4940,35 @@ function drawAmbientArenaLights(
       ctx.fill();
     }
   } else if (map.floorTheme === 'maple_cargo') {
+    // Glowing emerald-green louvered floor vents matching Cargo Deck thumbnail
     const grates = [
-      { x: map.width * 0.32, y: map.height * 0.42 },
+      { x: map.width * 0.14, y: map.height * 0.5 },
+      { x: map.width * 0.86, y: map.height * 0.5 },
+      { x: map.width * 0.5, y: map.height * 0.14 },
+      { x: map.width * 0.5, y: map.height * 0.86 },
       { x: map.width * 0.5, y: map.height * 0.5 },
-      { x: map.width * 0.68, y: map.height * 0.58 },
     ];
     for (const g of grates) {
-      const grad = ctx.createRadialGradient(g.x, g.y, 10, g.x, g.y, 175);
-      grad.addColorStop(0, 'rgba(74, 222, 128, 0.22)');
+      const grad = ctx.createRadialGradient(g.x, g.y, 12, g.x, g.y, 195);
+      grad.addColorStop(0, 'rgba(74, 222, 128, 0.30)');
+      grad.addColorStop(0.5, 'rgba(34, 197, 94, 0.12)');
       grad.addColorStop(1, 'rgba(34, 197, 94, 0)');
       ctx.fillStyle = grad;
       ctx.beginPath();
-      ctx.arc(g.x, g.y, 175, 0, Math.PI * 2);
+      ctx.arc(g.x, g.y, 195, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.45)';
-      ctx.fillRect(g.x - 42, g.y - 42, 84, 84);
-      ctx.fillStyle = 'rgba(74, 222, 128, 0.48)';
-      for (let gx = -32; gx <= 24; gx += 14) {
-        for (let gy = -32; gy <= 24; gy += 14) {
-          ctx.fillRect(g.x + gx, g.y + gy, 8, 8);
-        }
+      ctx.fillStyle = '#09151B';
+      ctx.strokeStyle = '#334155';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(g.x - 40, g.y - 40, 80, 80, 4);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = 'rgba(74, 222, 128, 0.68)';
+      for (let gy = -28; gy <= 24; gy += 11) {
+        ctx.fillRect(g.x - 28, g.y + gy, 56, 5);
       }
     }
   } else if (map.floorTheme === 'winter_snow') {
@@ -4718,7 +5158,7 @@ function drawVolumetricArenaLights(
         ctx.fill();
         ctx.stroke();
 
-        ctx.fillStyle = '#4ADE80';
+        ctx.fillStyle = '#5EEAD4';
         ctx.beginPath();
         ctx.arc(l.x, l.y, 17, 0, Math.PI * 2);
         ctx.fill();
@@ -4727,18 +5167,18 @@ function drawVolumetricArenaLights(
   } else if (map.floorTheme === 'grass_outdoors') {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    const sunSpots = map.immersive ? [450, 1200, 1850] : [360, 980];
+    const sunSpots = map.immersive ? [450, 1200, 1850] : [220, 620];
     for (const sx of sunSpots) {
-      const sunGrad = ctx.createLinearGradient(sx, 0, sx + 280, 560);
-      sunGrad.addColorStop(0, 'rgba(254, 249, 195, 0.14)');
-      sunGrad.addColorStop(0.55, 'rgba(254, 249, 195, 0.05)');
+      const sunGrad = ctx.createLinearGradient(sx, 0, sx + 320, 620);
+      sunGrad.addColorStop(0, 'rgba(254, 249, 195, 0.18)');
+      sunGrad.addColorStop(0.55, 'rgba(254, 240, 138, 0.07)');
       sunGrad.addColorStop(1, 'rgba(254, 249, 195, 0)');
       ctx.fillStyle = sunGrad;
       ctx.beginPath();
       ctx.moveTo(sx - 70, 0);
-      ctx.lineTo(sx + 70, 0);
-      ctx.lineTo(sx + 340, 560);
-      ctx.lineTo(sx + 90, 560);
+      ctx.lineTo(sx + 85, 0);
+      ctx.lineTo(sx + 390, 620);
+      ctx.lineTo(sx + 110, 620);
       ctx.closePath();
       ctx.fill();
     }
@@ -5149,10 +5589,10 @@ function drawIcePits(ctx: CanvasRenderingContext2D, world: RenderableWorld, map:
 
       ctx.restore(); // end outer pit clip
     } else {
-      // Intact walkable frozen ice pond with cool glacier sheen & warning fracture cracks
-      ctx.fillStyle = 'rgba(125, 211, 252, 0.40)';
+      // Intact walkable frozen sapphire-blue ice pond matching Winter Tussle thumbnail
+      ctx.fillStyle = 'rgba(56, 189, 248, 0.48)';
       ctx.save();
-      ctx.translate(0, 2);
+      ctx.translate(0, 3);
       traceContour(1.07);
       ctx.fill();
       ctx.restore();
@@ -5161,16 +5601,16 @@ function drawIcePits(ctx: CanvasRenderingContext2D, world: RenderableWorld, map:
       traceContour(1);
       ctx.clip();
 
-      const iceGrad = ctx.createLinearGradient(-pit.rx, -pit.ry, pit.rx, pit.ry);
-      iceGrad.addColorStop(0, '#E0F2FE');
-      iceGrad.addColorStop(0.42, '#BAE6FD');
-      iceGrad.addColorStop(0.82, '#7DD3FC');
-      iceGrad.addColorStop(1, '#38BDF8');
+      const iceGrad = ctx.createRadialGradient(-pit.rx * 0.15, -pit.ry * 0.18, 8, 0, 0, Math.max(pit.rx, pit.ry) * 1.15);
+      iceGrad.addColorStop(0, '#38BDF8');
+      iceGrad.addColorStop(0.45, '#0284C7');
+      iceGrad.addColorStop(0.82, '#0369A1');
+      iceGrad.addColorStop(1, '#074B83');
       ctx.fillStyle = iceGrad;
       ctx.fillRect(-pit.rx * 1.4, -pit.ry * 1.4, pit.rx * 2.8, pit.ry * 2.8);
 
-      // Glossy diagonal specular ice bands
-      ctx.fillStyle = 'rgba(240, 249, 255, 0.44)';
+      // Glossy diagonal glacial specular highlights
+      ctx.fillStyle = 'rgba(224, 242, 254, 0.34)';
       ctx.beginPath();
       ctx.moveTo(-pit.rx * 0.75, -pit.ry * 1.2);
       ctx.lineTo(-pit.rx * 0.4, -pit.ry * 1.2);
@@ -5187,8 +5627,8 @@ function drawIcePits(ctx: CanvasRenderingContext2D, world: RenderableWorld, map:
       ctx.closePath();
       ctx.fill();
 
-      // Subtle hairline cracks warning that blasts can shatter the ice
-      ctx.strokeStyle = 'rgba(12, 74, 110, 0.38)';
+      // Subtle frosted crystalline ice veins
+      ctx.strokeStyle = 'rgba(224, 242, 254, 0.62)';
       ctx.lineWidth = 1.6;
       ctx.beginPath();
       ctx.moveTo(-pit.rx * 0.38, -pit.ry * 0.28);
@@ -5199,9 +5639,9 @@ function drawIcePits(ctx: CanvasRenderingContext2D, world: RenderableWorld, map:
       ctx.stroke();
       ctx.restore();
 
-      // Crisp frosted ice border
-      ctx.strokeStyle = '#E0F2FE';
-      ctx.lineWidth = 2.4;
+      // Crisp frosted ice shoreline lip
+      ctx.strokeStyle = '#F0F9FF';
+      ctx.lineWidth = 2.6;
       traceContour(1);
       ctx.stroke();
     }

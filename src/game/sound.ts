@@ -73,6 +73,26 @@ class SoundEngine {
     filter: BiquadFilterNode;
     gain: GainNode;
   } | null = null;
+  private immersiveTrackBuffers = new Map<'grass_outdoors' | 'mansion_wood', AudioBuffer>();
+  private immersiveTrackRaw = new Map<'grass_outdoors' | 'mansion_wood', ArrayBuffer>();
+  private immersiveTrackLoading = new Set<'grass_outdoors' | 'mansion_wood'>();
+  private immersiveTrackDecoding = new Set<'grass_outdoors' | 'mansion_wood'>();
+  private immersiveMapMusicActive = false;
+  private immersiveMapMusicTheme: 'grass_outdoors' | 'mansion_wood' | null = null;
+  private immersiveMapMusicProgress = 0;
+  private immersiveMapMusicFinalStage = false;
+  private immersiveTrackNodes: {
+    theme: 'grass_outdoors' | 'mansion_wood';
+    stage: 1 | 2;
+    filter: BiquadFilterNode;
+    master: GainNode;
+    activeSources: Set<AudioBufferSourceNode>;
+    currentSource: AudioBufferSourceNode | null;
+    currentGain: GainNode | null;
+    estOffset: number;
+    lastRate: number;
+    nextScheduled: boolean;
+  } | null = null;
 
   public setMuted(muted: boolean) {
     this.muted = muted;
@@ -80,6 +100,7 @@ class SoundEngine {
       this.stopAmbientImmediate();
       this.stopNormalMusicImmediate();
       this.stopLibraryMusicImmediate();
+      this.stopImmersiveMapMusicImmediate();
     } else {
       if (this.ambientActive) {
         this.setImmersiveAmbient(true, this.ambientExtraDark);
@@ -89,6 +110,15 @@ class SoundEngine {
       }
       if (this.libraryMusicActive) {
         this.updateLibraryMusic(0, true, this.libraryMusicProgress, this.libraryMusicInRage);
+      }
+      if (this.immersiveMapMusicActive && this.immersiveMapMusicTheme) {
+        this.updateImmersiveMapMusic(
+          0,
+          true,
+          this.immersiveMapMusicTheme,
+          this.immersiveMapMusicProgress,
+          this.immersiveMapMusicFinalStage
+        );
       }
     }
   }
@@ -1792,6 +1822,358 @@ class SoundEngine {
       nodes.gain.disconnect();
     } catch {
       // Ignore already stopped buffer source
+    }
+  }
+
+  // ==================== EMERALD GROVE & WOODEN MANSION TWO-STAGE MUSIC ====================
+
+  private static readonly IMMERSIVE_MAP_TRACKS: Record<
+    'grass_outdoors' | 'mansion_wood',
+    {
+      url: string;
+      introStart?: number;
+      stage1: { start: number; end: number };
+      stage2: { start: number; end: number };
+      baseGain: number;
+      rampGain: number;
+      minRate: number;
+      maxRate: number;
+      loopXfade: number;
+      climaxRateBoost: number;
+    }
+  > = {
+    grass_outdoors: {
+      url: '/assets/aistudio/01._The_Great_Outdoors_fe2d151f.mp3',
+      introStart: 0.0,
+      stage1: { start: 12.0, end: 36.0 },
+      stage2: { start: 37.74, end: 64.65 },
+      baseGain: 0.30,
+      rampGain: 0.20,
+      minRate: 1.0,
+      maxRate: 1.045,
+      loopXfade: 1.25,
+      climaxRateBoost: 0.015,
+    },
+    mansion_wood: {
+      url: '/assets/aistudio/horror-music-soundtrack-dark-tension-loop-game-ready-2-466681_16cf1bd3.mp3',
+      stage1: { start: 0.02, end: 15.0 },
+      stage2: { start: 30.0, end: 45.0 },
+      baseGain: 0.32,
+      rampGain: 0.24,
+      minRate: 0.98,
+      maxRate: 1.08,
+      loopXfade: 0.24,
+      climaxRateBoost: 0.025,
+    },
+  };
+
+  private static createEqualPowerFadeIn(steps = 64): Float32Array {
+    const arr = new Float32Array(steps);
+    for (let i = 0; i < steps; i++) {
+      arr[i] = Math.sin((i / (steps - 1)) * Math.PI * 0.5);
+    }
+    return arr;
+  }
+
+  private static createEqualPowerFadeOut(steps = 64): Float32Array {
+    const arr = new Float32Array(steps);
+    for (let i = 0; i < steps; i++) {
+      arr[i] = Math.cos((i / (steps - 1)) * Math.PI * 0.5);
+    }
+    return arr;
+  }
+
+  private static readonly EQ_FADE_IN = SoundEngine.createEqualPowerFadeIn(64);
+  private static readonly EQ_FADE_OUT = SoundEngine.createEqualPowerFadeOut(64);
+
+  public preloadImmersiveTrack(theme: FloorTheme) {
+    if (theme !== 'grass_outdoors' && theme !== 'mansion_wood') return;
+    if (typeof window === 'undefined') return;
+
+    if (!this.immersiveTrackRaw.has(theme) && !this.immersiveTrackLoading.has(theme)) {
+      this.immersiveTrackLoading.add(theme);
+      fetch(SoundEngine.IMMERSIVE_MAP_TRACKS[theme].url)
+        .then((res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.arrayBuffer();
+        })
+        .then((buf) => {
+          this.immersiveTrackRaw.set(theme, buf);
+          this.decodeImmersiveTrack(theme);
+        })
+        .catch(() => {})
+        .finally(() => {
+          this.immersiveTrackLoading.delete(theme);
+        });
+    } else {
+      this.decodeImmersiveTrack(theme);
+    }
+  }
+
+  private decodeImmersiveTrack(theme: 'grass_outdoors' | 'mansion_wood') {
+    if (this.immersiveTrackBuffers.has(theme)) return;
+    const raw = this.immersiveTrackRaw.get(theme);
+    if (!raw || this.immersiveTrackDecoding.has(theme)) return;
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+
+    this.immersiveTrackDecoding.add(theme);
+    ctx
+      .decodeAudioData(raw.slice(0))
+      .then((decoded) => {
+        this.immersiveTrackBuffers.set(theme, decoded);
+        if (
+          this.immersiveMapMusicActive &&
+          this.immersiveMapMusicTheme === theme &&
+          !this.muted
+        ) {
+          this.updateImmersiveMapMusic(
+            0,
+            true,
+            theme,
+            this.immersiveMapMusicProgress,
+            this.immersiveMapMusicFinalStage
+          );
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        this.immersiveTrackDecoding.delete(theme);
+      });
+  }
+
+  private spawnTrackSegmentSource(
+    ctx: AudioContext,
+    buffer: AudioBuffer,
+    nodes: NonNullable<SoundEngine['immersiveTrackNodes']>,
+    startAtCtxTime: number,
+    bufferOffset: number,
+    segEnd: number,
+    fadeInDur: number,
+    rate: number
+  ): { source: AudioBufferSourceNode; gain: GainNode } {
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.playbackRate.setValueAtTime(rate, startAtCtxTime);
+
+    const g = ctx.createGain();
+    if (fadeInDur > 0.01) {
+      g.gain.setValueAtTime(0.0001, startAtCtxTime);
+      g.gain.setValueCurveAtTime(SoundEngine.EQ_FADE_IN, startAtCtxTime, fadeInDur);
+    } else {
+      g.gain.setValueAtTime(1, startAtCtxTime);
+    }
+
+    source.connect(g);
+    g.connect(nodes.filter);
+    nodes.activeSources.add(source);
+    source.onended = () => {
+      nodes.activeSources.delete(source);
+      try {
+        source.disconnect();
+        g.disconnect();
+      } catch {
+        // Ignore already cleaned nodes
+      }
+    };
+
+    // Start cleanly; leave generous buffer tail so crossfades never starve for samples
+    const playLen = Math.max(0.25, Math.min(buffer.duration - bufferOffset, segEnd - bufferOffset + 2.2));
+    source.start(startAtCtxTime, Math.max(0, bufferOffset), playLen);
+    return { source, gain: g };
+  }
+
+  /**
+   * Seamless 2-stage equal-power crossfading soundtrack for Emerald Grove & Wooden Mansion:
+   * - Emerald Grove starts from 0.00s, smoothly loops 12.0s..36.0s with gentle tempo ramping, then crossfades into 37.74s..64.65s at climax.
+   * - Wooden Mansion loops Stage 1 (0.02s..15.0s) seamlessly, then crossfades seamlessly into Stage 2 (30.0s..45.0s).
+   */
+  public updateImmersiveMapMusic(
+    dt: number,
+    active: boolean,
+    theme: FloorTheme,
+    progressRaw: number,
+    finalStage: boolean
+  ) {
+    if (theme !== 'grass_outdoors' && theme !== 'mansion_wood') {
+      this.immersiveMapMusicActive = false;
+      this.immersiveMapMusicTheme = null;
+      this.stopImmersiveMapMusicImmediate();
+      return;
+    }
+
+    this.immersiveMapMusicActive = active;
+    this.immersiveMapMusicTheme = theme;
+    const progress = Math.max(0, Math.min(1, progressRaw));
+    this.immersiveMapMusicProgress = progress;
+    this.immersiveMapMusicFinalStage = finalStage;
+
+    if (!active || this.muted) {
+      this.stopImmersiveMapMusicImmediate();
+      return;
+    }
+
+    this.preloadImmersiveTrack(theme);
+    const buffer = this.immersiveTrackBuffers.get(theme);
+    if (!buffer) return;
+
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+
+    if (this.immersiveTrackNodes && this.immersiveTrackNodes.theme !== theme) {
+      this.stopImmersiveMapMusicImmediate();
+    }
+
+    const cfg = SoundEngine.IMMERSIVE_MAP_TRACKS[theme];
+    const now = ctx.currentTime;
+    const targetRate =
+      cfg.minRate + progress * (cfg.maxRate - cfg.minRate) + (finalStage ? cfg.climaxRateBoost : 0);
+    const targetCutoff = 3200 + progress * 14500 + (finalStage ? 2200 : 0);
+    const targetGain = cfg.baseGain + progress * cfg.rampGain + (finalStage ? 0.06 : 0);
+
+    if (!this.immersiveTrackNodes) {
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(targetCutoff, now);
+      filter.Q.setValueAtTime(0.75, now);
+
+      const master = ctx.createGain();
+      master.gain.setValueAtTime(0.0005, now);
+      master.gain.linearRampToValueAtTime(targetGain, now + 0.45);
+      filter.connect(master);
+      master.connect(ctx.destination);
+
+      const initialStage: 1 | 2 = finalStage ? 2 : 1;
+      const seg = initialStage === 2 ? cfg.stage2 : cfg.stage1;
+      const initialStart = initialStage === 1 ? (cfg.introStart ?? seg.start) : seg.start;
+      const safeEnd = Math.min(buffer.duration - 0.15, seg.end);
+
+      const nodes: NonNullable<SoundEngine['immersiveTrackNodes']> = {
+        theme,
+        stage: initialStage,
+        filter,
+        master,
+        activeSources: new Set(),
+        currentSource: null,
+        currentGain: null,
+        estOffset: initialStart,
+        lastRate: targetRate,
+        nextScheduled: false,
+      };
+      const spawned = this.spawnTrackSegmentSource(
+        ctx,
+        buffer,
+        nodes,
+        now,
+        initialStart,
+        safeEnd,
+        initialStart > 0.05 ? 0.12 : 0.02,
+        targetRate
+      );
+      nodes.currentSource = spawned.source;
+      nodes.currentGain = spawned.gain;
+      this.immersiveTrackNodes = nodes;
+      return;
+    }
+
+    const nodes = this.immersiveTrackNodes;
+    nodes.filter.frequency.setTargetAtTime(targetCutoff, now, 0.3);
+    nodes.master.gain.setTargetAtTime(targetGain, now, 0.25);
+
+    if (nodes.currentSource) {
+      nodes.currentSource.playbackRate.setTargetAtTime(targetRate, now, 0.25);
+    }
+    nodes.lastRate = targetRate;
+    if (dt > 0) {
+      nodes.estOffset += dt * targetRate;
+    }
+
+    // Smoothly equal-power crossfade from Stage 1 -> Stage 2 when reaching final showdown
+    if (nodes.stage === 1 && finalStage) {
+      const xfadeDur = 1.45;
+      const stage2Seg = cfg.stage2;
+      const safeS2End = Math.min(buffer.duration - 0.15, stage2Seg.end);
+      if (nodes.currentGain && nodes.currentSource) {
+        try {
+          nodes.currentGain.gain.cancelScheduledValues(now);
+          nodes.currentGain.gain.setValueCurveAtTime(SoundEngine.EQ_FADE_OUT, now, xfadeDur);
+          nodes.currentSource.stop(now + xfadeDur + 0.06);
+        } catch {
+          // Ignore already stopped source
+        }
+      }
+      const next = this.spawnTrackSegmentSource(
+        ctx,
+        buffer,
+        nodes,
+        now,
+        stage2Seg.start,
+        safeS2End,
+        xfadeDur,
+        targetRate
+      );
+      nodes.stage = 2;
+      nodes.currentSource = next.source;
+      nodes.currentGain = next.gain;
+      nodes.estOffset = stage2Seg.start;
+      nodes.nextScheduled = false;
+      return;
+    }
+
+    const activeSeg = nodes.stage === 2 ? cfg.stage2 : cfg.stage1;
+    const safeEnd = Math.min(buffer.duration - 0.15, activeSeg.end);
+    const segSpan = Math.max(2, safeEnd - activeSeg.start);
+    const loopXfade = Math.min(cfg.loopXfade, segSpan * 0.25);
+
+    // Schedule seamless overlap crossfade right before segment boundary
+    if (!nodes.nextScheduled && nodes.estOffset >= safeEnd - loopXfade - 0.18) {
+      const remBuffer = Math.max(0.02, safeEnd - loopXfade - nodes.estOffset);
+      const handoff = now + remBuffer / Math.max(0.5, targetRate);
+
+      if (nodes.currentGain && nodes.currentSource) {
+        try {
+          nodes.currentGain.gain.setValueCurveAtTime(SoundEngine.EQ_FADE_OUT, handoff, loopXfade);
+          nodes.currentSource.stop(handoff + loopXfade + 0.06);
+        } catch {
+          // Ignore scheduling races
+        }
+      }
+
+      const next = this.spawnTrackSegmentSource(
+        ctx,
+        buffer,
+        nodes,
+        handoff,
+        activeSeg.start,
+        safeEnd,
+        loopXfade,
+        targetRate
+      );
+      nodes.currentSource = next.source;
+      nodes.currentGain = next.gain;
+      nodes.estOffset = activeSeg.start - remBuffer;
+      nodes.nextScheduled = false;
+    }
+  }
+
+  private stopImmersiveMapMusicImmediate() {
+    if (!this.immersiveTrackNodes) return;
+    const nodes = this.immersiveTrackNodes;
+    this.immersiveTrackNodes = null;
+    for (const src of nodes.activeSources) {
+      try {
+        src.stop();
+        src.disconnect();
+      } catch {
+        // Ignore already stopped source
+      }
+    }
+    nodes.activeSources.clear();
+    try {
+      nodes.filter.disconnect();
+      nodes.master.disconnect();
+    } catch {
+      // Ignore already disconnected graph
     }
   }
 

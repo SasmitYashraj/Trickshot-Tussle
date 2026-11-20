@@ -1,6 +1,6 @@
 import { ChevronRight, Globe, Map as MapIcon, Play, Sliders, User, Users } from 'lucide-react';
 import { useState } from 'react';
-import { ARENA_MAPS, MAP_PREVIEW_URLS } from '../game/maps';
+import { ARENA_MAPS, IMMERSIVE_DARK_PREVIEW_URLS, MAP_PREVIEW_URLS } from '../game/maps';
 import {
   type BotDifficulty,
   DEFAULT_MATCH_MODIFIERS,
@@ -212,11 +212,30 @@ export function TitleScreen({
                           alt={activeMap.name}
                           referrerPolicy="no-referrer"
                           onError={() => setImgFailed((prev) => ({ ...prev, [activeMap.id]: true }))}
-                          className="h-full w-full object-cover object-center group-hover:scale-105 transition-transform duration-300"
+                          className={`absolute inset-0 h-full w-full object-cover object-center group-hover:scale-105 transition-all duration-500 ${
+                            activeMap.immersive && config.extraDark && IMMERSIVE_DARK_PREVIEW_URLS[activeMap.id]
+                              ? 'opacity-0'
+                              : 'opacity-100'
+                          }`}
                         />
                       ) : (
                         <div className="h-full w-full bg-slate-900" />
                       )}
+                      {activeMap.immersive &&
+                        IMMERSIVE_DARK_PREVIEW_URLS[activeMap.id] &&
+                        !imgFailed[`${activeMap.id}_dark`] && (
+                          <img
+                            src={IMMERSIVE_DARK_PREVIEW_URLS[activeMap.id]}
+                            alt={`${activeMap.name} dark mode`}
+                            referrerPolicy="no-referrer"
+                            onError={() =>
+                              setImgFailed((prev) => ({ ...prev, [`${activeMap.id}_dark`]: true }))
+                            }
+                            className={`absolute inset-0 h-full w-full object-cover object-center group-hover:scale-105 transition-all duration-500 ${
+                              config.extraDark ? 'opacity-100' : 'opacity-0'
+                            }`}
+                          />
+                        )}
                       <div
                         className="pointer-events-none absolute inset-0"
                         style={{
