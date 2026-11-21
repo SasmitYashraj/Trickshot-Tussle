@@ -1,13 +1,16 @@
-const CACHE_NAME = 'trickshot-tussle-v17';
+const CACHE_NAME = 'trickshot-tussle-v18';
 const APP_SHELL = [
   '/',
   '/index.html',
   '/manifest.json',
+  '/favicon.ico',
+  '/favicon-16x16.png',
+  '/favicon-32x32.png',
+  '/favicon-48x48.png',
   '/icon-192.png',
   '/icon-512.png',
   '/icon-maskable-512.png',
   '/apple-touch-icon.png',
-  '/icon.svg',
   '/assets/maps/crossroads.png',
   '/assets/maps/pillars.png',
   '/assets/maps/bunkers.png',

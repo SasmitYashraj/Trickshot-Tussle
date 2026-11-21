@@ -57,6 +57,7 @@ import {
   PLAYER_RADIUS,
   PLAYER_TURN_SPEED,
   PLAYER_COLOR_PALETTE,
+  POST_STUN_GRACE_DURATION,
   type PlayerColorOption,
   type Particle,
   type Pickup,
@@ -82,6 +83,33 @@ function sameFloor(a?: FloorLevel, b?: FloorLevel): boolean {
   return (a ?? 0) === (b ?? 0);
 }
 
+function getWallBounceCode(kind?: WallRect['kind']): number {
+  switch (kind) {
+    case 'perimeter_steel':
+    case 'metal':
+      return 2; // metal
+    case 'rock':
+    case 'library_pillar':
+      return 3; // stone
+    case 'perimeter_hedge':
+    case 'tree':
+    case 'pine_tree':
+    case 'hedge':
+      return 4; // foliage
+    case 'perimeter_ice':
+      return 5; // ice
+    case 'perimeter_wood':
+    case 'sofa':
+    case 'bed':
+    case 'table':
+    case 'bookshelf':
+    case 'mezzanine_rail':
+    case 'stair_rail':
+    default:
+      return 1; // wood
+  }
+}
+
 const SPAWN_RATE_MULTS: Record<ModifierLevel, number> = {
   LOW: 0.6,
   MEDIUM: 1.0,
@@ -92,6 +120,12 @@ const PLAYER_SPEED_MULTS: Record<ModifierLevel, number> = {
   LOW: 0.78,
   MEDIUM: 1.0,
   HIGH: 1.26,
+};
+
+const TURN_SPEED_MULTS: Record<ModifierLevel, number> = {
+  LOW: 0.72,
+  MEDIUM: 1.0,
+  HIGH: 1.35,
 };
 
 const BULLET_SPEED_MULTS: Record<ModifierLevel, number> = {
@@ -153,8 +187,19 @@ interface BotAiMemory {
   lastSeenEnemyId: number | null;
   lastSeenX: number;
   lastSeenY: number;
+  lastSeenVx: number;
+  lastSeenVy: number;
   lastSeenFloor: FloorLevel;
   lastSeenTimer: number;
+  pendingShotAngle: number | null;
+  pendingShotExpire: number;
+  pendingShotTargetId: number | null;
+  pendingShotIsTrick: boolean;
+  lockedGoalBookId: number | null;
+  goalLockTimer: number;
+  collectingBookId: number | null;
+  bookCollectTimer: number;
+  stairCommit: { stairId: number; targetFloor: FloorLevel; timer: number } | null;
   rageBaitTimer: number;
   rageBaitCooldown: number;
   dialTimer: number;
@@ -361,6 +406,10 @@ export class ArenaEngine {
 
   private getPlayerMaxSpeed(): number {
     return PLAYER_MAX_SPEED * PLAYER_SPEED_MULTS[this.getModifiers().playerSpeed];
+  }
+
+  private getPlayerTurnSpeed(): number {
+    return PLAYER_TURN_SPEED * (TURN_SPEED_MULTS[this.getModifiers().turnSpeed] ?? 1.0);
   }
 
   private getBulletSpeed(): number {
@@ -960,25 +1009,17 @@ export class ArenaEngine {
       }
     }
 
-    // Separate active boxes from one another
-    for (let i = 0; i < this.boxes.length; i++) {
-      const a = this.boxes[i];
-      if (a.state !== 'active') continue;
-      for (let j = i + 1; j < this.boxes.length; j++) {
-        const b = this.boxes[j];
-        if (b.state !== 'active') continue;
-        if (!sameFloor(a.floor, b.floor)) continue;
-        const overlapX = (a.w + b.w) * 0.5 - Math.abs(b.x - a.x);
-        const overlapY = (a.h + b.h) * 0.5 - Math.abs(b.y - a.y);
-        if (overlapX > 0 && overlapY > 0) {
-          if (overlapX < overlapY) {
-            const sign = a.x <= b.x ? 1 : -1;
-            a.x -= sign * overlapX * 0.5;
-            b.x += sign * overlapX * 0.5;
-          } else {
-            const sign = a.y <= b.y ? 1 : -1;
-            a.y -= sign * overlapY * 0.5;
-            b.y += sign * overlapY * 0.5;
+    // Separate active boxes from one another with momentum exchange & smooth edge sliding
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < this.boxes.length; i++) {
+        const a = this.boxes[i];
+        if (a.state !== 'active') continue;
+        for (let j = i + 1; j < this.boxes.length; j++) {
+          const b = this.boxes[j];
+          if (b.state !== 'active' || !sameFloor(a.floor, b.floor)) continue;
+          if (this.resolveCratePairCollision(a, a.w * 0.5, a.h * 0.5, b, b.w * 0.5, b.h * 0.5)) {
+            this.resolveRectAgainstWalls(a, a.w * 0.5, a.h * 0.5);
+            this.resolveRectAgainstWalls(b, b.w * 0.5, b.h * 0.5);
           }
         }
       }
@@ -1093,40 +1134,43 @@ export class ArenaEngine {
     }
 
     for (const tnt of tntItems) {
+      const tntState = {
+        x: tnt.x,
+        y: tnt.y,
+        vx: tnt.vx ?? 0,
+        vy: tnt.vy ?? 0,
+        floor: tnt.floor ?? 0,
+      };
       for (const box of this.boxes) {
         if (box.state !== 'active' || !sameFloor(box.floor, tnt.floor)) continue;
-        const overlapX = TNT_HALF_SIZE + box.w * 0.5 - Math.abs(box.x - tnt.x);
-        const overlapY = TNT_HALF_SIZE + box.h * 0.5 - Math.abs(box.y - tnt.y);
-        if (overlapX > 0 && overlapY > 0) {
-          if (overlapX < overlapY) {
-            const sign = tnt.x <= box.x ? 1 : -1;
-            tnt.x -= sign * overlapX * 0.5;
-            box.x += sign * overlapX * 0.5;
-          } else {
-            const sign = tnt.y <= box.y ? 1 : -1;
-            tnt.y -= sign * overlapY * 0.5;
-            box.y += sign * overlapY * 0.5;
-          }
+        if (this.resolveCratePairCollision(tntState, TNT_HALF_SIZE, TNT_HALF_SIZE, box, box.w * 0.5, box.h * 0.5)) {
+          this.resolveRectAgainstWalls(tntState, TNT_HALF_SIZE, TNT_HALF_SIZE);
+          this.resolveRectAgainstWalls(box, box.w * 0.5, box.h * 0.5);
         }
       }
+      tnt.x = tntState.x;
+      tnt.y = tntState.y;
+      tnt.vx = tntState.vx;
+      tnt.vy = tntState.vy;
     }
     for (let i = 0; i < tntItems.length; i++) {
       for (let j = i + 1; j < tntItems.length; j++) {
         const a = tntItems[i];
         const b = tntItems[j];
         if (!sameFloor(a.floor, b.floor)) continue;
-        const overlapX = TNT_HALF_SIZE * 2 - Math.abs(b.x - a.x);
-        const overlapY = TNT_HALF_SIZE * 2 - Math.abs(b.y - a.y);
-        if (overlapX > 0 && overlapY > 0) {
-          if (overlapX < overlapY) {
-            const sign = a.x <= b.x ? 1 : -1;
-            a.x -= sign * overlapX * 0.5;
-            b.x += sign * overlapX * 0.5;
-          } else {
-            const sign = a.y <= b.y ? 1 : -1;
-            a.y -= sign * overlapY * 0.5;
-            b.y += sign * overlapY * 0.5;
-          }
+        const aState = { x: a.x, y: a.y, vx: a.vx ?? 0, vy: a.vy ?? 0, floor: a.floor ?? 0 };
+        const bState = { x: b.x, y: b.y, vx: b.vx ?? 0, vy: b.vy ?? 0, floor: b.floor ?? 0 };
+        if (this.resolveCratePairCollision(aState, TNT_HALF_SIZE, TNT_HALF_SIZE, bState, TNT_HALF_SIZE, TNT_HALF_SIZE)) {
+          this.resolveRectAgainstWalls(aState, TNT_HALF_SIZE, TNT_HALF_SIZE);
+          this.resolveRectAgainstWalls(bState, TNT_HALF_SIZE, TNT_HALF_SIZE);
+          a.x = aState.x;
+          a.y = aState.y;
+          a.vx = aState.vx;
+          a.vy = aState.vy;
+          b.x = bState.x;
+          b.y = bState.y;
+          b.vx = bState.vx;
+          b.vy = bState.vy;
         }
       }
     }
@@ -1218,51 +1262,59 @@ export class ArenaEngine {
 
       if (player.stunTimer > 0) {
         player.stunTimer = Math.max(0, player.stunTimer - dt);
+        if (player.stunTimer <= 0) {
+          player.postStunGraceTimer = this.getModifiers().postStunGrace ? POST_STUN_GRACE_DURATION : 0;
+        }
         const friction = Math.exp(-6.5 * dt);
         player.vx *= friction;
         player.vy *= friction;
-      } else if (player.isHuman) {
-        if (player.isRemote) {
-          this.applyAnalogInput(
-            player,
-            player.remoteActive,
-            player.remoteAngle,
-            player.remoteMagnitude,
-            dt,
-            player.remoteMoveAngle,
-            Boolean(player.remoteAimActive)
-          );
-        } else if (this.controlScheme === 'CURSOR_SPACE') {
-          this.applyAnalogInput(
-            player,
-            this.cursorInput.active,
-            this.cursorInput.aimAngle,
-            this.cursorInput.magnitude,
-            dt,
-            this.cursorInput.moveAngle,
-            this.cursorInput.hasAim
-          );
-        } else {
-          this.applyAnalogInput(
-            player,
-            this.joystick.active,
-            this.joystick.angle,
-            this.joystick.magnitude,
-            dt
-          );
-        }
       } else {
-        this.applyBotControls(player, dt);
+        if ((player.postStunGraceTimer ?? 0) > 0) {
+          player.postStunGraceTimer = Math.max(0, (player.postStunGraceTimer ?? 0) - dt);
+        }
+        if (player.isHuman) {
+          if (player.isRemote) {
+            this.applyAnalogInput(
+              player,
+              player.remoteActive,
+              player.remoteAngle,
+              player.remoteMagnitude,
+              dt,
+              player.remoteMoveAngle,
+              Boolean(player.remoteAimActive)
+            );
+          } else if (this.controlScheme === 'CURSOR_SPACE') {
+            this.applyAnalogInput(
+              player,
+              this.cursorInput.active,
+              this.cursorInput.aimAngle,
+              this.cursorInput.magnitude,
+              dt,
+              this.cursorInput.moveAngle,
+              this.cursorInput.hasAim
+            );
+          } else {
+            this.applyAnalogInput(
+              player,
+              this.joystick.active,
+              this.joystick.angle,
+              this.joystick.magnitude,
+              dt
+            );
+          }
+        } else {
+          this.applyBotControls(player, dt);
+        }
       }
 
       player.x += player.vx * dt;
       player.y += player.vy * dt;
-      this.updateEntityFloorAndBlend(player);
 
-      // Push movable active cardboard boxes & movable TNT crates (including smooth corner-unstick slide!)
+      // Push movable active cardboard boxes & movable TNT crates (with post-push wall resolution so corners never jam)
       for (const box of this.boxes) {
         if (box.state !== 'active' || !sameFloor(box.floor, player.floor)) continue;
         if (this.pushMovableCrate(player, box, box.w * 0.5, box.h * 0.5)) {
+          this.resolveRectAgainstWalls(box, box.w * 0.5, box.h * 0.5);
           box.lastPusherId = player.id;
         }
       }
@@ -1277,6 +1329,7 @@ export class ArenaEngine {
           floor: item.floor ?? 0,
         };
         if (this.pushMovableCrate(player, tntCrate, TNT_HALF_SIZE, TNT_HALF_SIZE)) {
+          this.resolveRectAgainstWalls(tntCrate, TNT_HALF_SIZE, TNT_HALF_SIZE);
           item.x = tntCrate.x;
           item.y = tntCrate.y;
           item.vx = tntCrate.vx;
@@ -1386,6 +1439,74 @@ export class ArenaEngine {
     }
   }
 
+  private resolveCratePairCollision(
+    a: { x: number; y: number; vx: number; vy: number; floor?: FloorLevel },
+    aHalfW: number,
+    aHalfH: number,
+    b: { x: number; y: number; vx: number; vy: number; floor?: FloorLevel },
+    bHalfW: number,
+    bHalfH: number
+  ): boolean {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const overlapX = aHalfW + bHalfW - Math.abs(dx);
+    const overlapY = aHalfH + bHalfH - Math.abs(dy);
+    if (overlapX <= 0 || overlapY <= 0) return false;
+
+    // Slight corner-grazing smooth tangential glide so edges never catch rigidly
+    const cornerThresh = 12;
+    if (overlapX < cornerThresh && overlapY < cornerThresh) {
+      const signX = dx >= 0 ? 1 : -1;
+      const signY = dy >= 0 ? 1 : -1;
+      const sep = Math.min(overlapX, overlapY) * 0.52;
+      a.x -= signX * sep;
+      b.x += signX * sep;
+      a.y -= signY * sep * 0.6;
+      b.y += signY * sep * 0.6;
+      const avgVx = (a.vx + b.vx) * 0.48;
+      const avgVy = (a.vy + b.vy) * 0.48;
+      a.vx = avgVx - signX * 26;
+      b.vx = avgVx + signX * 26;
+      a.vy = avgVy - signY * 18;
+      b.vy = avgVy + signY * 18;
+      return true;
+    }
+
+    if (overlapX < overlapY) {
+      const sign = dx >= 0 ? 1 : -1;
+      a.x -= sign * overlapX * 0.5;
+      b.x += sign * overlapX * 0.5;
+      const relVx = a.vx - b.vx;
+      if (relVx * sign > 0) {
+        const imp = relVx * 0.65;
+        a.vx -= imp;
+        b.vx += imp;
+      }
+      // Subtle lateral slide if offset on perpendicular axis (prevents edge wedging)
+      if (Math.abs(dy) > 8) {
+        const lat = Math.sign(dy) * 22;
+        a.vy -= lat;
+        b.vy += lat;
+      }
+    } else {
+      const sign = dy >= 0 ? 1 : -1;
+      a.y -= sign * overlapY * 0.5;
+      b.y += sign * overlapY * 0.5;
+      const relVy = a.vy - b.vy;
+      if (relVy * sign > 0) {
+        const imp = relVy * 0.65;
+        a.vy -= imp;
+        b.vy += imp;
+      }
+      if (Math.abs(dx) > 8) {
+        const lat = Math.sign(dx) * 22;
+        a.vx -= lat;
+        b.vx += lat;
+      }
+    }
+    return true;
+  }
+
   private detectWallPins(
     cx: number,
     cy: number,
@@ -1395,17 +1516,17 @@ export class ArenaEngine {
   ): { pinX: -1 | 0 | 1; pinY: -1 | 0 | 1 } {
     let pinX: -1 | 0 | 1 = 0;
     let pinY: -1 | 0 | 1 = 0;
-    const tol = 4;
+    const tol = 7;
 
     for (const wall of this.map.walls) {
       if (!isWallOnFloor(wall, floor)) continue;
       const overlapY = Math.min(cy + halfH, wall.y + wall.h) - Math.max(cy - halfH, wall.y);
-      if (overlapY > 4) {
+      if (overlapY > 3) {
         if (Math.abs(cx - halfW - (wall.x + wall.w)) <= tol) pinX = -1;
         else if (Math.abs(cx + halfW - wall.x) <= tol) pinX = 1;
       }
       const overlapX = Math.min(cx + halfW, wall.x + wall.w) - Math.max(cx - halfW, wall.x);
-      if (overlapX > 4) {
+      if (overlapX > 3) {
         if (Math.abs(cy - halfH - (wall.y + wall.h)) <= tol) pinY = -1;
         else if (Math.abs(cy + halfH - wall.y) <= tol) pinY = 1;
       }
@@ -1489,18 +1610,18 @@ export class ArenaEngine {
     crate.x -= nx * overlap * 0.58;
     crate.y -= ny * overlap * 0.58;
 
-    let pushVx = crate.vx - nx * 135 + player.vx * 0.35;
-    let pushVy = crate.vy - ny * 135 + player.vy * 0.35;
+    let pushVx = crate.vx - nx * 135 + player.vx * 0.38;
+    let pushVy = crate.vy - ny * 135 + player.vy * 0.38;
 
-    // If flush against a single wall, redirect inward push into lateral glide so crates slide smoothly along walls
+    // If flush against a single wall, redirect inward push into lateral glide so crates slide smoothly along walls & edges
     if (pins.pinX !== 0 && pushVx * pins.pinX > 0) {
-      const lateralDir = Math.abs(player.vy) > 20 ? Math.sign(player.vy) : Math.sign(crate.y - player.y || 1);
-      pushVy += lateralDir * Math.min(180, Math.abs(pushVx) * 0.85);
+      const lateralDir = Math.abs(player.vy) > 16 ? Math.sign(player.vy) : Math.sign(crate.y - player.y || 1);
+      pushVy += lateralDir * Math.min(200, Math.abs(pushVx) * 0.9);
       pushVx = 0;
     }
     if (pins.pinY !== 0 && pushVy * pins.pinY > 0) {
-      const lateralDir = Math.abs(player.vx) > 20 ? Math.sign(player.vx) : Math.sign(crate.x - player.x || 1);
-      pushVx += lateralDir * Math.min(180, Math.abs(pushVy) * 0.85);
+      const lateralDir = Math.abs(player.vx) > 16 ? Math.sign(player.vx) : Math.sign(crate.x - player.x || 1);
+      pushVx += lateralDir * Math.min(200, Math.abs(pushVy) * 0.9);
       pushVy = 0;
     }
 
@@ -1521,7 +1642,7 @@ export class ArenaEngine {
     if (allowIdleAim || (active && magnitude > 0.03)) {
       if (Number.isFinite(aimAngle)) {
         const diff = normalizeAngle(aimAngle - player.angle);
-        const maxTurn = PLAYER_TURN_SPEED * dt;
+        const maxTurn = this.getPlayerTurnSpeed() * dt;
         player.angle = normalizeAngle(player.angle + clamp(diff, -maxTurn, maxTurn));
       }
     }
@@ -1569,8 +1690,19 @@ export class ArenaEngine {
         lastSeenEnemyId: null,
         lastSeenX: bot.x,
         lastSeenY: bot.y,
+        lastSeenVx: 0,
+        lastSeenVy: 0,
         lastSeenFloor: bot.floor ?? 0,
         lastSeenTimer: 0,
+        pendingShotAngle: null,
+        pendingShotExpire: 0,
+        pendingShotTargetId: null,
+        pendingShotIsTrick: false,
+        lockedGoalBookId: null,
+        goalLockTimer: 0,
+        collectingBookId: null,
+        bookCollectTimer: 0,
+        stairCommit: null,
         rageBaitTimer: 0,
         rageBaitCooldown: 2.5,
         dialTimer: 0,
@@ -1597,13 +1729,13 @@ export class ArenaEngine {
     if (!sameFloor(bFloor, targetFloor)) return false;
     const d = dist(bot.x, bot.y, tx, ty);
     if (this.map.immersive) {
-      const maxRange = this.config.extraDark ? (isGlowingObject ? 470 : 450) : 560;
+      const maxRange = this.config.extraDark ? (isGlowingObject ? 450 : 420) : 520;
       if (d > maxRange) return false;
       if (this.config.extraDark) {
-        const ambientAura = isGlowingObject ? 290 : 208;
+        const ambientAura = isGlowingObject ? 245 : 175;
         if (d > ambientAura) {
           const angDiff = Math.abs(normalizeAngle(Math.atan2(ty - bot.y, tx - bot.x) - bot.angle));
-          if (angDiff > 0.68) return false;
+          if (angDiff > 0.64) return false;
         }
       }
     }
@@ -1650,41 +1782,101 @@ export class ArenaEngine {
   }
 
   private pickArenaPatrolPoint(bot: Player): Vec2 {
-    const pad = ARENA_WALL_THICKNESS + PLAYER_RADIUS + 40;
-    const minDist = this.map.immersive ? 380 : 220;
-    for (let tries = 0; tries < 20; tries++) {
+    const pad = ARENA_WALL_THICKNESS + PLAYER_RADIUS + 44;
+    const minDist = this.map.immersive ? 420 : 260;
+    // Prefer quadrants away from other bots so bots spread across the arena instead of clumping
+    let bestPt: Vec2 | null = null;
+    let bestSpread = -Infinity;
+    for (let tries = 0; tries < 24; tries++) {
       const x = pad + Math.random() * (this.map.width - pad * 2);
       const y = pad + Math.random() * (this.map.height - pad * 2);
       if (
         dist(bot.x, bot.y, x, y) >= minDist &&
         this.isPointWalkableOnFloor(x, y, PLAYER_RADIUS + 10, bot.floor ?? 0)
       ) {
-        return { x, y };
+        let minBotDist = Infinity;
+        for (const other of this.players) {
+          if (other.id !== bot.id && other.alive && sameFloor(other.floor, bot.floor)) {
+            minBotDist = Math.min(minBotDist, dist(x, y, other.x, other.y));
+          }
+        }
+        if (minBotDist > bestSpread) {
+          bestSpread = minBotDist;
+          bestPt = { x, y };
+        }
       }
     }
-    return { x: this.map.width * 0.5, y: this.map.height * 0.5 };
+    return bestPt ?? { x: this.map.width * 0.5, y: this.map.height * 0.5 };
   }
 
   private findTrickshotToPoint(
     shooter: Player,
     tx: number,
     ty: number,
-    hitRadius = PLAYER_RADIUS + 14
+    hitRadius = PLAYER_RADIUS + 14,
+    numRays = 24,
+    maxBounces = 2
   ): number | null {
     const floor = shooter.floor ?? 0;
     const bSpeed = this.getBulletSpeed();
-    for (let i = 0; i < 20; i++) {
-      const a = (i / 20) * Math.PI * 2;
+    const candidates: number[] = [];
+
+    // Include analytic reflection angles off perimeter & interior walls for crisp corner trickshots
+    for (const wall of this.map.walls) {
+      if (!isWallOnFloor(wall, floor)) continue;
+      if (wall.x > ARENA_WALL_THICKNESS && wall.x < this.map.width - ARENA_WALL_THICKNESS) {
+        const mirLeft = 2 * wall.x - tx;
+        const mirRight = 2 * (wall.x + wall.w) - tx;
+        candidates.push(Math.atan2(ty - shooter.y, mirLeft - shooter.x));
+        candidates.push(Math.atan2(ty - shooter.y, mirRight - shooter.x));
+      }
+      if (wall.y > ARENA_WALL_THICKNESS && wall.y < this.map.height - ARENA_WALL_THICKNESS) {
+        const mirTop = 2 * wall.y - ty;
+        const mirBottom = 2 * (wall.y + wall.h) - ty;
+        candidates.push(Math.atan2(mirTop - shooter.y, tx - shooter.x));
+        candidates.push(Math.atan2(mirBottom - shooter.y, tx - shooter.x));
+      }
+    }
+    // Outer arena walls reflections
+    candidates.push(Math.atan2(ty - shooter.y, 2 * ARENA_WALL_THICKNESS - tx - shooter.x));
+    candidates.push(Math.atan2(ty - shooter.y, 2 * (this.map.width - ARENA_WALL_THICKNESS) - tx - shooter.x));
+    candidates.push(Math.atan2(2 * ARENA_WALL_THICKNESS - ty - shooter.y, tx - shooter.x));
+    candidates.push(Math.atan2(2 * (this.map.height - ARENA_WALL_THICKNESS) - ty - shooter.y, tx - shooter.x));
+
+    for (let i = 0; i < numRays; i++) {
+      candidates.push((i / numRays) * Math.PI * 2);
+    }
+
+    let bestAngle: number | null = null;
+    let bestScore = Infinity;
+
+    for (const a of candidates) {
       let x = shooter.x + Math.cos(a) * (PLAYER_RADIUS + 8);
       let y = shooter.y + Math.sin(a) * (PLAYER_RADIUS + 8);
       let vx = Math.cos(a) * bSpeed;
       let vy = Math.sin(a) * bSpeed;
       let bounces = 0;
+      let hitHazard = false;
 
-      for (let step = 0; step < 58; step++) {
-        const subDt = 0.02;
+      for (let step = 0; step < 90; step++) {
+        const subDt = 0.016;
         x += vx * subDt;
         y += vy * subDt;
+
+        // Abort if bouncing right back into shooter or teammate
+        if (step > 8 && dist(x, y, shooter.x, shooter.y) < PLAYER_RADIUS + 10) {
+          hitHazard = true;
+          break;
+        }
+        for (const tm of this.players) {
+          if (tm.id !== shooter.id && tm.alive && this.isTeammate(shooter.id, tm.id) && sameFloor(tm.floor, floor)) {
+            if (dist(x, y, tm.x, tm.y) < PLAYER_RADIUS + 14) {
+              hitHazard = true;
+              break;
+            }
+          }
+        }
+        if (hitHazard) break;
 
         for (const wall of this.map.walls) {
           if (!isWallOnFloor(wall, floor)) continue;
@@ -1701,13 +1893,19 @@ export class ArenaEngine {
             break;
           }
         }
-        if (bounces > 2) break;
+        if (bounces > maxBounces) break;
         if (bounces >= 1 && dist(x, y, tx, ty) < hitRadius) {
-          return a;
+          // Prefer fewer bounces & shorter travel
+          const score = bounces * 40 + step;
+          if (score < bestScore) {
+            bestScore = score;
+            bestAngle = a;
+          }
+          break;
         }
       }
     }
-    return null;
+    return bestAngle;
   }
 
   private applyBotControls(bot: Player, dt: number) {
@@ -1716,8 +1914,8 @@ export class ArenaEngine {
       return;
     }
     const diff: BotDifficulty = this.config.difficulty;
-    const reactionInterval = diff === 'RUTHLESS' ? 0.12 : diff === 'TACTICAL' ? 0.24 : 0.48;
-    const aimSpread = diff === 'RUTHLESS' ? 0.02 : diff === 'TACTICAL' ? 0.11 : 1.05;
+    const reactionInterval = diff === 'RUTHLESS' ? 0.11 : diff === 'TACTICAL' ? 0.22 : 0.48;
+    const aimSpread = diff === 'RUTHLESS' ? 0.015 : diff === 'TACTICAL' ? 0.1 : 1.05;
     const bFloor = bot.floor ?? 0;
     const mem = this.getBotMemory(bot);
 
@@ -1726,7 +1924,12 @@ export class ArenaEngine {
     mem.patrolTimer = Math.max(0, mem.patrolTimer - dt);
     mem.lastSeenTimer = Math.max(0, mem.lastSeenTimer - dt);
     mem.unstickTimer = Math.max(0, mem.unstickTimer - dt);
+    mem.pendingShotExpire = Math.max(0, mem.pendingShotExpire - dt);
     mem.scanPhase += dt * (this.config.extraDark ? 2.1 : 1.3);
+
+    if (mem.pendingShotExpire <= 0) {
+      mem.pendingShotAngle = null;
+    }
 
     // Stuck detection
     if (dist(bot.x, bot.y, mem.lastProgressX, mem.lastProgressY) > 18) {
@@ -1755,9 +1958,9 @@ export class ArenaEngine {
     let evadeX = 0;
     let evadeY = 0;
 
-    // 1. Incoming bullet evasion (Chill barely dodges; Ruthless reacts early & cleanly)
-    const bulletLookDist = diff === 'RUTHLESS' ? 255 : diff === 'TACTICAL' ? 210 : 115;
-    const bulletWeight = diff === 'RUTHLESS' ? 2.65 : diff === 'TACTICAL' ? 2.2 : 0.75;
+    // 1. Incoming bullet evasion (predict CPA trajectory cleanly)
+    const bulletLookDist = diff === 'RUTHLESS' ? 280 : diff === 'TACTICAL' ? 215 : 115;
+    const bulletWeight = diff === 'RUTHLESS' ? 3.1 : diff === 'TACTICAL' ? 2.2 : 0.75;
     for (const b of this.bullets) {
       if (b.ownerId === bot.id && b.age < BULLET_SELF_GRACE) continue;
       if (!sameFloor(b.floor, bFloor)) continue;
@@ -1769,7 +1972,7 @@ export class ArenaEngine {
         const dot = (relX * b.vx + relY * b.vy) / bSpeed;
         if (dot > -15 && dot < bulletLookDist) {
           const perp = Math.abs((relX * b.vy - relY * b.vx) / bSpeed);
-          if (perp < PLAYER_RADIUS + 34) {
+          if (perp < PLAYER_RADIUS + 38) {
             const side = relX * b.vy - relY * b.vx >= 0 ? 1 : -1;
             const weight = (bulletLookDist - d) / bulletLookDist;
             evadeX += (b.vy / bSpeed) * side * weight * bulletWeight;
@@ -1779,65 +1982,94 @@ export class ArenaEngine {
       }
     }
 
-    // 2. Explosive hazard evasion (Chill clumsily ignores unexploded Nitro so they can blow themselves up!)
+    // 2. Explosive hazard evasion
     for (const p of this.pickups) {
       if (!sameFloor(p.floor, bFloor)) continue;
       if (p.kind === 'tnt' && p.armed) {
         const d = dist(bot.x, bot.y, p.x, p.y);
-        const fleeR = diff === 'CHILL' ? 105 : diff === 'RUTHLESS' ? TNT_BLAST_RADIUS + 56 : TNT_BLAST_RADIUS + 42;
+        const fleeR = diff === 'CHILL' ? 105 : diff === 'RUTHLESS' ? TNT_BLAST_RADIUS + 62 : TNT_BLAST_RADIUS + 42;
         if (d < fleeR) {
           const away = Math.atan2(bot.y - p.y, bot.x - p.x);
-          const mult = diff === 'CHILL' ? 1.2 : 2.6;
+          const mult = diff === 'CHILL' ? 1.2 : 2.8;
           const urgency = ((fleeR - d) / TNT_BLAST_RADIUS) * mult;
           evadeX += Math.cos(away) * urgency;
           evadeY += Math.sin(away) * urgency;
         }
       } else if (p.kind === 'nitro' && diff !== 'CHILL') {
         const d = dist(bot.x, bot.y, p.x, p.y);
-        const safeDist = diff === 'RUTHLESS' ? NITRO_RADIUS + PLAYER_RADIUS + 34 : NITRO_RADIUS + PLAYER_RADIUS + 20;
+        const safeDist = diff === 'RUTHLESS' ? NITRO_RADIUS + PLAYER_RADIUS + 38 : NITRO_RADIUS + PLAYER_RADIUS + 20;
         if (d < safeDist) {
           const away = Math.atan2(bot.y - p.y, bot.x - p.x);
-          evadeX += Math.cos(away) * 2.1;
-          evadeY += Math.sin(away) * 2.1;
+          evadeX += Math.cos(away) * 2.2;
+          evadeY += Math.sin(away) * 2.2;
         }
       }
     }
 
     // 3. Broken ice pit evasion
     for (const pit of this.icePits) {
-      const margin = diff === 'CHILL' ? PLAYER_RADIUS + 14 : PLAYER_RADIUS + 42;
+      const margin = diff === 'CHILL' ? PLAYER_RADIUS + 14 : PLAYER_RADIUS + 44;
       if (pit.broken && isPointInIcePit(bot.x, bot.y, pit, margin)) {
         const away = Math.atan2(bot.y - pit.y, bot.x - pit.x);
-        evadeX += Math.cos(away) * 3.0;
-        evadeY += Math.sin(away) * 3.0;
+        evadeX += Math.cos(away) * 3.2;
+        evadeY += Math.sin(away) * 3.2;
       }
     }
 
-    // Check visible enemies using fair Immersive visibility (NO wallhack/darkness ESP)
+    // 4. Bot-to-bot separation & unarmed disengaging (prevents clumping & 0-ammo hugging!)
+    for (const other of this.players) {
+      if (other.id === bot.id || !other.alive || !sameFloor(other.floor, bFloor)) continue;
+      const dO = dist(bot.x, bot.y, other.x, other.y);
+      const isEnemy = !this.isTeammate(bot.id, other.id);
+      if (bot.ammo === 0 && isEnemy && other.ammo > 0 && dO < 420 && (!this.map.immersive || this.canBotSeePoint(bot, other.x, other.y, other.floor ?? 0))) {
+        const away = Math.atan2(bot.y - other.y, bot.x - other.x);
+        const push = ((420 - dO) / 420) * 2.4;
+        evadeX += Math.cos(away) * push;
+        evadeY += Math.sin(away) * push;
+      } else if (!other.isHuman && dO < 150 && dO > 1) {
+        const away = Math.atan2(bot.y - other.y, bot.x - other.x);
+        const rep = ((150 - dO) / 150) * 1.15;
+        evadeX += Math.cos(away) * rep;
+        evadeY += Math.sin(away) * rep;
+      }
+    }
+
+    // Check visible enemies using strict fair Immersive visibility
     const allEnemies = this.players.filter(
       (p) => p.id !== bot.id && p.alive && !this.isTeammate(bot.id, p.id) && sameFloor(p.floor, bFloor)
     );
     const visibleEnemies = allEnemies.filter((e) => this.canBotSeePoint(bot, e.x, e.y, e.floor ?? 0));
-    let activeAimAngle: number | null = null;
+
+    // Score visible target: Ruthless targets high-threat/human leaders AND finishers rather than ignoring leaders!
+    const scoreEnemy = (e: Player): number => {
+      const d = dist(bot.x, bot.y, e.x, e.y);
+      const finishBonus = e.hp <= BULLET_DAMAGE ? 145 : 0;
+      const stunBonus = e.stunTimer > 0 && (e.postStunGraceTimer ?? 0) <= 0 ? 110 : 0;
+      const threatBonus = diff === 'RUTHLESS' ? e.kills * 38 + (e.isHuman ? 45 : 0) : e.kills * 22;
+      const gracePenalty = e.spawnInvulnTimer > 0 || (e.postStunGraceTimer ?? 0) > 0 ? -90 : 0;
+      return -d * 0.32 + stunBonus + finishBonus + (100 - e.hp) * 0.95 + threatBonus + gracePenalty;
+    };
 
     if (visibleEnemies.length > 0) {
       let bestVisible = visibleEnemies[0];
       let bestScore = -Infinity;
       for (const e of visibleEnemies) {
-        const d = dist(bot.x, bot.y, e.x, e.y);
-        const finishBonus = e.hp <= BULLET_DAMAGE ? 150 : 0;
-        const score = -d * 0.35 + (e.stunTimer > 0 ? 120 : 0) + finishBonus + (100 - e.hp) * 1.0 + e.kills * 25;
-        if (score > bestScore) {
-          bestScore = score;
+        const s = scoreEnemy(e);
+        if (s > bestScore) {
+          bestScore = s;
           bestVisible = e;
         }
       }
       mem.lastSeenEnemyId = bestVisible.id;
       mem.lastSeenX = bestVisible.x;
       mem.lastSeenY = bestVisible.y;
+      mem.lastSeenVx = bestVisible.vx;
+      mem.lastSeenVy = bestVisible.vy;
       mem.lastSeenFloor = bestVisible.floor ?? 0;
-      mem.lastSeenTimer = diff === 'RUTHLESS' ? 1.55 : 1.05;
+      mem.lastSeenTimer = diff === 'RUTHLESS' ? 1.55 : 0.95;
     }
+
+    let activeAimAngle: number | null = mem.pendingShotAngle;
 
     const evading = Math.hypot(evadeX, evadeY) > 0.35;
     if (evading) {
@@ -1848,21 +2080,18 @@ export class ArenaEngine {
       bot.aiTargetAngle = mem.unstickAngle;
       bot.aiMoveRatio = 0.9;
     } else if (bot.aiThinkTimer <= 0) {
-      bot.aiThinkTimer = reactionInterval + Math.random() * 0.1;
+      bot.aiThinkTimer = reactionInterval + Math.random() * 0.08;
       if (Math.random() < 0.24) bot.aiStrafeDir *= -1;
 
       let goalX = mem.patrolX;
       let goalY = mem.patrolY;
-      let moveRatio = 0.82;
-      let wantsToShoot = false;
-      let shootAngle = bot.angle;
+      let moveRatio = 0.85;
 
-      // Refresh patrol point if reached or expired
       if (mem.patrolTimer <= 0 || dist(bot.x, bot.y, mem.patrolX, mem.patrolY) < 95) {
         const np = this.pickArenaPatrolPoint(bot);
         mem.patrolX = np.x;
         mem.patrolY = np.y;
-        mem.patrolTimer = 3.5 + Math.random() * 2.5;
+        mem.patrolTimer = 3.2 + Math.random() * 2.2;
         goalX = np.x;
         goalY = np.y;
       }
@@ -1880,20 +2109,16 @@ export class ArenaEngine {
           (!this.map.immersive || this.canBotSeePoint(bot, p.x, p.y, bFloor, true))
       );
 
-      // Helper: pick best visible enemy
       let target: Player | null = null;
       let targetDist = Infinity;
       if (visibleEnemies.length > 0) {
         let bestScore = -Infinity;
         for (const e of visibleEnemies) {
-          const d = dist(bot.x, bot.y, e.x, e.y);
-          let score = -d * 0.35 + (e.stunTimer > 0 ? 120 : 0) + (100 - e.hp) * 1.1 + e.kills * 25;
-          if (diff === 'RUTHLESS' && e.hp <= BULLET_DAMAGE) score += 160;
-          if (e.spawnInvulnTimer > 0) score -= 50;
-          if (score > bestScore) {
-            bestScore = score;
+          const s = scoreEnemy(e);
+          if (s > bestScore) {
+            bestScore = s;
             target = e;
-            targetDist = d;
+            targetDist = dist(bot.x, bot.y, e.x, e.y);
           }
         }
       }
@@ -1901,8 +2126,7 @@ export class ArenaEngine {
       // Check strategic Nitro/TNT plays
       let explosiveShotAngle: number | null = null;
       let explosiveClusterCount = 0;
-      const checkCandidates = visibleEnemies.length > 0 ? visibleEnemies : [];
-      if (bot.ammo > 0 && checkCandidates.length > 0) {
+      if (bot.ammo > 0 && visibleEnemies.length > 0) {
         let bestBlastScore = 0;
         for (const n of this.pickups) {
           if (!sameFloor(n.floor, bFloor)) continue;
@@ -1913,8 +2137,7 @@ export class ArenaEngine {
           const selfDist = dist(n.x, n.y, bot.x, bot.y);
 
           if (diff === 'CHILL') {
-            // Chill bot clumsily blasts nitro/TNT even when standing TOO close!
-            const nearEnemy = checkCandidates.find((e) => dist(n.x, n.y, e.x, e.y) < blastR + 40);
+            const nearEnemy = visibleEnemies.find((e) => dist(n.x, n.y, e.x, e.y) < blastR + 40);
             if (nearEnemy && selfDist < blastR + 85 && this.hasLineOfSight(bot.x, bot.y, n.x, n.y, bFloor)) {
               if (Math.random() < 0.55) {
                 explosiveShotAngle = Math.atan2(n.y - bot.y, n.x - bot.x);
@@ -1925,23 +2148,21 @@ export class ArenaEngine {
             continue;
           }
 
-          // Tactical & Ruthless NEVER self-blast or friendly-fire teammates
-          const safeSelfMargin = diff === 'RUTHLESS' ? blastR + 24 : blastR + 20;
-          if (selfDist <= safeSelfMargin) continue;
+          if (selfDist <= blastR + 26) continue;
           const teammateInBlast = this.players.some(
             (tm) => tm.alive && tm.id !== bot.id && this.isTeammate(bot.id, tm.id) && dist(n.x, n.y, tm.x, tm.y) <= blastR + 24
           );
           if (teammateInBlast) continue;
 
           const hitMargin = diff === 'RUTHLESS' ? blastR + 8 : blastR - 10;
-          const enemiesInBlast = checkCandidates.filter((e) => dist(n.x, n.y, e.x, e.y) <= hitMargin);
+          const enemiesInBlast = visibleEnemies.filter((e) => dist(n.x, n.y, e.x, e.y) <= hitMargin);
           if (enemiesInBlast.length === 0) continue;
 
           const directLos = this.hasLineOfSight(bot.x, bot.y, n.x, n.y, bFloor);
           const shotA = directLos
             ? Math.atan2(n.y - bot.y, n.x - bot.x)
             : diff === 'RUTHLESS'
-              ? this.findTrickshotToPoint(bot, n.x, n.y, n.radius + 14)
+              ? this.findTrickshotToPoint(bot, n.x, n.y, n.radius + 14, 36, 3)
               : null;
 
           if (shotA !== null) {
@@ -1955,7 +2176,6 @@ export class ArenaEngine {
         }
       }
 
-      // Ruthless ammo stockpiling check: collect 2-3 bullets before firing unless immediate kill / threat / Nitro cluster!
       const nearestBullet = visibleBullets.reduce<{ p: Pickup; d: number } | null>((best, p) => {
         const d = dist(bot.x, bot.y, p.x, p.y);
         return !best || d < best.d ? { p, d } : best;
@@ -1963,8 +2183,10 @@ export class ArenaEngine {
 
       const immediateDanger = Boolean(
         target &&
-          (targetDist < 310 ||
-            (target.ammo > 0 && Math.abs(normalizeAngle(Math.atan2(bot.y - target.y, bot.x - target.x) - target.angle)) < 0.42 && targetDist < 420))
+          (targetDist < 300 ||
+            (target.ammo > 0 &&
+              Math.abs(normalizeAngle(Math.atan2(bot.y - target.y, bot.x - target.x) - target.angle)) < 0.42 &&
+              targetDist < 420))
       );
       const guaranteedFinish = Boolean(target && (target.hp <= BULLET_DAMAGE || target.stunTimer > 0));
       const closeCluster = visibleEnemies.filter((e) => dist(bot.x, bot.y, e.x, e.y) < 380).length >= 2;
@@ -1974,7 +2196,7 @@ export class ArenaEngine {
         bot.ammo > 0 &&
         bot.ammo < stockpileAmmoGoal &&
         nearestBullet !== null &&
-        nearestBullet.d < 720 &&
+        nearestBullet.d < 700 &&
         !immediateDanger &&
         !guaranteedFinish &&
         explosiveClusterCount === 0 &&
@@ -1992,81 +2214,151 @@ export class ArenaEngine {
         }
         goalX = best.x;
         goalY = best.y;
-        moveRatio = 0.95;
+        moveRatio = 0.96;
       } else if (bot.ammo === 0 || shouldStockpileRuthless) {
+        // NEVER chase enemy when ammo === 0! Seek bullets or explore fresh arena sectors
         if (nearestBullet) {
           goalX = nearestBullet.p.x;
           goalY = nearestBullet.p.y;
-          moveRatio = shouldStockpileRuthless ? 0.96 : 0.92;
-        } else if (mem.lastSeenTimer > 0 && !shouldStockpileRuthless) {
-          goalX = mem.lastSeenX;
-          goalY = mem.lastSeenY;
-          moveRatio = 0.85;
+          moveRatio = 0.96;
+        } else {
+          // Sweep patrol toward open quadrants to find floor ammo
+          goalX = mem.patrolX;
+          goalY = mem.patrolY;
+          moveRatio = 0.92;
         }
       } else if (target) {
+        const targetShootable = target.stunTimer <= 0 && (target.postStunGraceTimer ?? 0) <= 0;
         if (explosiveShotAngle !== null && bot.aiHoldShotTimer <= 0) {
-          wantsToShoot = true;
-          shootAngle = explosiveShotAngle + (Math.random() - 0.5) * aimSpread * 0.45;
-          activeAimAngle = shootAngle;
-        } else if (bot.aiHoldShotTimer <= 0 && this.hasLineOfSight(bot.x, bot.y, target.x, target.y, bFloor)) {
-          const travelT = targetDist / this.getBulletSpeed();
-          const leadScale = diff === 'RUTHLESS' ? 0.72 : diff === 'TACTICAL' ? 0.78 : 0.1;
-          let predX = target.x + target.vx * travelT * leadScale;
-          let predY = target.y + target.vy * travelT * leadScale;
-          if (!this.isPointWalkableOnFloor(predX, predY, PLAYER_RADIUS, bFloor)) {
-            predX = target.x;
-            predY = target.y;
+          const aimA = explosiveShotAngle + (Math.random() - 0.5) * aimSpread * 0.45;
+          mem.pendingShotAngle = aimA;
+          mem.pendingShotExpire = 0.45;
+          mem.pendingShotTargetId = null;
+          mem.pendingShotIsTrick = true;
+          activeAimAngle = aimA;
+        } else if (targetShootable && bot.aiHoldShotTimer <= 0 && this.hasLineOfSight(bot.x, bot.y, target.x, target.y, bFloor)) {
+          // 2-step iterative lead prediction for moving targets
+          const bSpeed = this.getBulletSpeed();
+          let predX = target.x;
+          let predY = target.y;
+          const leadScale = diff === 'RUTHLESS' ? 0.92 : diff === 'TACTICAL' ? 0.72 : 0.1;
+          for (let it = 0; it < 2; it++) {
+            const tHit = dist(bot.x, bot.y, predX, predY) / bSpeed;
+            const nx = target.x + target.vx * tHit * leadScale;
+            const ny = target.y + target.vy * tHit * leadScale;
+            if (this.isPointWalkableOnFloor(nx, ny, PLAYER_RADIUS, bFloor)) {
+              predX = nx;
+              predY = ny;
+            }
           }
-          wantsToShoot = true;
-
-          if (diff === 'CHILL' && Math.random() < 0.65) {
-            // Chill frequently panics and shoots in random directions!
-            shootAngle = Math.random() * Math.PI * 2 - Math.PI;
-          } else {
-            shootAngle = Math.atan2(predY - bot.y, predX - bot.x) + (Math.random() - 0.5) * aimSpread;
-          }
-          activeAimAngle = shootAngle;
+          const shootA =
+            diff === 'CHILL' && Math.random() < 0.65
+              ? Math.random() * Math.PI * 2 - Math.PI
+              : Math.atan2(predY - bot.y, predX - bot.x) + (Math.random() - 0.5) * aimSpread;
+          mem.pendingShotAngle = shootA;
+          mem.pendingShotExpire = 0.42;
+          mem.pendingShotTargetId = diff === 'CHILL' ? null : target.id;
+          mem.pendingShotIsTrick = false;
+          activeAimAngle = shootA;
         } else {
-          // Strafe / close distance on visible target
+          // Optimal combat range kiting / angled wall-bounce trickshot setup
           const toTarget = Math.atan2(target.y - bot.y, target.x - bot.x);
-          const strafeAngle = toTarget + bot.aiStrafeDir * 0.6;
-          goalX = bot.x + Math.cos(strafeAngle) * 190;
-          goalY = bot.y + Math.sin(strafeAngle) * 190;
-          moveRatio = diff === 'RUTHLESS' ? 0.92 : 0.8;
+          const strafeSign = targetDist < 220 ? -0.95 : 0.65;
+          const moveOff = targetDist < 220 ? Math.PI + bot.aiStrafeDir * 0.7 : bot.aiStrafeDir * strafeSign;
+          goalX = bot.x + Math.cos(toTarget + moveOff) * 210;
+          goalY = bot.y + Math.sin(toTarget + moveOff) * 210;
+          moveRatio = diff === 'RUTHLESS' ? 0.95 : 0.82;
           activeAimAngle = toTarget;
 
-          const trickChance = diff === 'RUTHLESS' ? 0.35 : diff === 'TACTICAL' ? 0.2 : 0;
-          if (trickChance > 0 && bot.aiHoldShotTimer <= 0 && Math.random() < trickChance) {
-            const bounceAngle = this.findTrickshotAngle(bot, target);
+          const trickChance = diff === 'RUTHLESS' ? 0.62 : diff === 'TACTICAL' ? 0.22 : 0;
+          if (targetShootable && trickChance > 0 && bot.aiHoldShotTimer <= 0 && Math.random() < trickChance) {
+            const bounceAngle = this.findTrickshotAngle(bot, target, diff === 'RUTHLESS');
             if (bounceAngle !== null) {
-              wantsToShoot = true;
-              shootAngle = bounceAngle + (Math.random() - 0.5) * aimSpread * 0.35;
-              activeAimAngle = shootAngle;
+              const aimA = bounceAngle + (Math.random() - 0.5) * aimSpread * 0.3;
+              mem.pendingShotAngle = aimA;
+              mem.pendingShotExpire = 0.48;
+              mem.pendingShotTargetId = target.id;
+              mem.pendingShotIsTrick = true;
+              activeAimAngle = aimA;
             }
           }
         }
       } else {
-        // No visible enemies! Look for nearby visible ammo/medkits or investigate brief last-seen / patrol
+        // No visible enemies!
         if (diff === 'CHILL' && bot.ammo > 0 && bot.aiHoldShotTimer <= 0 && Math.random() < 0.22) {
-          // Chill randomly fires occasional stray shots in arbitrary directions!
-          wantsToShoot = true;
-          shootAngle = Math.random() * Math.PI * 2 - Math.PI;
-        } else if (mem.lastSeenTimer > 0 && (!this.map.immersive || dist(bot.x, bot.y, mem.lastSeenX, mem.lastSeenY) > 65)) {
-          goalX = mem.lastSeenX;
-          goalY = mem.lastSeenY;
-          moveRatio = 0.88;
-          activeAimAngle = Math.atan2(mem.lastSeenY - bot.y, mem.lastSeenX - bot.x);
+          const stray = Math.random() * Math.PI * 2 - Math.PI;
+          mem.pendingShotAngle = stray;
+          mem.pendingShotExpire = 0.45;
+          mem.pendingShotTargetId = null;
+          mem.pendingShotIsTrick = false;
+          activeAimAngle = stray;
+        } else if (mem.lastSeenTimer > 0 && bot.ammo > 0) {
+          // Ruthless: predict probable trajectory behind cover & bank trickshot!
+          const elapsed = (diff === 'RUTHLESS' ? 1.55 : 0.95) - mem.lastSeenTimer;
+          const estX = clamp(mem.lastSeenX + mem.lastSeenVx * elapsed * 0.65, ARENA_WALL_THICKNESS + 45, this.map.width - ARENA_WALL_THICKNESS - 45);
+          const estY = clamp(mem.lastSeenY + mem.lastSeenVy * elapsed * 0.65, ARENA_WALL_THICKNESS + 45, this.map.height - ARENA_WALL_THICKNESS - 45);
+          const useX = this.isPointWalkableOnFloor(estX, estY, PLAYER_RADIUS, bFloor) ? estX : mem.lastSeenX;
+          const useY = this.isPointWalkableOnFloor(estX, estY, PLAYER_RADIUS, bFloor) ? estY : mem.lastSeenY;
+          goalX = useX;
+          goalY = useY;
+          moveRatio = 0.9;
+          activeAimAngle = Math.atan2(useY - bot.y, useX - bot.x);
+
+          if (diff === 'RUTHLESS' && bot.aiHoldShotTimer <= 0 && mem.lastSeenTimer > 0.35 && Math.random() < 0.55) {
+            const predTrick = this.findTrickshotToPoint(bot, useX, useY, PLAYER_RADIUS + 20, 40, 4);
+            if (predTrick !== null) {
+              mem.pendingShotAngle = predTrick;
+              mem.pendingShotExpire = 0.48;
+              mem.pendingShotTargetId = null;
+              mem.pendingShotIsTrick = true;
+              activeAimAngle = predTrick;
+            }
+          }
         } else if (nearestBullet && bot.ammo < bot.maxAmmo && (diff === 'RUTHLESS' || bot.ammo < 2)) {
           goalX = nearestBullet.p.x;
           goalY = nearestBullet.p.y;
-          moveRatio = 0.9;
+          moveRatio = 0.92;
         }
       }
 
-      if (wantsToShoot && bot.ammo > 0) {
-        bot.angle = shootAngle;
-        bot.vx = 0;
-        bot.vy = 0;
+      const rawMoveAngle = Math.atan2(goalY - bot.y, goalX - bot.x);
+      bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawMoveAngle, 68, bot.aiStrafeDir);
+      bot.aiMoveRatio = moveRatio;
+    }
+
+    // Exact same physical turn-speed limit as human players! NEVER snap bot.angle instantly!
+    let desiredFacing = bot.aiTargetAngle;
+    if (activeAimAngle !== null) {
+      desiredFacing = activeAimAngle;
+    } else if (this.map.immersive && visibleEnemies.length === 0 && !evading) {
+      if (mem.lastSeenTimer > 0 && bot.ammo > 0) {
+        desiredFacing = Math.atan2(mem.lastSeenY - bot.y, mem.lastSeenX - bot.x);
+      } else {
+        desiredFacing = normalizeAngle(bot.aiTargetAngle + Math.sin(mem.scanPhase) * (this.config.extraDark ? 0.58 : 0.32));
+      }
+    }
+
+    const angleDiff = normalizeAngle(desiredFacing - bot.angle);
+    const maxTurn = this.getPlayerTurnSpeed() * dt;
+    bot.angle = normalizeAngle(bot.angle + clamp(angleDiff, -maxTurn, maxTurn));
+
+    // Fire ONLY after rotating into alignment & re-verifying sight fairness
+    if (
+      mem.pendingShotAngle !== null &&
+      bot.ammo > 0 &&
+      bot.aiHoldShotTimer <= 0 &&
+      Math.abs(normalizeAngle(mem.pendingShotAngle - bot.angle)) <= 0.14
+    ) {
+      let canFireNow = true;
+      if (mem.pendingShotTargetId !== null && !mem.pendingShotIsTrick) {
+        const tgt = this.players.find((pl) => pl.id === mem.pendingShotTargetId && pl.alive);
+        if (!tgt || !this.canBotSeePoint(bot, tgt.x, tgt.y, tgt.floor ?? 0)) {
+          canFireNow = false;
+        }
+      }
+      mem.pendingShotAngle = null;
+      mem.pendingShotExpire = 0;
+      if (canFireNow) {
         this.fireBullet(bot);
         bot.aiHoldShotTimer =
           diff === 'RUTHLESS'
@@ -2076,29 +2368,8 @@ export class ArenaEngine {
             : diff === 'TACTICAL'
               ? 0.7
               : 1.1;
-        return;
-      }
-
-      const rawMoveAngle = Math.atan2(goalY - bot.y, goalX - bot.x);
-      bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawMoveAngle, 68, bot.aiStrafeDir);
-      bot.aiMoveRatio = moveRatio;
-    }
-
-    // Smooth aiming / flashlight search sweep in Extra Dark Immersive mode
-    let desiredFacing = bot.aiTargetAngle;
-    if (activeAimAngle !== null) {
-      desiredFacing = activeAimAngle;
-    } else if (this.map.immersive && visibleEnemies.length === 0 && !evading) {
-      if (mem.lastSeenTimer > 0) {
-        desiredFacing = Math.atan2(mem.lastSeenY - bot.y, mem.lastSeenX - bot.x);
-      } else {
-        desiredFacing = normalizeAngle(bot.aiTargetAngle + Math.sin(mem.scanPhase) * (this.config.extraDark ? 0.58 : 0.32));
       }
     }
-
-    const angleDiff = normalizeAngle(desiredFacing - bot.angle);
-    const turnSpeed = diff === 'RUTHLESS' ? 11.5 : 8;
-    bot.angle = normalizeAngle(bot.angle + clamp(angleDiff, -turnSpeed * dt, turnSpeed * dt));
 
     const targetSpeed = this.getPlayerMaxSpeed() * bot.aiMoveRatio;
     const targetVx = Math.cos(bot.aiTargetAngle) * targetSpeed;
@@ -2130,44 +2401,19 @@ export class ArenaEngine {
     return true;
   }
 
-  private findTrickshotAngle(shooter: Player, target: Player): number | null {
-    const floor = shooter.floor ?? 0;
-    for (let i = 0; i < 16; i++) {
-      const a = (i / 16) * Math.PI * 2;
-      let x = shooter.x + Math.cos(a) * (PLAYER_RADIUS + 8);
-      let y = shooter.y + Math.sin(a) * (PLAYER_RADIUS + 8);
-      const bSpeed = this.getBulletSpeed();
-      let vx = Math.cos(a) * bSpeed;
-      let vy = Math.sin(a) * bSpeed;
-      let bounces = 0;
-
-      for (let step = 0; step < 58; step++) {
-        const subDt = 0.02;
-        x += vx * subDt;
-        y += vy * subDt;
-
-        for (const wall of this.map.walls) {
-          if (!isWallOnFloor(wall, floor)) continue;
-          const cx = clamp(x, wall.x, wall.x + wall.w);
-          const cy = clamp(y, wall.y, wall.y + wall.h);
-          const dx = x - cx;
-          const dy = y - cy;
-          if (dx * dx + dy * dy < BULLET_RADIUS * BULLET_RADIUS) {
-            bounces++;
-            if (Math.abs(dx) > Math.abs(dy)) vx = -vx;
-            else vy = -vy;
-            x += Math.sign(dx || vx) * 4;
-            y += Math.sign(dy || vy) * 4;
-            break;
-          }
-        }
-        if (bounces > 2) break;
-        if (bounces >= 1 && dist(x, y, target.x, target.y) < PLAYER_RADIUS + 18) {
-          return a;
-        }
-      }
-    }
-    return null;
+  private findTrickshotAngle(shooter: Player, target: Player, proMode = false): number | null {
+    const tDist = dist(shooter.x, shooter.y, target.x, target.y);
+    const travelT = Math.min(0.65, tDist / this.getBulletSpeed());
+    const tx = target.x + target.vx * travelT * (proMode ? 0.85 : 0.45);
+    const ty = target.y + target.vy * travelT * (proMode ? 0.85 : 0.45);
+    return this.findTrickshotToPoint(
+      shooter,
+      tx,
+      ty,
+      PLAYER_RADIUS + 18,
+      proMode ? 48 : 20,
+      proMode ? 4 : 2
+    );
   }
 
   private fireBullet(player: Player) {
@@ -2265,9 +2511,9 @@ export class ArenaEngine {
             }
 
             b.bouncesLeft -= 1;
-            const isMetal = wall.kind === 'metal' || wall.kind === 'perimeter_steel';
-            this.emitEvent('bounce', b.x, b.y, isMetal ? 2 : 1, undefined, bFloor);
-            this.spawnParticles(b.x, b.y, wall.kind === 'metal' ? '#E2E8F0' : '#FDE047', 5, 110, bFloor);
+            const bounceCode = getWallBounceCode(wall.kind);
+            this.emitEvent('bounce', b.x, b.y, bounceCode, undefined, bFloor);
+            this.spawnParticles(b.x, b.y, bounceCode === 2 ? '#E2E8F0' : bounceCode === 5 ? '#BAE6FD' : '#FDE047', 5, 110, bFloor);
             hitWall = true;
             break;
           }
@@ -2358,12 +2604,12 @@ export class ArenaEngine {
             const wasSlowed = (m.slowTimer ?? 0) > 1.8;
             m.slowTimer = MONSTER_SLOW_DURATION;
             if (!wasSlowed && m.stunTimer <= 0) {
-              this.addFloatingText(m.x, m.y - (m.radius + 14), 'SLOWED 3s!', '#38BDF8', m.floor);
+              this.addFloatingText(m.x, m.y - (m.radius + 14), 'SLOWED 5s!', '#38BDF8', m.floor);
             }
             const shooter = this.players.find((pl) => pl.id === b.ownerId);
             if (shooter) shooter.shotsHit += 1;
 
-            this.emitEvent('bounce', b.x, b.y, 2, undefined, bFloor);
+            this.emitEvent('bounce', b.x, b.y, 6, undefined, bFloor);
             this.spawnParticles(b.x, b.y, '#FB923C', 6, 130, bFloor);
             this.spawnParticles(b.x, b.y, '#38BDF8', 7, 145, bFloor);
             if (b.bouncesLeft < 0) {
@@ -2374,7 +2620,7 @@ export class ArenaEngine {
         }
 
         for (const player of this.players) {
-          if (!player.alive || player.stunTimer > 0 || !sameFloor(player.floor, bFloor)) continue;
+          if (!player.alive || player.stunTimer > 0 || (player.postStunGraceTimer ?? 0) > 0 || !sameFloor(player.floor, bFloor)) continue;
           if (player.id === b.ownerId && b.age < BULLET_SELF_GRACE) continue;
           if (player.id !== b.ownerId && this.isTeammate(b.ownerId, player.id)) continue;
           if (dist(b.x, b.y, player.x, player.y) <= b.radius + PLAYER_RADIUS) {
@@ -2453,7 +2699,7 @@ export class ArenaEngine {
           m.vy = 0;
           this.monsterPath = [];
           this.emitEvent('monster_stun', m.x, m.y, undefined, undefined, m.floor);
-          this.addFloatingText(m.x, m.y - (m.radius + 14), 'FIGURE STUNNED 10s!', '#FDE047', m.floor);
+          this.addFloatingText(m.x, m.y - (m.radius + 14), 'FIGURE STUNNED 15s!', '#FDE047', m.floor);
         } else {
           // Explosive blasts elsewhere alert The Figure into Rage mode toward the blast site
           this.triggerMonsterRage(current.item.x, current.item.y, blastFloor);
@@ -2532,6 +2778,7 @@ export class ArenaEngine {
     player.alive = false;
     player.deaths += 1;
     player.stunTimer = 0;
+    player.postStunGraceTimer = 0;
     player.ammo = 0;
 
     if (this.libraryState) {
@@ -2689,6 +2936,7 @@ export class ArenaEngine {
     player.hp = PLAYER_MAX_HP;
     player.ammo = 0;
     player.stunTimer = 0;
+    player.postStunGraceTimer = 0;
     player.alive = true;
     player.spawnInvulnTimer = SPAWN_INVULN_DURATION;
     player.angle = Math.atan2(this.map.height / 2 - bestSpawn.y, this.map.width / 2 - bestSpawn.x);
@@ -3778,6 +4026,17 @@ export class ArenaEngine {
       this.emitEvent('monster_step', m.x, m.y, m.mode === 'rage' ? 2 : 1, undefined, m.floor);
     }
 
+    // Check Nitro collision with Figure: touching a Nitro detonates it and stuns Figure for 15s!
+    if (!m.transitioning) {
+      for (const item of this.pickups) {
+        if (item.kind !== 'nitro' || !sameFloor(item.floor, m.floor)) continue;
+        if (dist(item.x, item.y, m.x, m.y) <= m.radius + item.radius - 2) {
+          this.detonatePickup(item, null);
+          return;
+        }
+      }
+    }
+
     // Instakill any player on the same floor touched by The Figure!
     for (const p of this.players) {
       if (!p.alive || (p.floor ?? 0) !== m.floor) continue;
@@ -3853,33 +4112,58 @@ export class ArenaEngine {
     mem.rageBaitTimer = Math.max(0, mem.rageBaitTimer - dt);
     mem.rageBaitCooldown = Math.max(0, mem.rageBaitCooldown - dt);
     mem.unstickTimer = Math.max(0, mem.unstickTimer - dt);
-
-    // 1. Collect nearby book automatically if close and on correct side
-    if (prog && prog.collectedCount < LIBRARY_BOOKS_PER_PLAYER) {
-      for (const b of prog.books) {
-        if (canCollectBookSpot(bot, b, this.map.walls)) {
-          this.collectNearbyBook(bot.id);
-          this.botPaths.delete(bot.id);
-          break;
-        }
-      }
-    }
+    mem.goalLockTimer = Math.max(0, mem.goalLockTimer - dt);
+    mem.pendingShotExpire = Math.max(0, mem.pendingShotExpire - dt);
+    if (mem.pendingShotExpire <= 0) mem.pendingShotAngle = null;
 
     const sameFloorMonster = sameFloor(m.floor, bFloor);
     const monsterDist = sameFloorMonster ? dist(bot.x, bot.y, m.x, m.y) : 9999;
 
-    // 2. If all 8 books collected and near own door, dial & solve cleanly!
+    // 1. Fair Book Collection: Bots MUST pause & focus briefly (~0.5-0.8s) to collect a book just like humans!
+    if (prog && prog.collectedCount < LIBRARY_BOOKS_PER_PLAYER) {
+      const monsterImmediateThreat = m.stunTimer <= 0 && sameFloorMonster && monsterDist < 235;
+      const nearbyBook = prog.books.find((b) => canCollectBookSpot(bot, b, this.map.walls));
+      if (nearbyBook && !monsterImmediateThreat) {
+        if (mem.collectingBookId !== nearbyBook.id) {
+          mem.collectingBookId = nearbyBook.id;
+          mem.bookCollectTimer = 0;
+        }
+        const needPause = diff === 'RUTHLESS' ? 0.52 : diff === 'TACTICAL' ? 0.68 : 0.88;
+        mem.bookCollectTimer += dt;
+        bot.vx *= Math.exp(-12 * dt);
+        bot.vy *= Math.exp(-12 * dt);
+        const aimBook = Math.atan2(nearbyBook.y - bot.y, nearbyBook.x - bot.x);
+        const ad = normalizeAngle(aimBook - bot.angle);
+        const maxTurn = this.getPlayerTurnSpeed() * dt;
+        bot.angle = normalizeAngle(bot.angle + clamp(ad, -maxTurn, maxTurn));
+
+        if (mem.bookCollectTimer >= needPause) {
+          this.collectNearbyBook(bot.id);
+          mem.collectingBookId = null;
+          mem.bookCollectTimer = 0;
+          mem.lockedGoalBookId = null;
+          mem.goalLockTimer = 0;
+          this.botPaths.delete(bot.id);
+        }
+        return;
+      } else {
+        mem.collectingBookId = null;
+        mem.bookCollectTimer = 0;
+      }
+    }
+
+    // 2. Fair Central Pillar Dialing (~2.2s - 4.5s realistic code dialing)
     if (prog && door && prog.collectedCount >= LIBRARY_BOOKS_PER_PLAYER && bFloor === 0 && dist(bot.x, bot.y, door.x, door.y) <= 135 && cooldown <= 0) {
-      const figureTooClose = m.stunTimer <= 0 && sameFloorMonster && monsterDist < 245;
+      const figureTooClose = m.stunTimer <= 0 && sameFloorMonster && monsterDist < 260;
       if (!figureTooClose) {
-        const dialNeed = diff === 'RUTHLESS' ? 0.55 : diff === 'TACTICAL' ? 1.0 : 1.55;
+        const dialNeed = diff === 'RUTHLESS' ? 2.2 : diff === 'TACTICAL' ? 3.3 : 4.6;
         mem.dialTimer += dt;
         const digitIdx = Math.min(LIBRARY_CODE_LEN - 1, Math.floor((mem.dialTimer / dialNeed) * LIBRARY_CODE_LEN));
         const solution = this.librarySolutions.get(bot.id);
         if (solution && mem.dialTimer >= dialNeed) {
           mem.dialTimer = 0;
-          this.botCodeCooldown.set(bot.id, 1.5);
-          if (diff === 'CHILL' && !mem.dialMistakeDone && Math.random() < 0.28) {
+          this.botCodeCooldown.set(bot.id, 1.8);
+          if (diff === 'CHILL' && !mem.dialMistakeDone && Math.random() < 0.35) {
             mem.dialMistakeDone = true;
             const bad = [...solution];
             bad[0] = (bad[0] + 1) % 10;
@@ -3888,10 +4172,9 @@ export class ArenaEngine {
             this.submitDoorCode(bot.id, solution);
           }
           return;
-        } else if (solution && Math.random() < dt * 3.5) {
+        } else if (solution && Math.random() < dt * 2.5) {
           this.setDoorDialDigit(bot.id, digitIdx, solution[digitIdx]);
         }
-        // Slow down briefly while dialing at the safe pillar door
         bot.vx *= Math.exp(-10 * dt);
         bot.vy *= Math.exp(-10 * dt);
         return;
@@ -3900,16 +4183,17 @@ export class ArenaEngine {
       mem.dialTimer = 0;
     }
 
-    // Stuck detector for Library aisles, stairs, and door corners
+    // Stuck detector (ignored while inside committed stair traversal unless genuinely wedged)
     if (dist(bot.x, bot.y, mem.lastProgressX, mem.lastProgressY) > 16) {
       mem.lastProgressX = bot.x;
       mem.lastProgressY = bot.y;
       mem.stuckTimer = 0;
     } else if (bot.aiMoveRatio > 0.25) {
       mem.stuckTimer += dt;
-      if (mem.stuckTimer > 0.65) {
+      if (mem.stuckTimer > 0.75) {
         mem.stuckTimer = 0;
         bot.aiStrafeDir *= -1;
+        mem.stairCommit = null;
         this.botPaths.delete(bot.id);
         const nearest = this.findClosestNavNodeOnGraph(this.botNavNodes, bot.x, bot.y, bFloor, true);
         if (nearest && dist(bot.x, bot.y, nearest.x, nearest.y) > 10) {
@@ -3927,10 +4211,10 @@ export class ArenaEngine {
     const monsterBeingTargeted =
       m.stunTimer <= 0 &&
       sameFloorMonster &&
-      (monsterDist < (diff === 'RUTHLESS' ? 360 : 320) ||
+      (monsterDist < (diff === 'RUTHLESS' ? 350 : 300) ||
         (m.mode === 'rage' && dist(m.targetX, m.targetY, bot.x, bot.y) < 190 && monsterDist < 520));
 
-    if (monsterBeingTargeted) {
+    if (monsterBeingTargeted && !mem.stairCommit) {
       const escA = this.pickLibraryEscapeAngle(bot, m, bFloor);
       evadeX += Math.cos(escA) * 3.8;
       evadeY += Math.sin(escA) * 3.8;
@@ -3971,10 +4255,10 @@ export class ArenaEngine {
     bot.aiThinkTimer -= dt;
     bot.aiHoldShotTimer -= dt;
 
-    // Smart Explosive Use on Library (Stun Figure OR Blast/Bait Rivals!)
-    let activeAimAngle: number | null = null;
-    if (bot.ammo > 0 && bot.aiHoldShotTimer <= 0) {
-      // Priority A (Ruthless / Tactical): Shoot Nitro or TNT to STUN Figure when Figure is chasing or close!
+    // 4. Smart Explosive & Fair Combat Planning (turn-speed capped! zero instant snaps!)
+    let activeAimAngle: number | null = mem.pendingShotAngle;
+    if (bot.ammo > 0 && bot.aiHoldShotTimer <= 0 && !mem.pendingShotAngle) {
+      // Priority A: Shoot Nitro/TNT to STUN Figure for 15s when Figure is chasing/close (requires sight!)
       if (diff !== 'CHILL' && m.stunTimer <= 0 && sameFloorMonster && monsterDist < 540) {
         for (const n of this.pickups) {
           if (!sameFloor(n.floor, bFloor)) continue;
@@ -3982,34 +4266,40 @@ export class ArenaEngine {
           const blastR = n.kind === 'tnt' ? TNT_BLAST_RADIUS : NITRO_BLAST_RADIUS;
           if (
             dist(n.x, n.y, m.x, m.y) <= blastR + m.radius - 6 &&
-            dist(n.x, n.y, bot.x, bot.y) > blastR + 24 &&
-            this.hasLineOfSight(bot.x, bot.y, n.x, n.y, bFloor)
+            dist(n.x, n.y, bot.x, bot.y) > blastR + 26 &&
+            this.canBotSeePoint(bot, n.x, n.y, bFloor, true)
           ) {
-            bot.angle = Math.atan2(n.y - bot.y, n.x - bot.x);
-            this.fireBullet(bot);
-            bot.aiHoldShotTimer = 0.65;
-            return;
+            const shotA = Math.atan2(n.y - bot.y, n.x - bot.x);
+            mem.pendingShotAngle = shotA;
+            mem.pendingShotExpire = 0.45;
+            mem.pendingShotTargetId = null;
+            mem.pendingShotIsTrick = false;
+            activeAimAngle = shotA;
+            break;
           }
         }
       }
 
-      // Priority A2 (Ruthless / Tactical): Shoot raging Figure when chasing close to slow it to calm speed for 3s and escape!
+      // Priority A2: Shoot raging Figure when visible to slow it for 5s and escape cleanly
       if (
+        !mem.pendingShotAngle &&
         diff !== 'CHILL' &&
         m.stunTimer <= 0 &&
-        (m.slowTimer ?? 0) <= 0.35 &&
+        (m.slowTimer ?? 0) <= 0.45 &&
         m.mode === 'rage' &&
         sameFloorMonster &&
         monsterDist < (diff === 'RUTHLESS' ? 370 : 250) &&
-        this.hasLineOfSight(bot.x, bot.y, m.x, m.y, bFloor)
+        this.canBotSeePoint(bot, m.x, m.y, bFloor, false)
       ) {
-        bot.angle = Math.atan2(m.y - bot.y, m.x - bot.x);
-        this.fireBullet(bot);
-        bot.aiHoldShotTimer = 0.7;
-        return;
+        const shotA = Math.atan2(m.y - bot.y, m.x - bot.x);
+        mem.pendingShotAngle = shotA;
+        mem.pendingShotExpire = 0.45;
+        mem.pendingShotTargetId = null;
+        mem.pendingShotIsTrick = false;
+        activeAimAngle = shotA;
       }
 
-      // Priority B (Ruthless): Shoot Nitro/TNT near rival (either kills rival OR triggers Figure rage toward rival!)
+      // Priority B & C: Visible rivals only (strict Immersive darkness & sight parity!)
       const visibleRivals = this.players.filter(
         (e) =>
           e.id !== bot.id &&
@@ -4017,180 +4307,256 @@ export class ArenaEngine {
           !this.isTeammate(bot.id, e.id) &&
           this.canBotSeePoint(bot, e.x, e.y, e.floor ?? 0)
       );
-      if (diff === 'RUTHLESS') {
+      if (!mem.pendingShotAngle && diff === 'RUTHLESS' && visibleRivals.length > 0) {
         for (const n of this.pickups) {
           if (!sameFloor(n.floor, bFloor)) continue;
           if (n.kind !== 'nitro' && !(n.kind === 'tnt' && !n.armed)) continue;
           const blastR = n.kind === 'tnt' ? TNT_BLAST_RADIUS : NITRO_BLAST_RADIUS;
-          if (dist(n.x, n.y, bot.x, bot.y) <= blastR + 24) continue;
+          if (dist(n.x, n.y, bot.x, bot.y) <= blastR + 26) continue;
           const rivalNear = visibleRivals.some((e) => dist(n.x, n.y, e.x, e.y) <= blastR + 25);
-          if (rivalNear && this.hasLineOfSight(bot.x, bot.y, n.x, n.y, bFloor)) {
-            bot.angle = Math.atan2(n.y - bot.y, n.x - bot.x);
-            this.fireBullet(bot);
-            bot.aiHoldShotTimer = 0.55;
-            return;
+          if (rivalNear && this.canBotSeePoint(bot, n.x, n.y, bFloor, true)) {
+            const shotA = Math.atan2(n.y - bot.y, n.x - bot.x);
+            mem.pendingShotAngle = shotA;
+            mem.pendingShotExpire = 0.45;
+            mem.pendingShotTargetId = null;
+            mem.pendingShotIsTrick = false;
+            activeAimAngle = shotA;
+            break;
           }
         }
       }
 
-      // Priority C: Shoot genuinely visible rival on same floor (NO darkness cheat!)
-      if (visibleRivals.length > 0 && (diff !== 'RUTHLESS' || bot.ammo >= 2 || visibleRivals.some((e) => dist(bot.x, bot.y, e.x, e.y) < 260 || e.hp <= BULLET_DAMAGE))) {
+      if (
+        !mem.pendingShotAngle &&
+        visibleRivals.length > 0 &&
+        (diff !== 'RUTHLESS' || bot.ammo >= 2 || visibleRivals.some((e) => dist(bot.x, bot.y, e.x, e.y) < 260 || e.hp <= BULLET_DAMAGE))
+      ) {
         const target = visibleRivals[0];
-        const aimSpread = diff === 'RUTHLESS' ? 0.03 : diff === 'TACTICAL' ? 0.12 : 0.45;
-        const dT = dist(bot.x, bot.y, target.x, target.y);
-        const travelT = dT / this.getBulletSpeed();
-        const lead = diff === 'RUTHLESS' ? 0.92 : diff === 'TACTICAL' ? 0.72 : 0.15;
-        const predX = target.x + target.vx * travelT * lead;
-        const predY = target.y + target.vy * travelT * lead;
-        bot.angle = Math.atan2(predY - bot.y, predX - bot.x) + (Math.random() - 0.5) * aimSpread;
-        this.fireBullet(bot);
-        bot.aiHoldShotTimer = diff === 'RUTHLESS' ? 0.38 : diff === 'TACTICAL' ? 0.85 : 1.25;
-        return;
+        if (target.stunTimer <= 0 && (target.postStunGraceTimer ?? 0) <= 0) {
+          const aimSpread = diff === 'RUTHLESS' ? 0.025 : diff === 'TACTICAL' ? 0.11 : 0.45;
+          const dT = dist(bot.x, bot.y, target.x, target.y);
+          const travelT = dT / this.getBulletSpeed();
+          const lead = diff === 'RUTHLESS' ? 0.92 : diff === 'TACTICAL' ? 0.72 : 0.15;
+          const predX = target.x + target.vx * travelT * lead;
+          const predY = target.y + target.vy * travelT * lead;
+          const shotA = Math.atan2(predY - bot.y, predX - bot.x) + (Math.random() - 0.5) * aimSpread;
+          mem.pendingShotAngle = shotA;
+          mem.pendingShotExpire = 0.45;
+          mem.pendingShotTargetId = target.id;
+          mem.pendingShotIsTrick = false;
+          activeAimAngle = shotA;
+        }
       }
     }
 
-    if (Math.hypot(evadeX, evadeY) > 0.35) {
-      const rawEvade = Math.atan2(evadeY, evadeX);
-      bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawEvade, 74, bot.aiStrafeDir);
-      // When chased at close range, sprint to break line/cross stairs; once distanced, stealth!
-      bot.aiMoveRatio = monsterDist < 290 ? 0.98 : 0.72;
-    } else if (mem.unstickTimer > 0) {
-      bot.aiTargetAngle = mem.unstickAngle;
-      bot.aiMoveRatio = sameFloorMonster && monsterDist < LIBRARY_HEARING_RADIUS - 40 ? 0.72 : 0.9;
-    } else {
-      const inHearing = m.stunTimer <= 0 && sameFloorMonster && monsterDist < LIBRARY_HEARING_RADIUS - 35;
+    const inHearing = m.stunTimer <= 0 && sameFloorMonster && monsterDist < LIBRARY_HEARING_RADIUS - 25;
 
-      // Ruthless Figure Rage Baiting: if Figure is calm and a rival is much closer to Figure while bot has strong escape margin, briefly sprint to wake Figure onto them!
-      if (
-        diff === 'RUTHLESS' &&
-        inHearing &&
-        m.mode === 'calm' &&
-        mem.rageBaitCooldown <= 0 &&
-        monsterDist > 390 &&
-        mem.rageBaitTimer <= 0
-      ) {
-        const rivalNearFigure = this.players.some(
-          (e) =>
-            e.id !== bot.id &&
-            e.alive &&
-            !this.isTeammate(bot.id, e.id) &&
-            sameFloor(e.floor, m.floor) &&
-            dist(e.x, e.y, m.x, m.y) < Math.min(340, monsterDist - 140)
-        );
-        if (rivalNearFigure) {
-          mem.rageBaitTimer = 0.42;
-          mem.rageBaitCooldown = 8.5;
+    // 5. Committed Staircase Traversal — eliminates stair oscillation permanently!
+    if (mem.stairCommit) {
+      mem.stairCommit.timer -= dt;
+      const st = (this.map.stairs ?? []).find((s) => s.id === mem.stairCommit!.stairId);
+      if (!st || mem.stairCommit.timer <= 0) {
+        mem.stairCommit = null;
+      } else {
+        const cx = st.x + st.w * 0.5;
+        const groundOutY = st.upDir === 'up' ? st.y + st.h + 58 : st.y - 58;
+        const upperOutY = st.upDir === 'up' ? st.y - 58 : st.y + st.h + 58;
+        const targetOutY = mem.stairCommit.targetFloor === 1 ? upperOutY : groundOutY;
+
+        if (bFloor === mem.stairCommit.targetFloor && Math.abs(bot.y - targetOutY) < 26) {
+          mem.stairCommit = null;
+          this.botPaths.delete(bot.id);
+        } else {
+          // Guide smoothly toward stair centerline X, then cleanly out to target floor mouth
+          const insideStairX = Math.abs(bot.x - cx) < 16;
+          const stepGoalX = cx;
+          const stepGoalY = insideStairX
+            ? targetOutY
+            : (bFloor === 0 ? groundOutY : upperOutY);
+          const ang = Math.atan2(stepGoalY - bot.y, stepGoalX - bot.x);
+          bot.aiTargetAngle = ang;
+          bot.aiMoveRatio = monsterBeingTargeted && monsterDist < 290 ? 0.96 : inHearing ? 0.70 : 0.88;
         }
       }
+    }
 
-      let safeWalkRatio = 0.92;
-      if (mem.rageBaitTimer > 0) {
-        safeWalkRatio = 1.0; // Deliberate sprint noise to rage Figure near rival!
-      } else if (inHearing) {
-        // Chill bots clumsily slip above 80% noise threshold sometimes and accidentally wake Figure!
-        safeWalkRatio = diff === 'CHILL' && Math.random() < 0.04 ? 0.98 : 0.72;
-      }
-
-      if (bot.aiThinkTimer <= 0) {
-        bot.aiThinkTimer = diff === 'RUTHLESS' ? 0.18 : 0.25;
-        let goalX = this.map.width * 0.5;
-        let goalY = this.map.height * 0.5;
-        let goalFloor: FloorLevel = bFloor;
-
-        // Opportunistic visible/nearby pickups on Library
-        const medkitTarget =
-          bot.hp <= 55
-            ? this.pickups
-                .filter((p) => p.kind === 'medkit' && sameFloor(p.floor, bFloor) && dist(bot.x, bot.y, p.x, p.y) < 380)
-                .sort((a, b) => dist(bot.x, bot.y, a.x, a.y) - dist(bot.x, bot.y, b.x, b.y))[0]
-            : undefined;
-        const ammoWant = diff === 'RUTHLESS' ? 2 : diff === 'TACTICAL' ? 1 : 0;
-        const ammoTarget =
-          bot.ammo < ammoWant
-            ? this.pickups
-                .filter((p) => p.kind === 'bullet' && sameFloor(p.floor, bFloor) && dist(bot.x, bot.y, p.x, p.y) < 380)
-                .sort((a, b) => dist(bot.x, bot.y, a.x, a.y) - dist(bot.x, bot.y, b.x, b.y))[0]
-            : undefined;
-
-        if (medkitTarget) {
-          goalX = medkitTarget.x;
-          goalY = medkitTarget.y;
-          goalFloor = bFloor;
-        } else if (ammoTarget && (!prog || prog.collectedCount < LIBRARY_BOOKS_PER_PLAYER)) {
-          goalX = ammoTarget.x;
-          goalY = ammoTarget.y;
-          goalFloor = bFloor;
-        } else if (prog && prog.collectedCount < LIBRARY_BOOKS_PER_PLAYER) {
-          const remaining = prog.books.filter((b) => !b.collected);
-          remaining.sort((a, b) => {
-            const penaltyA =
-              (a.floor === bFloor ? 0 : 620) +
-              (diff !== 'CHILL' && m.stunTimer <= 0 && a.floor === m.floor && dist(a.x, a.y, m.x, m.y) < 360 ? 550 : 0);
-            const penaltyB =
-              (b.floor === bFloor ? 0 : 620) +
-              (diff !== 'CHILL' && m.stunTimer <= 0 && b.floor === m.floor && dist(b.x, b.y, m.x, m.y) < 360 ? 550 : 0);
-            return penaltyA + dist(bot.x, bot.y, a.x, a.y) - (penaltyB + dist(bot.x, bot.y, b.x, b.y));
-          });
-          if (remaining[0]) {
-            const app = this.getBookApproachPoint(remaining[0]);
-            goalX = app.x;
-            goalY = app.y;
-            goalFloor = remaining[0].floor;
+    if (!mem.stairCommit) {
+      if (Math.hypot(evadeX, evadeY) > 0.35) {
+        const rawEvade = Math.atan2(evadeY, evadeX);
+        bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawEvade, 74, bot.aiStrafeDir);
+        // Strictly stay quiet (< 0.72) inside Figure's hearing circle unless Figure is actively chasing close!
+        const activeChase = monsterBeingTargeted && m.mode === 'rage' && monsterDist < 310;
+        bot.aiMoveRatio = activeChase ? 0.98 : inHearing ? 0.70 : 0.88;
+      } else if (mem.unstickTimer > 0) {
+        bot.aiTargetAngle = mem.unstickAngle;
+        bot.aiMoveRatio = inHearing ? 0.70 : 0.9;
+      } else {
+        if (
+          diff === 'RUTHLESS' &&
+          inHearing &&
+          m.mode === 'calm' &&
+          mem.rageBaitCooldown <= 0 &&
+          monsterDist > 390 &&
+          mem.rageBaitTimer <= 0
+        ) {
+          const rivalNearFigure = this.players.some(
+            (e) =>
+              e.id !== bot.id &&
+              e.alive &&
+              !this.isTeammate(bot.id, e.id) &&
+              sameFloor(e.floor, m.floor) &&
+              dist(e.x, e.y, m.x, m.y) < Math.min(340, monsterDist - 140)
+          );
+          if (rivalNearFigure) {
+            mem.rageBaitTimer = 0.42;
+            mem.rageBaitCooldown = 8.5;
           }
-        } else if (door) {
-          const outX = door.side === 'W' ? door.x - 58 : door.side === 'E' ? door.x + 58 : door.x;
-          const outY = door.side === 'N' ? door.y - 58 : door.side === 'S' ? door.y + 58 : door.y;
-          goalX = outX;
-          goalY = outY;
-          goalFloor = 0;
         }
 
-        // If already on same floor with short unobstructed line to goal, steer straight to exact goal!
-        const directClear =
-          bFloor === goalFloor &&
-          dist(bot.x, bot.y, goalX, goalY) < 220 &&
-          this.isSegmentClearOnFloor(bot.x, bot.y, goalX, goalY, PLAYER_RADIUS + 2, bFloor);
+        let safeWalkRatio = 0.92;
+        if (mem.rageBaitTimer > 0) {
+          safeWalkRatio = 1.0;
+        } else if (inHearing) {
+          safeWalkRatio = diff === 'CHILL' && Math.random() < 0.04 ? 0.98 : 0.70;
+        }
 
-        let wpX = goalX;
-        let wpY = goalY;
+        if (bot.aiThinkTimer <= 0) {
+          bot.aiThinkTimer = diff === 'RUTHLESS' ? 0.18 : 0.25;
+          let goalX = this.map.width * 0.5;
+          let goalY = this.map.height * 0.5;
+          let goalFloor: FloorLevel = bFloor;
 
-        if (!directClear) {
-          const existing = this.botPaths.get(bot.id);
-          const needNewPath =
-            !existing ||
-            existing.timer <= 0 ||
-            existing.goalFloor !== goalFloor ||
-            dist(existing.goalX, existing.goalY, goalX, goalY) > 75 ||
-            existing.nodes.length === 0;
-          if (needNewPath) {
-            const nodes = this.findNavPathOnGraph(this.botNavNodes, bot.x, bot.y, bFloor, goalX, goalY, goalFloor);
-            this.botPaths.set(bot.id, { nodes, timer: 1.0, goalX, goalY, goalFloor });
-          } else {
-            existing.timer -= diff === 'RUTHLESS' ? 0.18 : 0.25;
+          const medkitTarget =
+            bot.hp <= 55
+              ? this.pickups
+                  .filter(
+                    (p) =>
+                      p.kind === 'medkit' &&
+                      sameFloor(p.floor, bFloor) &&
+                      this.canBotSeePoint(bot, p.x, p.y, bFloor, true)
+                  )
+                  .sort((a, b) => dist(bot.x, bot.y, a.x, a.y) - dist(bot.x, bot.y, b.x, b.y))[0]
+              : undefined;
+          const ammoWant = diff === 'RUTHLESS' ? 2 : diff === 'TACTICAL' ? 1 : 0;
+          const ammoTarget =
+            bot.ammo < ammoWant
+              ? this.pickups
+                  .filter(
+                    (p) =>
+                      p.kind === 'bullet' &&
+                      sameFloor(p.floor, bFloor) &&
+                      this.canBotSeePoint(bot, p.x, p.y, bFloor, true)
+                  )
+                  .sort((a, b) => dist(bot.x, bot.y, a.x, a.y) - dist(bot.x, bot.y, b.x, b.y))[0]
+              : undefined;
+
+          if (medkitTarget) {
+            goalX = medkitTarget.x;
+            goalY = medkitTarget.y;
+            goalFloor = bFloor;
+          } else if (ammoTarget && (!prog || prog.collectedCount < LIBRARY_BOOKS_PER_PLAYER)) {
+            goalX = ammoTarget.x;
+            goalY = ammoTarget.y;
+            goalFloor = bFloor;
+          } else if (prog && prog.collectedCount < LIBRARY_BOOKS_PER_PLAYER) {
+            // Goal lock hysteresis: prevents flipping book targets when floor changes!
+            let chosenBook = prog.books.find((b) => b.id === mem.lockedGoalBookId && !b.collected);
+            if (!chosenBook || mem.goalLockTimer <= 0) {
+              const remaining = prog.books.filter((b) => !b.collected);
+              remaining.sort((a, b) => {
+                const penaltyA =
+                  (a.floor === bFloor ? 0 : 620) +
+                  (diff !== 'CHILL' && m.stunTimer <= 0 && a.floor === m.floor && dist(a.x, a.y, m.x, m.y) < 360 ? 550 : 0);
+                const penaltyB =
+                  (b.floor === bFloor ? 0 : 620) +
+                  (diff !== 'CHILL' && m.stunTimer <= 0 && b.floor === m.floor && dist(b.x, b.y, m.x, m.y) < 360 ? 550 : 0);
+                return penaltyA + dist(bot.x, bot.y, a.x, a.y) - (penaltyB + dist(bot.x, bot.y, b.x, b.y));
+              });
+              chosenBook = remaining[0];
+              if (chosenBook) {
+                mem.lockedGoalBookId = chosenBook.id;
+                mem.goalLockTimer = 3.2;
+              }
+            }
+            if (chosenBook) {
+              const app = this.getBookApproachPoint(chosenBook);
+              goalX = app.x;
+              goalY = app.y;
+              goalFloor = chosenBook.floor;
+            }
+          } else if (door) {
+            const outX = door.side === 'W' ? door.x - 58 : door.side === 'E' ? door.x + 58 : door.x;
+            const outY = door.side === 'N' ? door.y - 58 : door.side === 'S' ? door.y + 58 : door.y;
+            goalX = outX;
+            goalY = outY;
+            goalFloor = 0;
           }
 
-          const pathState = this.botPaths.get(bot.id);
-          if (pathState && pathState.nodes.length > 0) {
-            while (pathState.nodes.length > 0) {
-              const next = pathState.nodes[0];
-              const hitDist = next.isStair ? 42 : 44;
-              if (
-                dist(bot.x, bot.y, next.x, next.y) < hitDist &&
-                ((next.isStair && (next.floor === bFloor || pathState.nodes.length > 1)) || next.floor === bFloor)
-              ) {
-                pathState.nodes.shift();
-              } else {
-                wpX = next.x;
-                wpY = next.y;
+          // Check if stepping onto a stair heading to goalFloor !== bFloor -> lock stairCommit!
+          if (goalFloor !== bFloor) {
+            for (const st of this.map.stairs ?? []) {
+              const cx = st.x + st.w * 0.5;
+              const entryY =
+                bFloor === 0
+                  ? st.upDir === 'up'
+                    ? st.y + st.h + 26
+                    : st.y - 26
+                  : st.upDir === 'up'
+                    ? st.y - 26
+                    : st.y + st.h + 26;
+              if (dist(bot.x, bot.y, cx, entryY) < 76) {
+                mem.stairCommit = { stairId: st.id, targetFloor: goalFloor, timer: 4.0 };
                 break;
               }
             }
           }
-        }
 
-        const rawAngle = Math.atan2(wpY - bot.y, wpX - bot.x);
-        bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawAngle, 58, bot.aiStrafeDir);
-        bot.aiMoveRatio = safeWalkRatio;
+          const directClear =
+            bFloor === goalFloor &&
+            dist(bot.x, bot.y, goalX, goalY) < 220 &&
+            this.isSegmentClearOnFloor(bot.x, bot.y, goalX, goalY, PLAYER_RADIUS + 2, bFloor);
+
+          let wpX = goalX;
+          let wpY = goalY;
+
+          if (!directClear) {
+            const existing = this.botPaths.get(bot.id);
+            const needNewPath =
+              !existing ||
+              existing.timer <= 0 ||
+              existing.goalFloor !== goalFloor ||
+              dist(existing.goalX, existing.goalY, goalX, goalY) > 75 ||
+              existing.nodes.length === 0;
+            if (needNewPath) {
+              const nodes = this.findNavPathOnGraph(this.botNavNodes, bot.x, bot.y, bFloor, goalX, goalY, goalFloor);
+              this.botPaths.set(bot.id, { nodes, timer: 1.0, goalX, goalY, goalFloor });
+            } else {
+              existing.timer -= diff === 'RUTHLESS' ? 0.18 : 0.25;
+            }
+
+            const pathState = this.botPaths.get(bot.id);
+            if (pathState && pathState.nodes.length > 0) {
+              while (pathState.nodes.length > 0) {
+                const next = pathState.nodes[0];
+                const hitDist = next.isStair ? 42 : 44;
+                if (
+                  dist(bot.x, bot.y, next.x, next.y) < hitDist &&
+                  ((next.isStair && (next.floor === bFloor || pathState.nodes.length > 1)) || next.floor === bFloor)
+                ) {
+                  pathState.nodes.shift();
+                } else {
+                  wpX = next.x;
+                  wpY = next.y;
+                  break;
+                }
+              }
+            }
+          }
+
+          const rawAngle = Math.atan2(wpY - bot.y, wpX - bot.x);
+          bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawAngle, 58, bot.aiStrafeDir);
+          bot.aiMoveRatio = safeWalkRatio;
+        }
       }
     }
 
@@ -4201,8 +4567,30 @@ export class ArenaEngine {
           ? normalizeAngle(bot.aiTargetAngle + Math.sin(mem.scanPhase) * 0.42)
           : bot.aiTargetAngle;
     const angleDiff = normalizeAngle(desiredFacing - bot.angle);
-    const turnSpeed = diff === 'RUTHLESS' ? 11 : 8;
-    bot.angle = normalizeAngle(bot.angle + clamp(angleDiff, -turnSpeed * dt, turnSpeed * dt));
+    const maxTurn = this.getPlayerTurnSpeed() * dt;
+    bot.angle = normalizeAngle(bot.angle + clamp(angleDiff, -maxTurn, maxTurn));
+
+    // Fire ONLY when aligned and visibility holds cleanly!
+    if (
+      mem.pendingShotAngle !== null &&
+      bot.ammo > 0 &&
+      bot.aiHoldShotTimer <= 0 &&
+      Math.abs(normalizeAngle(mem.pendingShotAngle - bot.angle)) <= 0.14
+    ) {
+      let canFireNow = true;
+      if (mem.pendingShotTargetId !== null) {
+        const tgt = this.players.find((pl) => pl.id === mem.pendingShotTargetId && pl.alive);
+        if (!tgt || !this.canBotSeePoint(bot, tgt.x, tgt.y, tgt.floor ?? 0)) {
+          canFireNow = false;
+        }
+      }
+      mem.pendingShotAngle = null;
+      mem.pendingShotExpire = 0;
+      if (canFireNow) {
+        this.fireBullet(bot);
+        bot.aiHoldShotTimer = diff === 'RUTHLESS' ? 0.38 : diff === 'TACTICAL' ? 0.85 : 1.25;
+      }
+    }
 
     const targetSpeed = this.getPlayerMaxSpeed() * bot.aiMoveRatio;
     const targetVx = Math.cos(bot.aiTargetAngle) * targetSpeed;
@@ -4309,6 +4697,7 @@ export class ArenaEngine {
         ammo: p.ammo,
         maxAmmo: p.maxAmmo,
         stunTimer: Math.round(p.stunTimer * 100) / 100,
+        postStunGraceTimer: Math.round((p.postStunGraceTimer ?? 0) * 100) / 100,
         hurtFlashTimer: Math.round(p.hurtFlashTimer * 100) / 100,
         respawnTimer: Math.round(p.respawnTimer * 100) / 100,
         spawnInvulnTimer: Math.round(p.spawnInvulnTimer * 100) / 100,

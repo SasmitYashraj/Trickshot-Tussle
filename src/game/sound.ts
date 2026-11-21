@@ -1186,56 +1186,129 @@ class SoundEngine {
     });
   }
 
-  /** Realistic high-velocity bullet ricochet ("crack + metallic/stone zing") */
-  public playBounce(opts?: SpatialAudioOpts, surface: 'metal' | 'solid' = 'solid') {
+  /** Distinct material bullet ricochet (wood, metal, stone, foliage, ice, monster) */
+  public playBounce(
+    opts?: SpatialAudioOpts,
+    surface: 'wood' | 'metal' | 'stone' | 'foliage' | 'ice' | 'monster' | 'solid' = 'wood'
+  ) {
     const ctx = this.ensureCtx();
     if (!ctx) return;
     const now = ctx.currentTime;
     const { node: out } = this.createOutputNode(ctx, opts);
-    const jitter = 0.88 + Math.random() * 0.26;
+    const jitter = 0.9 + Math.random() * 0.2;
+    const kind = surface === 'solid' ? 'wood' : surface;
 
-    // 1. Crisp micro-impact debris/spark crack
-    this.spawnNoiseBurst(
-      ctx,
-      out,
-      now,
-      0.028,
-      'bandpass',
-      surface === 'metal' ? 4200 : 2800,
-      950,
-      1.6,
-      0.2,
-      2.6
-    );
+    if (kind === 'metal') {
+      // Sharp bright steel ping + metallic overtone ring
+      this.spawnNoiseBurst(ctx, out, now, 0.024, 'bandpass', 4600, 1400, 1.8, 0.2, 2.5);
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(3400 * jitter, now);
+      osc.frequency.exponentialRampToValueAtTime(1550 * jitter, now + 0.11);
+      gain.gain.setValueAtTime(0.11, now);
+      gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.115);
+      osc.connect(gain);
+      gain.connect(out);
+      osc.start(now);
+      osc.stop(now + 0.12);
 
-    // 2. High-velocity spinning bullet ricochet whine
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = surface === 'metal' ? 'triangle' : 'sine';
-    const startHz = (surface === 'metal' ? 3200 : 2350) * jitter;
-    const endHz = (surface === 'metal' ? 1450 : 880) * jitter;
-    osc.frequency.setValueAtTime(startHz, now);
-    osc.frequency.exponentialRampToValueAtTime(endHz, now + 0.095);
-
-    gain.gain.setValueAtTime(surface === 'metal' ? 0.11 : 0.085, now);
-    gain.gain.exponentialRampToValueAtTime(0.0008, now + 0.1);
-    osc.connect(gain);
-    gain.connect(out);
-    osc.start(now);
-    osc.stop(now + 0.105);
-
-    if (surface === 'metal') {
       const ping = ctx.createOscillator();
       const pingGain = ctx.createGain();
       ping.type = 'sine';
-      ping.frequency.setValueAtTime(4100 * jitter, now);
-      pingGain.gain.setValueAtTime(0.045, now);
-      pingGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.075);
+      ping.frequency.setValueAtTime(4450 * jitter, now);
+      pingGain.gain.setValueAtTime(0.055, now);
+      pingGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.085);
       ping.connect(pingGain);
       pingGain.connect(out);
       ping.start(now);
-      ping.stop(now + 0.08);
+      ping.stop(now + 0.09);
+      return;
     }
+
+    if (kind === 'stone') {
+      // Crisp dry masonry clack + dense mineral thud
+      this.spawnNoiseBurst(ctx, out, now, 0.032, 'bandpass', 2100, 750, 2.1, 0.24, 2.4);
+      const clack = ctx.createOscillator();
+      const g = ctx.createGain();
+      clack.type = 'square';
+      clack.frequency.setValueAtTime(640 * jitter, now);
+      clack.frequency.exponentialRampToValueAtTime(210 * jitter, now + 0.055);
+      g.gain.setValueAtTime(0.07, now);
+      g.gain.exponentialRampToValueAtTime(0.0008, now + 0.06);
+      clack.connect(g);
+      g.connect(out);
+      clack.start(now);
+      clack.stop(now + 0.065);
+      return;
+    }
+
+    if (kind === 'foliage') {
+      // Muffled hedge/branch brush snap & soft leaf rustle
+      this.spawnNoiseBurst(ctx, out, now, 0.055, 'bandpass', 1450, 620, 0.9, 0.2, 1.9);
+      const thud = ctx.createOscillator();
+      const g = ctx.createGain();
+      thud.type = 'sine';
+      thud.frequency.setValueAtTime(310 * jitter, now);
+      thud.frequency.exponentialRampToValueAtTime(110 * jitter, now + 0.048);
+      g.gain.setValueAtTime(0.095, now);
+      g.gain.exponentialRampToValueAtTime(0.0008, now + 0.052);
+      thud.connect(g);
+      g.connect(out);
+      thud.start(now);
+      thud.stop(now + 0.055);
+      return;
+    }
+
+    if (kind === 'ice') {
+      // Crystalline glacier chime + crisp frost fracture zing
+      this.spawnNoiseBurst(ctx, out, now, 0.03, 'highpass', 3600, 5200, 1.5, 0.14, 2.2);
+      [2950, 4280].forEach((hz, idx) => {
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(hz * jitter, now);
+        osc.frequency.exponentialRampToValueAtTime(hz * 0.78 * jitter, now + 0.11);
+        g.gain.setValueAtTime(idx === 0 ? 0.09 : 0.045, now);
+        g.gain.exponentialRampToValueAtTime(0.0008, now + 0.115);
+        osc.connect(g);
+        g.connect(out);
+        osc.start(now);
+        osc.stop(now + 0.12);
+      });
+      return;
+    }
+
+    if (kind === 'monster') {
+      // Heavy armored flesh/bone deflect + eerie low slow resonance
+      this.spawnNoiseBurst(ctx, out, now, 0.048, 'lowpass', 1200, 340, 1.4, 0.28, 2.2);
+      const thump = ctx.createOscillator();
+      const tg = ctx.createGain();
+      thump.type = 'sawtooth';
+      thump.frequency.setValueAtTime(420 * jitter, now);
+      thump.frequency.exponentialRampToValueAtTime(135 * jitter, now + 0.13);
+      tg.gain.setValueAtTime(0.11, now);
+      tg.gain.exponentialRampToValueAtTime(0.0008, now + 0.135);
+      thump.connect(tg);
+      tg.connect(out);
+      thump.start(now);
+      thump.stop(now + 0.14);
+      return;
+    }
+
+    // Default: Wood (resonant hollow timber knock + short dry crack)
+    this.spawnNoiseBurst(ctx, out, now, 0.028, 'bandpass', 1650, 680, 1.7, 0.21, 2.4);
+    const wood = ctx.createOscillator();
+    const wg = ctx.createGain();
+    wood.type = 'triangle';
+    wood.frequency.setValueAtTime(920 * jitter, now);
+    wood.frequency.exponentialRampToValueAtTime(340 * jitter, now + 0.055);
+    wg.gain.setValueAtTime(0.12, now);
+    wg.gain.exponentialRampToValueAtTime(0.0008, now + 0.06);
+    wood.connect(wg);
+    wg.connect(out);
+    wood.start(now);
+    wood.stop(now + 0.065);
   }
 
   /** Ballistic impact / cover splinter sound (1 = wood crate, 2 = heavy TNT crate, 3 = player body/armor hit) */

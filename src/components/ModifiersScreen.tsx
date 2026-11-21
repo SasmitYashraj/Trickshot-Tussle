@@ -13,7 +13,7 @@ interface ModifiersScreenProps {
 }
 
 interface LevelRowDef {
-  key: keyof Omit<MatchModifiers, 'keepBulletsOnStun'>;
+  key: keyof Omit<MatchModifiers, 'keepBulletsOnStun' | 'postStunGrace'>;
   label: string;
   hint: string;
   labels?: Record<ModifierLevel, string>;
@@ -25,6 +25,12 @@ const LEVEL_ROWS: LevelRowDef[] = [
   { key: 'tntSpawn', label: 'TNT Spawns', hint: 'Pushable 3s fuse crates' },
   { key: 'medkitSpawn', label: 'Medkit Spawns', hint: '+35 HP healing kits' },
   { key: 'playerSpeed', label: 'Player Speed', hint: 'Movement & dash tempo' },
+  {
+    key: 'turnSpeed',
+    label: 'Turn Speed',
+    hint: 'Aim rotation speed cap',
+    labels: { LOW: 'Slow', MEDIUM: 'Medium', HIGH: 'Fast' },
+  },
   { key: 'bulletSpeed', label: 'Bullet Velocity', hint: 'Projectile travel speed' },
   {
     key: 'bulletCapacity',
@@ -35,7 +41,7 @@ const LEVEL_ROWS: LevelRowDef[] = [
   {
     key: 'stunTime',
     label: 'Stun Recovery',
-    hint: 'Post-hit invulnerable window',
+    hint: 'Post-hit shock window',
     labels: { LOW: '0.45s', MEDIUM: '0.85s', HIGH: '1.45s' },
   },
 ];
@@ -48,7 +54,10 @@ export function ModifiersScreen({
   onChange,
   onClose,
 }: ModifiersScreenProps) {
-  const setLevel = (key: keyof Omit<MatchModifiers, 'keepBulletsOnStun'>, level: ModifierLevel) => {
+  const setLevel = (
+    key: keyof Omit<MatchModifiers, 'keepBulletsOnStun' | 'postStunGrace'>,
+    level: ModifierLevel
+  ) => {
     if (readOnly) return;
     onChange({ ...modifiers, [key]: level });
   };
@@ -56,6 +65,11 @@ export function ModifiersScreen({
   const toggleKeepBullets = () => {
     if (readOnly) return;
     onChange({ ...modifiers, keepBulletsOnStun: !modifiers.keepBulletsOnStun });
+  };
+
+  const togglePostStunGrace = () => {
+    if (readOnly) return;
+    onChange({ ...modifiers, postStunGrace: !modifiers.postStunGrace });
   };
 
   const resetDefaults = () => {
@@ -146,26 +160,49 @@ export function ModifiersScreen({
             })}
           </div>
 
-          {/* Keep Held Bullets When Stunned Toggle */}
-          <div className="mt-3 rounded-xl border border-slate-800 bg-slate-900/65 px-4 py-3 flex items-center justify-between gap-3">
-            <div>
-              <div className="text-xs font-bold text-slate-100">Keep Bullets on Stun</div>
-              <div className="text-[11px] text-slate-400 mt-0.5">
-                When disabled, taking non-lethal damage drops held bullets onto the floor
+          {/* Stun & Recovery Toggles */}
+          <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="rounded-xl border border-slate-800 bg-slate-900/65 px-3.5 py-2.5 flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-bold text-slate-100">Keep Bullets on Stun</div>
+                <div className="text-[11px] text-slate-400 mt-0.5">
+                  Disabled drops held bullets on non-lethal hit
+                </div>
               </div>
+              <button
+                type="button"
+                disabled={readOnly}
+                onClick={toggleKeepBullets}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap shrink-0 border ${
+                  modifiers.keepBulletsOnStun
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                    : 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                } ${readOnly ? 'opacity-80 cursor-default' : 'cursor-pointer'}`}
+              >
+                {modifiers.keepBulletsOnStun ? 'Keep Held' : 'Drop on Stun'}
+              </button>
             </div>
-            <button
-              type="button"
-              disabled={readOnly}
-              onClick={toggleKeepBullets}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap shrink-0 border ${
-                modifiers.keepBulletsOnStun
-                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                  : 'bg-rose-500/20 text-rose-300 border-rose-500/40'
-              } ${readOnly ? 'opacity-80 cursor-default' : 'cursor-pointer'}`}
-            >
-              {modifiers.keepBulletsOnStun ? 'Keep Held' : 'Drop on Stun'}
-            </button>
+
+            <div className="rounded-xl border border-slate-800 bg-slate-900/65 px-3.5 py-2.5 flex items-center justify-between gap-3">
+              <div>
+                <div className="text-xs font-bold text-slate-100">Post-Stun Bullet Grace</div>
+                <div className="text-[11px] text-slate-400 mt-0.5">
+                  Bullets pass through for 0.5s after stun ends
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={readOnly}
+                onClick={togglePostStunGrace}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap shrink-0 border ${
+                  modifiers.postStunGrace
+                    ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
+                    : 'bg-slate-800 text-slate-300 border-slate-700'
+                } ${readOnly ? 'opacity-80 cursor-default' : 'cursor-pointer'}`}
+              >
+                {modifiers.postStunGrace ? '0.5s Grace' : 'No Grace'}
+              </button>
+            </div>
           </div>
 
           <div className="mt-5 flex items-center justify-between gap-3">

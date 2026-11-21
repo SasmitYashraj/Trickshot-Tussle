@@ -1,4 +1,6 @@
 import { ARENA_MAPS } from './maps';
+import winterSnowTexUrl from '../assets/images/winter_snow_texture_1795248731633.jpg';
+import winterIceTexUrl from '../assets/images/winter_ice_texture_1795248731782.jpg';
 import type {
   ArenaMap,
   Bullet,
@@ -50,6 +52,7 @@ export interface RenderPlayer {
   maxHp: number;
   ammo: number;
   stunTimer: number;
+  postStunGraceTimer?: number;
   hurtFlashTimer: number;
   respawnTimer: number;
   spawnInvulnTimer: number;
@@ -152,6 +155,148 @@ let sharedBeamScratchCanvas: HTMLCanvasElement | null = null;
 let sharedFogCanvas: HTMLCanvasElement | null = null;
 let sharedWispCanvas: HTMLCanvasElement | null = null;
 let sharedWaterCanvas: HTMLCanvasElement | null = null;
+
+let winterSnowImg: HTMLImageElement | null = null;
+let winterSnowReady = false;
+let winterIceImg: HTMLImageElement | null = null;
+let winterIceReady = false;
+
+function getWinterSnowTexture(): HTMLImageElement | null {
+  if (typeof Image === 'undefined') return null;
+  if (!winterSnowImg) {
+    winterSnowImg = new Image();
+    winterSnowImg.onload = () => {
+      winterSnowReady = true;
+    };
+    winterSnowImg.src = winterSnowTexUrl;
+  }
+  return winterSnowReady && winterSnowImg.complete ? winterSnowImg : null;
+}
+
+function getWinterIceTexture(): HTMLImageElement | null {
+  if (typeof Image === 'undefined') return null;
+  if (!winterIceImg) {
+    winterIceImg = new Image();
+    winterIceImg.onload = () => {
+      winterIceReady = true;
+    };
+    winterIceImg.src = winterIceTexUrl;
+  }
+  return winterIceReady && winterIceImg.complete ? winterIceImg : null;
+}
+
+interface SnowFootprint {
+  x: number;
+  y: number;
+  angle: number;
+  createdAt: number;
+}
+const snowFootprints: SnowFootprint[] = [];
+const playerLastFootprintPos = new Map<number, { x: number; y: number; stepSign: number }>();
+let lastSnowMapId: string | null = null;
+let lastSnowElapsed = 0;
+
+function isPointInsideAnyIcePit(x: number, y: number, pits: IcePit[]): boolean {
+  for (const pit of pits) {
+    const dx = (x - pit.x) / Math.max(1, pit.rx);
+    const dy = (y - pit.y) / Math.max(1, pit.ry);
+    if (dx * dx + dy * dy <= 1.02) return true;
+  }
+  return false;
+}
+
+function recordAndDrawSnowFootprints(
+  ctx: CanvasRenderingContext2D,
+  world: RenderableWorld,
+  map: ArenaMap
+) {
+  if (map.floorTheme !== 'winter_snow') return;
+  if (lastSnowMapId !== world.mapId || world.elapsedTime < lastSnowElapsed - 0.5) {
+    snowFootprints.length = 0;
+    playerLastFootprintPos.clear();
+    lastSnowMapId = world.mapId;
+  }
+  lastSnowElapsed = world.elapsedTime;
+
+  const pits: IcePit[] =
+    world.icePits && world.icePits.length > 0
+      ? world.icePits
+      : (map.icePits ?? []).map((p, idx) => ({
+          id: idx + 1,
+          x: p.x,
+          y: p.y,
+          rx: p.rx,
+          ry: p.ry,
+          points: p.points,
+          broken: false,
+        }));
+
+  for (const p of world.players) {
+    if (!p.alive) {
+      playerLastFootprintPos.delete(p.id);
+      continue;
+    }
+    const prev = playerLastFootprintPos.get(p.id);
+    if (!prev) {
+      playerLastFootprintPos.set(p.id, { x: p.x, y: p.y, stepSign: 1 });
+      continue;
+    }
+    const dx = p.x - prev.x;
+    const dy = p.y - prev.y;
+    const d = Math.hypot(dx, dy);
+    if (d >= 22 && !isPointInsideAnyIcePit(p.x, p.y, pits)) {
+      const moveAngle = Math.atan2(dy, dx);
+      const perpX = -Math.sin(moveAngle) * 8.5 * prev.stepSign;
+      const perpY = Math.cos(moveAngle) * 8.5 * prev.stepSign;
+      snowFootprints.push({
+        x: p.x + perpX,
+        y: p.y + perpY,
+        angle: moveAngle,
+        createdAt: world.elapsedTime,
+      });
+      if (snowFootprints.length > 260) {
+        snowFootprints.splice(0, snowFootprints.length - 260);
+      }
+      prev.x = p.x;
+      prev.y = p.y;
+      prev.stepSign *= -1;
+    } else if (d >= 22) {
+      prev.x = p.x;
+      prev.y = p.y;
+    }
+  }
+
+  const maxAge = 4.6;
+  while (snowFootprints.length > 0 && world.elapsedTime - snowFootprints[0].createdAt > maxAge) {
+    snowFootprints.shift();
+  }
+  if (snowFootprints.length === 0) return;
+
+  ctx.save();
+  for (const fp of snowFootprints) {
+    const age = Math.max(0, world.elapsedTime - fp.createdAt);
+    const alpha = Math.pow(Math.max(0, 1 - age / maxAge), 1.35);
+    if (alpha <= 0.02) continue;
+
+    ctx.save();
+    ctx.translate(fp.x, fp.y);
+    ctx.rotate(fp.angle);
+
+    // Sculpted ice-blue snow depression + crisp trailing rim highlight
+    ctx.fillStyle = `rgba(68, 138, 212, ${0.42 * alpha})`;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 7.2, 4.3, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = `rgba(255, 255, 255, ${0.58 * alpha})`;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.ellipse(1.1, -0.8, 6.6, 3.8, 0, -Math.PI * 0.75, Math.PI * 0.25);
+    ctx.stroke();
+    ctx.restore();
+  }
+  ctx.restore();
+}
 
 function getLightCanvas(width: number, height: number): HTMLCanvasElement {
   if (!sharedLightCanvas) {
@@ -423,7 +568,8 @@ function drawPersianRug(
 }
 
 function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
-  const key = `${map.id}_${map.width}x${map.height}_v7`;
+  const snowImg = map.floorTheme === 'winter_snow' ? getWinterSnowTexture() : null;
+  const key = `${map.id}_${map.width}x${map.height}_v7${snowImg ? '_snowtex' : ''}`;
   const existing = floorCache.get(key);
   if (existing) return existing;
 
@@ -593,11 +739,22 @@ function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
       }
     }
   } else if (map.floorTheme === 'winter_snow') {
-    // Crisp bright glacier white-to-ice-blue snowfield matching Winter Tussle thumbnail
+    // Crisp bright glacier snowfield with seamless photorealistic snow texture blended over radial frost wash
     ctx.fillStyle = '#D9EEFF';
     ctx.fillRect(0, 0, map.width, map.height);
 
-    // Sunlit glacier-white center fading to cool powder-blue corners
+    if (snowImg) {
+      const snowPat = ctx.createPattern(snowImg, 'repeat');
+      if (snowPat) {
+        ctx.save();
+        ctx.globalAlpha = 0.78;
+        ctx.fillStyle = snowPat;
+        ctx.fillRect(0, 0, map.width, map.height);
+        ctx.restore();
+      }
+    }
+
+    // Sunlit glacier-white center fading gently to cool powder-blue corners
     const snowWash = ctx.createRadialGradient(
       map.width * 0.5,
       map.height * 0.48,
@@ -606,9 +763,9 @@ function getFloorCanvas(map: ArenaMap): HTMLCanvasElement {
       map.height * 0.5,
       Math.max(map.width, map.height) * 0.72
     );
-    snowWash.addColorStop(0, 'rgba(248, 252, 255, 0.86)');
-    snowWash.addColorStop(0.55, 'rgba(214, 236, 255, 0.56)');
-    snowWash.addColorStop(1, 'rgba(125, 185, 245, 0.52)');
+    snowWash.addColorStop(0, snowImg ? 'rgba(248, 252, 255, 0.34)' : 'rgba(248, 252, 255, 0.86)');
+    snowWash.addColorStop(0.55, snowImg ? 'rgba(214, 236, 255, 0.24)' : 'rgba(214, 236, 255, 0.56)');
+    snowWash.addColorStop(1, snowImg ? 'rgba(110, 174, 240, 0.36)' : 'rgba(125, 185, 245, 0.52)');
     ctx.fillStyle = snowWash;
     ctx.fillRect(0, 0, map.width, map.height);
 
@@ -2799,7 +2956,14 @@ export function renderArena(
     ctx.save();
     ctx.translate(player.x, player.y);
 
-    if (player.spawnInvulnTimer > 0 && Math.floor(player.spawnInvulnTimer * 18) % 2 === 0) {
+    const isStunned = player.stunTimer > 0;
+    const inPostStunGrace = !isStunned && (player.postStunGraceTimer ?? 0) > 0;
+    if (isStunned) {
+      ctx.globalAlpha *= 0.52;
+    } else if (inPostStunGrace) {
+      const gracePulse = 0.5 + 0.16 * Math.sin(world.elapsedTime * 28);
+      ctx.globalAlpha *= gracePulse;
+    } else if (player.spawnInvulnTimer > 0 && Math.floor(player.spawnInvulnTimer * 18) % 2 === 0) {
       ctx.globalAlpha = 0.5;
     }
 
@@ -3097,17 +3261,34 @@ export function renderArena(
     ctx.ellipse(13, 0, 9.5, 17.5, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.fillStyle = accentColor;
-    ctx.beginPath();
-    ctx.arc(14.5, -7.2, 4.4, 0, Math.PI * 2);
-    ctx.arc(14.5, 7.2, 4.4, 0, Math.PI * 2);
-    ctx.fill();
+    if (isStunned) {
+      // Visor eyes powered OFF / shut when stunned
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.34)';
+      ctx.lineWidth = 2.2;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(12.2, -9.6);
+      ctx.lineTo(16.8, -5.0);
+      ctx.moveTo(16.8, -9.6);
+      ctx.lineTo(12.2, -5.0);
+      ctx.moveTo(12.2, 5.0);
+      ctx.lineTo(16.8, 9.6);
+      ctx.moveTo(16.8, 5.0);
+      ctx.lineTo(12.2, 9.6);
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = accentColor;
+      ctx.beginPath();
+      ctx.arc(14.5, -7.2, 4.4, 0, Math.PI * 2);
+      ctx.arc(14.5, 7.2, 4.4, 0, Math.PI * 2);
+      ctx.fill();
 
-    ctx.fillStyle = '#FFFFFF';
-    ctx.beginPath();
-    ctx.arc(16, -8.3, 1.7, 0, Math.PI * 2);
-    ctx.arc(16, 6.1, 1.7, 0, Math.PI * 2);
-    ctx.fill();
+      ctx.fillStyle = '#FFFFFF';
+      ctx.beginPath();
+      ctx.arc(16, -8.3, 1.7, 0, Math.PI * 2);
+      ctx.arc(16, 6.1, 1.7, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
     ctx.restore();
 
@@ -3126,10 +3307,13 @@ export function renderArena(
       }
     }
 
-    if (player.stunTimer > 0) {
+    if (isStunned) {
       ctx.save();
-      ctx.strokeStyle = 'rgba(253, 224, 71, 0.5)';
-      ctx.lineWidth = 2.5;
+      ctx.globalAlpha = 0.96;
+
+      ctx.save();
+      ctx.strokeStyle = 'rgba(253, 224, 71, 0.6)';
+      ctx.lineWidth = 2.4;
       ctx.setLineDash([6, 4]);
       ctx.beginPath();
       ctx.arc(0, 0, PLAYER_RADIUS + 11, 0, Math.PI * 2);
@@ -3142,6 +3326,26 @@ export function renderArena(
       ctx.arc(0, 0, PLAYER_RADIUS + 6, world.elapsedTime * 7, world.elapsedTime * 7 + Math.PI * 1.35);
       ctx.stroke();
 
+      // Jagged flickering electric discharge bolts around stunned player
+      for (let b = 0; b < 4; b++) {
+        const flicker = Math.sin(world.elapsedTime * 42 + b * 2.1);
+        if (flicker < -0.25) continue;
+        const baseA = world.elapsedTime * 4.5 + (b * Math.PI) / 2 + flicker * 0.25;
+        const r0 = PLAYER_RADIUS * 0.55;
+        const r1 = PLAYER_RADIUS * 0.92;
+        const r2 = PLAYER_RADIUS + 11;
+        const zig = (b % 2 === 0 ? 1 : -1) * 0.22;
+        ctx.strokeStyle = b % 2 === 0 ? '#7DD3FC' : '#FEF08A';
+        ctx.lineWidth = 2.2;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(baseA) * r0, Math.sin(baseA) * r0);
+        ctx.lineTo(Math.cos(baseA + zig) * r1, Math.sin(baseA + zig) * r1);
+        ctx.lineTo(Math.cos(baseA - zig * 0.6) * r2, Math.sin(baseA - zig * 0.6) * r2);
+        ctx.stroke();
+      }
+
       for (let s = 0; s < 3; s++) {
         const sa = world.elapsedTime * 6 + (s * Math.PI * 2) / 3;
         const sx = Math.cos(sa) * 24;
@@ -3151,6 +3355,19 @@ export function renderArena(
         ctx.arc(sx, sy, 4, 0, Math.PI * 2);
         ctx.fill();
       }
+      ctx.restore();
+    } else if (inPostStunGrace) {
+      // Clear pulsing sky-blue pass-through ring during the 0.5s post-stun bullet grace window
+      ctx.save();
+      ctx.globalAlpha = 0.88;
+      ctx.strokeStyle = '#7DD3FC';
+      ctx.lineWidth = 2.4;
+      ctx.setLineDash([5, 5]);
+      ctx.lineDashOffset = -world.elapsedTime * 45;
+      ctx.beginPath();
+      ctx.arc(0, 0, PLAYER_RADIUS + 9, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
     }
 
     const hpRatio = player.hp / player.maxHp;
@@ -3541,6 +3758,7 @@ export function renderArena(
       drawDynamicLightShadows(ctx, map, world);
     }
     drawIcePits(ctx, world, map);
+    recordAndDrawSnowFootprints(ctx, world, map);
     drawSpawnPads();
     drawPickupsOnFloor();
 
@@ -5319,11 +5537,11 @@ function drawWinterFogOverlay(
   ctx.rect(0, 0, map.width, map.height);
   ctx.clip();
 
-  // 1. Subtle cool arctic fog haze that softens & slightly lowers visibility across the arena
-  ctx.fillStyle = 'rgba(226, 240, 255, 0.11)';
+  // 1. Atmospheric arctic fog haze reducing visibility cleanly across Winter Tussle
+  ctx.fillStyle = 'rgba(226, 240, 255, 0.17)';
   ctx.fillRect(0, 0, map.width, map.height);
 
-  // 2. Drifting organic white fog clouds Layer A & Layer B (seamless pattern scroll)
+  // 2. Drifting organic white fog clouds Layer A & Layer B + slow frost ground mist (seamless pattern scroll)
   const tile = 512;
   const drawScrollingFog = (tex: HTMLCanvasElement, vx: number, vy: number, waveAmp: number, alpha: number) => {
     const pat = ctx.createPattern(tex, 'repeat');
@@ -5338,8 +5556,9 @@ function drawWinterFogOverlay(
     ctx.restore();
   };
 
-  drawScrollingFog(fogTex, 26, 9, 16, 0.72);
-  drawScrollingFog(wispTex, -38, 14, 12, 0.54);
+  drawScrollingFog(fogTex, 26, 9, 16, 0.88);
+  drawScrollingFog(wispTex, -38, 14, 12, 0.72);
+  drawScrollingFog(fogTex, -14, -7, 10, 0.34);
 
   // 3. Light-Fog Tyndall Scattering: lit white mist pools inside light cones, carved by real object shadows!
   if (lights.length > 0 && scale > 0.001) {
@@ -5700,8 +5919,11 @@ function drawIcePits(ctx: CanvasRenderingContext2D, world: RenderableWorld, map:
 
       ctx.restore(); // end outer pit clip
     } else {
-      // Intact walkable frozen sapphire-blue ice pond matching Winter Tussle thumbnail
-      ctx.fillStyle = 'rgba(56, 189, 248, 0.48)';
+      // Intact walkable frozen sapphire glacier pond with seamless ice texture & animated light refraction
+      const iceImg = getWinterIceTexture();
+      const lights = getConeLightSources(map);
+
+      ctx.fillStyle = 'rgba(56, 189, 248, 0.5)';
       ctx.save();
       ctx.translate(0, 3);
       traceContour(1.07);
@@ -5720,27 +5942,93 @@ function drawIcePits(ctx: CanvasRenderingContext2D, world: RenderableWorld, map:
       ctx.fillStyle = iceGrad;
       ctx.fillRect(-pit.rx * 1.4, -pit.ry * 1.4, pit.rx * 2.8, pit.ry * 2.8);
 
-      // Glossy diagonal glacial specular highlights
-      ctx.fillStyle = 'rgba(224, 242, 254, 0.34)';
+      // Photorealistic sapphire glacier ice texture with gentle crystal light parallax
+      if (iceImg) {
+        const icePat = ctx.createPattern(iceImg, 'repeat');
+        if (icePat) {
+          const shiftX = Math.sin(world.elapsedTime * 0.45 + pit.id) * 6;
+          const shiftY = Math.cos(world.elapsedTime * 0.38 + pit.id) * 4;
+          ctx.save();
+          ctx.globalAlpha = 0.72;
+          ctx.translate(shiftX + pit.id * 41, shiftY + pit.id * 29);
+          ctx.fillStyle = icePat;
+          ctx.fillRect(
+            -pit.rx * 1.6 - shiftX - pit.id * 41,
+            -pit.ry * 1.6 - shiftY - pit.id * 29,
+            pit.rx * 3.2,
+            pit.ry * 3.2
+          );
+          ctx.restore();
+        }
+      }
+
+      // Animated shimmering glacier refraction & prism light sheen reactive to nearby frost spotlights
+      const sweepOffset = Math.sin(world.elapsedTime * 1.15 + pit.id * 1.3) * pit.rx * 0.24;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = 'rgba(224, 242, 254, 0.20)';
       ctx.beginPath();
-      ctx.moveTo(-pit.rx * 0.75, -pit.ry * 1.2);
-      ctx.lineTo(-pit.rx * 0.4, -pit.ry * 1.2);
-      ctx.lineTo(-pit.rx * 0.95, pit.ry * 1.2);
-      ctx.lineTo(-pit.rx * 1.3, pit.ry * 1.2);
+      ctx.moveTo(-pit.rx * 0.78 + sweepOffset, -pit.ry * 1.2);
+      ctx.lineTo(-pit.rx * 0.42 + sweepOffset, -pit.ry * 1.2);
+      ctx.lineTo(-pit.rx * 0.96 + sweepOffset, pit.ry * 1.2);
+      ctx.lineTo(-pit.rx * 1.32 + sweepOffset, pit.ry * 1.2);
       ctx.closePath();
       ctx.fill();
 
+      ctx.fillStyle = 'rgba(186, 230, 253, 0.17)';
       ctx.beginPath();
-      ctx.moveTo(pit.rx * 0.15, -pit.ry * 1.2);
-      ctx.lineTo(pit.rx * 0.34, -pit.ry * 1.2);
-      ctx.lineTo(-pit.rx * 0.24, pit.ry * 1.2);
-      ctx.lineTo(-pit.rx * 0.42, pit.ry * 1.2);
+      ctx.moveTo(pit.rx * 0.14 - sweepOffset * 0.7, -pit.ry * 1.2);
+      ctx.lineTo(pit.rx * 0.34 - sweepOffset * 0.7, -pit.ry * 1.2);
+      ctx.lineTo(-pit.rx * 0.24 - sweepOffset * 0.7, pit.ry * 1.2);
+      ctx.lineTo(-pit.rx * 0.44 - sweepOffset * 0.7, pit.ry * 1.2);
       ctx.closePath();
       ctx.fill();
 
-      // Subtle frosted crystalline ice veins
-      ctx.strokeStyle = 'rgba(224, 242, 254, 0.62)';
-      ctx.lineWidth = 1.6;
+      // Dynamic spotlight refraction flare across intact glacier surface
+      for (const l of lights) {
+        const dx = pit.x - l.x;
+        const dy = pit.y - l.y;
+        const dLight = Math.hypot(dx, dy);
+        if (dLight > l.range * 1.2) continue;
+        const fDot = (dy / Math.max(1, dLight)) * l.dirY;
+        if (fDot <= 0.1) continue;
+        const str = Math.max(0, 1 - dLight / (l.range * 1.2)) * fDot * (0.85 + 0.15 * Math.sin(world.elapsedTime * 1.8));
+        const rx = (-dx / Math.max(1, dLight)) * pit.rx * 0.34;
+        const ry = (-dy / Math.max(1, dLight)) * pit.ry * 0.34;
+        const glow = ctx.createRadialGradient(rx, ry, 4, rx, ry, Math.max(pit.rx, pit.ry) * 0.9);
+        glow.addColorStop(0, `rgba(224, 242, 254, ${0.34 * str})`);
+        glow.addColorStop(0.5, `rgba(56, 189, 248, ${0.16 * str})`);
+        glow.addColorStop(1, 'rgba(56, 189, 248, 0)');
+        ctx.fillStyle = glow;
+        ctx.fillRect(-pit.rx * 1.4, -pit.ry * 1.4, pit.rx * 2.8, pit.ry * 2.8);
+      }
+
+      // Twinkling crystalline diamond sparkles across the frozen ice sheet
+      for (let s = 0; s < 9; s++) {
+        const seed = pit.id * 157 + s * 37;
+        const sx = (seededRand(seed + 1) - 0.5) * pit.rx * 1.4;
+        const sy = (seededRand(seed + 2) - 0.5) * pit.ry * 1.4;
+        const tw = Math.pow(Math.max(0, Math.sin(world.elapsedTime * (2.1 + seededRand(seed + 3) * 1.8) + s * 1.7)), 4);
+        if (tw < 0.22) continue;
+        const arm = (2.4 + seededRand(seed + 4) * 2.8) * tw;
+        ctx.fillStyle = `rgba(240, 249, 255, ${0.9 * tw})`;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy - arm);
+        ctx.lineTo(sx + arm * 0.28, sy - arm * 0.28);
+        ctx.lineTo(sx + arm, sy);
+        ctx.lineTo(sx + arm * 0.28, sy + arm * 0.28);
+        ctx.lineTo(sx, sy + arm);
+        ctx.lineTo(sx - arm * 0.28, sy + arm * 0.28);
+        ctx.lineTo(sx - arm, sy);
+        ctx.lineTo(sx - arm * 0.28, sy - arm * 0.28);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.restore();
+
+      // Subtle frosted crystalline ice fracture veins
+      ctx.strokeStyle = 'rgba(224, 242, 254, 0.52)';
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.moveTo(-pit.rx * 0.38, -pit.ry * 0.28);
       ctx.lineTo(0, 4);

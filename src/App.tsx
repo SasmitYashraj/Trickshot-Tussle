@@ -160,9 +160,22 @@ function playEngineEvents(
         case 'heal':
           sound.playHeal(spatial);
           break;
-        case 'bounce':
-          sound.playBounce(spatial, evt.value === 2 ? 'metal' : 'solid');
+        case 'bounce': {
+          const bounceSurface =
+            evt.value === 2
+              ? 'metal'
+              : evt.value === 3
+                ? 'stone'
+                : evt.value === 4
+                  ? 'foliage'
+                  : evt.value === 5
+                    ? 'ice'
+                    : evt.value === 6
+                      ? 'monster'
+                      : 'wood';
+          sound.playBounce(spatial, bounceSurface);
           break;
+        }
         case 'hit':
           sound.playHit(spatial, evt.value === 1 ? 'wood' : evt.value === 2 ? 'crate' : 'body');
           break;

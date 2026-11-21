@@ -106,10 +106,12 @@ export interface MatchModifiers {
   tntSpawn: ModifierLevel;
   medkitSpawn: ModifierLevel;
   playerSpeed: ModifierLevel;
+  turnSpeed: ModifierLevel;
   bulletSpeed: ModifierLevel;
   bulletCapacity: ModifierLevel;
   stunTime: ModifierLevel;
   keepBulletsOnStun: boolean;
+  postStunGrace: boolean;
 }
 
 export const DEFAULT_MATCH_MODIFIERS: MatchModifiers = {
@@ -118,10 +120,12 @@ export const DEFAULT_MATCH_MODIFIERS: MatchModifiers = {
   tntSpawn: 'MEDIUM',
   medkitSpawn: 'MEDIUM',
   playerSpeed: 'MEDIUM',
+  turnSpeed: 'MEDIUM',
   bulletSpeed: 'MEDIUM',
   bulletCapacity: 'MEDIUM',
   stunTime: 'MEDIUM',
   keepBulletsOnStun: true,
+  postStunGrace: true,
 };
 
 export type PlayerSkinFinish =
@@ -278,6 +282,7 @@ export interface Player {
   ammo: number;
   maxAmmo: number;
   stunTimer: number;
+  postStunGraceTimer?: number;
   hurtFlashTimer: number;
   respawnTimer: number;
   spawnInvulnTimer: number;
@@ -516,6 +521,7 @@ export interface WorldSyncState {
     ammo: number;
     maxAmmo: number;
     stunTimer: number;
+    postStunGraceTimer?: number;
     hurtFlashTimer: number;
     respawnTimer: number;
     spawnInvulnTimer: number;
@@ -542,7 +548,7 @@ export const IMMERSIVE_VIEW_HEIGHT = 740;
 export const PLAYER_RADIUS = 42;
 export const PLAYER_MAX_SPEED = 245;
 export const PLAYER_MAX_ACCEL = 1950;
-export const PLAYER_TURN_SPEED = 17;
+export const PLAYER_TURN_SPEED = 11.5;
 export const PLAYER_MAX_HP = 100;
 export const PLAYER_MAX_AMMO = 5;
 
@@ -573,13 +579,14 @@ export const CARDBOARD_PUNCTURE_FRAME = 0.11;
 export const CARDBOARD_FADE_OUT = 0.34;
 
 export const STUN_DURATION = 0.85;
+export const POST_STUN_GRACE_DURATION = 0.5;
 export const RESPAWN_DELAY = 2.6;
 export const SPAWN_INVULN_DURATION = 0.85;
 export const KILL_STREAK_WINDOW = 3.0;
 
 export const MONSTER_RADIUS = PLAYER_RADIUS * 1.5;
-export const MONSTER_STUN_DURATION = 10.0;
-export const MONSTER_SLOW_DURATION = 3.0;
+export const MONSTER_STUN_DURATION = 15.0;
+export const MONSTER_SLOW_DURATION = 5.0;
 export const LIBRARY_BRAWL_MAX_HEARTS = 8;
 export const LIBRARY_HEARING_RADIUS = 900;
 export const LIBRARY_BOOKS_PER_PLAYER = 8;

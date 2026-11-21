@@ -65,6 +65,7 @@ function sanitizeModifiers(raw: Partial<MatchModifiers> | undefined): MatchModif
     tntSpawn: sanitizeModifierLevel(raw.tntSpawn, DEFAULT_MATCH_MODIFIERS.tntSpawn),
     medkitSpawn: sanitizeModifierLevel(raw.medkitSpawn, DEFAULT_MATCH_MODIFIERS.medkitSpawn),
     playerSpeed: sanitizeModifierLevel(raw.playerSpeed, DEFAULT_MATCH_MODIFIERS.playerSpeed),
+    turnSpeed: sanitizeModifierLevel(raw.turnSpeed, DEFAULT_MATCH_MODIFIERS.turnSpeed),
     bulletSpeed: sanitizeModifierLevel(raw.bulletSpeed, DEFAULT_MATCH_MODIFIERS.bulletSpeed),
     bulletCapacity: sanitizeModifierLevel(raw.bulletCapacity, DEFAULT_MATCH_MODIFIERS.bulletCapacity),
     stunTime: sanitizeModifierLevel(raw.stunTime, DEFAULT_MATCH_MODIFIERS.stunTime),
@@ -72,6 +73,10 @@ function sanitizeModifiers(raw: Partial<MatchModifiers> | undefined): MatchModif
       typeof raw.keepBulletsOnStun === 'boolean'
         ? raw.keepBulletsOnStun
         : DEFAULT_MATCH_MODIFIERS.keepBulletsOnStun,
+    postStunGrace:
+      typeof raw.postStunGrace === 'boolean'
+        ? raw.postStunGrace
+        : DEFAULT_MATCH_MODIFIERS.postStunGrace,
   };
 }
 
