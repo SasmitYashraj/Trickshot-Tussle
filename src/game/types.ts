@@ -130,10 +130,32 @@ export const DEFAULT_MATCH_MODIFIERS: MatchModifiers = {
 
 export type PlayerSkinFinish =
   | 'solid'
+  | 'matte'
   | 'fish_scale'
   | 'wood'
   | 'metal'
-  | 'animated_sparkle';
+  | 'animated_sparkle'
+  | 'magma'
+  | 'synthwave'
+  | 'toxic_slime'
+  | 'billiard_stripe'
+  | 'two_tone'
+  | 'racing_stripe'
+  | 'carbon_fiber'
+  | 'frosted_ice'
+  | 'oil_slick'
+  | 'plasma_core'
+  | 'galaxy'
+  | 'amber_fossil'
+  | 'molten_cracks'
+  | 'cyber_matrix'
+  | 'electric_arc'
+  | 'mummy'
+  | 'camo'
+  | 'hazard'
+  | 'damascus'
+  | 'hologram'
+  | 'kintsugi';
 
 export type LibraryBookFace = 'N' | 'S' | 'E' | 'W';
 
@@ -252,6 +274,12 @@ export const PLAYER_COLOR_PALETTE: PlayerColorOption[] = [
   { id: 'cyan', name: 'Glacier', color: '#06B6D4', accentColor: '#A5F3FC', finish: 'solid' },
   { id: 'coral', name: 'Coral', color: '#FB7185', accentColor: '#FECDD3', finish: 'solid' },
   { id: 'lime', name: 'Acid Lime', color: '#84CC16', accentColor: '#D9F99D', finish: 'solid' },
+  { id: 'matte_obsidian', name: 'Matte Obsidian', color: '#1F2028', accentColor: '#38BDF8', finish: 'matte' },
+  { id: 'deep_crimson', name: 'Deep Crimson', color: '#881337', accentColor: '#FDA4AF', finish: 'solid' },
+  { id: 'midnight_indigo', name: 'Midnight Indigo', color: '#1E1B4B', accentColor: '#FDE047', finish: 'solid' },
+  { id: 'grad_magma', name: 'Magma', color: '#EA580C', accentColor: '#FDBA74', finish: 'magma' },
+  { id: 'grad_synthwave', name: 'Synthwave', color: '#EC4899', accentColor: '#22D3EE', finish: 'synthwave' },
+  { id: 'grad_toxic', name: 'Toxic Slime', color: '#65A30D', accentColor: '#BEF264', finish: 'toxic_slime' },
   { id: 'scale_crimson', name: 'Crimson Scales', color: '#DC2626', accentColor: '#FCA5A5', finish: 'fish_scale' },
   { id: 'scale_cobalt', name: 'Cobalt Scales', color: '#0284C7', accentColor: '#7DD3FC', finish: 'fish_scale' },
   { id: 'scale_jade', name: 'Jade Scales', color: '#16A34A', accentColor: '#86EFAC', finish: 'fish_scale' },
@@ -259,6 +287,24 @@ export const PLAYER_COLOR_PALETTE: PlayerColorOption[] = [
   { id: 'wood_oak', name: 'Timber Oak', color: '#92400E', accentColor: '#F59E0B', finish: 'wood' },
   { id: 'metal_chrome', name: 'Brushed Chrome', color: '#94A3B8', accentColor: '#F1F5F9', finish: 'metal' },
   { id: 'sparkle_gold', name: 'Starlight Gold', color: '#F59E0B', accentColor: '#FEF08A', finish: 'animated_sparkle' },
+  { id: 'pat_billiard', name: 'Billiard Stripe', color: '#2563EB', accentColor: '#FEF08A', finish: 'billiard_stripe' },
+  { id: 'pat_twotone', name: 'Two-Tone Split', color: '#0284C7', accentColor: '#BAE6FD', finish: 'two_tone' },
+  { id: 'pat_racing', name: 'Racing Stripe', color: '#DC2626', accentColor: '#F8FAFC', finish: 'racing_stripe' },
+  { id: 'pat_carbon', name: 'Carbon Fiber', color: '#27272A', accentColor: '#38BDF8', finish: 'carbon_fiber' },
+  { id: 'pat_frosted', name: 'Frosted Ice', color: '#7DD3FC', accentColor: '#E0F2FE', finish: 'frosted_ice' },
+  { id: 'pat_oil_slick', name: 'Oil Slick', color: '#312E81', accentColor: '#2DD4BF', finish: 'oil_slick' },
+  { id: 'pat_plasma', name: 'Plasma Core', color: '#3B0764', accentColor: '#E879F9', finish: 'plasma_core' },
+  { id: 'pat_galaxy', name: 'Galaxy Nebula', color: '#1E1B4B', accentColor: '#C084FC', finish: 'galaxy' },
+  { id: 'pat_amber', name: 'Amber Fossil', color: '#D97706', accentColor: '#FEF08A', finish: 'amber_fossil' },
+  { id: 'shader_molten', name: 'Molten Cracks', color: '#292524', accentColor: '#FB923C', finish: 'molten_cracks' },
+  { id: 'shader_cyber', name: 'Cyber Matrix', color: '#052E16', accentColor: '#4ADE80', finish: 'cyber_matrix' },
+  { id: 'shader_electric', name: 'Electric Arc', color: '#0C4A6E', accentColor: '#7DD3FC', finish: 'electric_arc' },
+  { id: 'mashup_mummy', name: 'Mummy Wraps', color: '#D6D3D1', accentColor: '#FDE047', finish: 'mummy' },
+  { id: 'mashup_camo', name: 'Camo Tactical', color: '#3F6212', accentColor: '#BEF264', finish: 'camo' },
+  { id: 'mashup_hazard', name: 'Hazard Test', color: '#EAB308', accentColor: '#FEF08A', finish: 'hazard' },
+  { id: 'mat_damascus', name: 'Damascus Steel', color: '#64748B', accentColor: '#E2E8F0', finish: 'damascus' },
+  { id: 'mat_hologram', name: 'Hologram', color: '#06B6D4', accentColor: '#A5F3FC', finish: 'hologram' },
+  { id: 'mat_kintsugi', name: 'Kintsugi Porcelain', color: '#E7E5E4', accentColor: '#F59E0B', finish: 'kintsugi' },
 ];
 
 export interface Player {

@@ -1914,8 +1914,8 @@ export class ArenaEngine {
       return;
     }
     const diff: BotDifficulty = this.config.difficulty;
-    const reactionInterval = diff === 'RUTHLESS' ? 0.11 : diff === 'TACTICAL' ? 0.22 : 0.48;
-    const aimSpread = diff === 'RUTHLESS' ? 0.015 : diff === 'TACTICAL' ? 0.1 : 1.05;
+    const reactionInterval = diff === 'RUTHLESS' ? 0.085 : diff === 'TACTICAL' ? 0.2 : 0.48;
+    const aimSpread = diff === 'RUTHLESS' ? 0.011 : diff === 'TACTICAL' ? 0.09 : 1.05;
     const bFloor = bot.floor ?? 0;
     const mem = this.getBotMemory(bot);
 
@@ -2181,46 +2181,89 @@ export class ArenaEngine {
         return !best || d < best.d ? { p, d } : best;
       }, null);
 
+      const nearestMedkit = visibleMedkits.reduce<{ p: Pickup; d: number } | null>((best, p) => {
+        const d = dist(bot.x, bot.y, p.x, p.y);
+        return !best || d < best.d ? { p, d } : best;
+      }, null);
+
       const immediateDanger = Boolean(
         target &&
-          (targetDist < 300 ||
+          (targetDist < 285 ||
             (target.ammo > 0 &&
               Math.abs(normalizeAngle(Math.atan2(bot.y - target.y, bot.x - target.x) - target.angle)) < 0.42 &&
               targetDist < 420))
       );
       const guaranteedFinish = Boolean(target && (target.hp <= BULLET_DAMAGE || target.stunTimer > 0));
       const closeCluster = visibleEnemies.filter((e) => dist(bot.x, bot.y, e.x, e.y) < 380).length >= 2;
-      const stockpileAmmoGoal = Math.min(bot.maxAmmo, 3);
+      const stockpileAmmoGoal = allEnemies.length <= 1 ? 1 : Math.min(bot.maxAmmo, 3);
       const shouldStockpileRuthless =
         diff === 'RUTHLESS' &&
         bot.ammo > 0 &&
         bot.ammo < stockpileAmmoGoal &&
         nearestBullet !== null &&
-        nearestBullet.d < 700 &&
+        nearestBullet.d < 640 &&
         !immediateDanger &&
         !guaranteedFinish &&
         explosiveClusterCount === 0 &&
         !closeCluster;
 
-      if (bot.hp <= 55 && visibleMedkits.length > 0) {
-        let best = visibleMedkits[0];
-        let bestD = dist(bot.x, bot.y, best.x, best.y);
-        for (const m of visibleMedkits) {
-          const d = dist(bot.x, bot.y, m.x, m.y);
-          if (d < bestD) {
-            best = m;
-            bestD = d;
+      const medkitDist = nearestMedkit?.d ?? Infinity;
+      const shouldSeekMedkit =
+        nearestMedkit !== null &&
+        bot.hp < bot.maxHp &&
+        (diff === 'RUTHLESS'
+          ? (bot.hp <= 74 && (!guaranteedFinish || bot.hp <= 40 || medkitDist < 280)) ||
+            (bot.hp < 92 && medkitDist < 360)
+          : diff === 'TACTICAL'
+            ? (bot.hp <= 66 && (!guaranteedFinish || bot.hp <= 36)) || (bot.hp < 86 && medkitDist < 250)
+            : bot.hp <= 45);
+
+      let isSeekingPickup = false;
+
+      if (shouldSeekMedkit && nearestMedkit) {
+        goalX = nearestMedkit.p.x;
+        goalY = nearestMedkit.p.y;
+        moveRatio = 1.0;
+        isSeekingPickup = true;
+
+        // Still fire opportunistically while routing through the medkit!
+        if (bot.ammo > 0 && target && target.stunTimer <= 0 && (target.postStunGraceTimer ?? 0) <= 0 && bot.aiHoldShotTimer <= 0) {
+          if (explosiveShotAngle !== null) {
+            const aimA = explosiveShotAngle + (Math.random() - 0.5) * aimSpread * 0.45;
+            mem.pendingShotAngle = aimA;
+            mem.pendingShotExpire = 0.42;
+            mem.pendingShotTargetId = null;
+            mem.pendingShotIsTrick = true;
+            activeAimAngle = aimA;
+          } else if (this.hasLineOfSight(bot.x, bot.y, target.x, target.y, bFloor)) {
+            const bSpeed = this.getBulletSpeed();
+            let predX = target.x;
+            let predY = target.y;
+            const leadScale = diff === 'RUTHLESS' ? 0.96 : diff === 'TACTICAL' ? 0.74 : 0.1;
+            for (let it = 0; it < 2; it++) {
+              const tHit = dist(bot.x, bot.y, predX, predY) / bSpeed;
+              const nx = target.x + target.vx * tHit * leadScale;
+              const ny = target.y + target.vy * tHit * leadScale;
+              if (this.isPointWalkableOnFloor(nx, ny, PLAYER_RADIUS, bFloor)) {
+                predX = nx;
+                predY = ny;
+              }
+            }
+            const shootA = Math.atan2(predY - bot.y, predX - bot.x) + (Math.random() - 0.5) * aimSpread;
+            mem.pendingShotAngle = shootA;
+            mem.pendingShotExpire = 0.4;
+            mem.pendingShotTargetId = diff === 'CHILL' ? null : target.id;
+            mem.pendingShotIsTrick = false;
+            activeAimAngle = shootA;
           }
         }
-        goalX = best.x;
-        goalY = best.y;
-        moveRatio = 0.96;
       } else if (bot.ammo === 0 || shouldStockpileRuthless) {
         // NEVER chase enemy when ammo === 0! Seek bullets or explore fresh arena sectors
         if (nearestBullet) {
           goalX = nearestBullet.p.x;
           goalY = nearestBullet.p.y;
           moveRatio = 0.96;
+          isSeekingPickup = true;
         } else {
           // Sweep patrol toward open quadrants to find floor ammo
           goalX = mem.patrolX;
@@ -2241,7 +2284,7 @@ export class ArenaEngine {
           const bSpeed = this.getBulletSpeed();
           let predX = target.x;
           let predY = target.y;
-          const leadScale = diff === 'RUTHLESS' ? 0.92 : diff === 'TACTICAL' ? 0.72 : 0.1;
+          const leadScale = diff === 'RUTHLESS' ? 0.96 : diff === 'TACTICAL' ? 0.74 : 0.1;
           for (let it = 0; it < 2; it++) {
             const tHit = dist(bot.x, bot.y, predX, predY) / bSpeed;
             const nx = target.x + target.vx * tHit * leadScale;
@@ -2267,14 +2310,14 @@ export class ArenaEngine {
           const moveOff = targetDist < 220 ? Math.PI + bot.aiStrafeDir * 0.7 : bot.aiStrafeDir * strafeSign;
           goalX = bot.x + Math.cos(toTarget + moveOff) * 210;
           goalY = bot.y + Math.sin(toTarget + moveOff) * 210;
-          moveRatio = diff === 'RUTHLESS' ? 0.95 : 0.82;
+          moveRatio = diff === 'RUTHLESS' ? 0.98 : 0.84;
           activeAimAngle = toTarget;
 
-          const trickChance = diff === 'RUTHLESS' ? 0.62 : diff === 'TACTICAL' ? 0.22 : 0;
+          const trickChance = diff === 'RUTHLESS' ? 0.72 : diff === 'TACTICAL' ? 0.26 : 0;
           if (targetShootable && trickChance > 0 && bot.aiHoldShotTimer <= 0 && Math.random() < trickChance) {
             const bounceAngle = this.findTrickshotAngle(bot, target, diff === 'RUTHLESS');
             if (bounceAngle !== null) {
-              const aimA = bounceAngle + (Math.random() - 0.5) * aimSpread * 0.3;
+              const aimA = bounceAngle + (Math.random() - 0.5) * aimSpread * 0.25;
               mem.pendingShotAngle = aimA;
               mem.pendingShotExpire = 0.48;
               mem.pendingShotTargetId = target.id;
@@ -2301,10 +2344,10 @@ export class ArenaEngine {
           const useY = this.isPointWalkableOnFloor(estX, estY, PLAYER_RADIUS, bFloor) ? estY : mem.lastSeenY;
           goalX = useX;
           goalY = useY;
-          moveRatio = 0.9;
+          moveRatio = 0.92;
           activeAimAngle = Math.atan2(useY - bot.y, useX - bot.x);
 
-          if (diff === 'RUTHLESS' && bot.aiHoldShotTimer <= 0 && mem.lastSeenTimer > 0.35 && Math.random() < 0.55) {
+          if (diff === 'RUTHLESS' && bot.aiHoldShotTimer <= 0 && mem.lastSeenTimer > 0.35 && Math.random() < 0.62) {
             const predTrick = this.findTrickshotToPoint(bot, useX, useY, PLAYER_RADIUS + 20, 40, 4);
             if (predTrick !== null) {
               mem.pendingShotAngle = predTrick;
@@ -2317,12 +2360,15 @@ export class ArenaEngine {
         } else if (nearestBullet && bot.ammo < bot.maxAmmo && (diff === 'RUTHLESS' || bot.ammo < 2)) {
           goalX = nearestBullet.p.x;
           goalY = nearestBullet.p.y;
-          moveRatio = 0.92;
+          moveRatio = 0.94;
+          isSeekingPickup = true;
         }
       }
 
       const rawMoveAngle = Math.atan2(goalY - bot.y, goalX - bot.x);
-      bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawMoveAngle, 68, bot.aiStrafeDir);
+      const goalDist = dist(bot.x, bot.y, goalX, goalY);
+      const probeDist = isSeekingPickup && goalDist < 130 ? Math.max(24, goalDist - 8) : 68;
+      bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawMoveAngle, probeDist, bot.aiStrafeDir);
       bot.aiMoveRatio = moveRatio;
     }
 
@@ -4426,13 +4472,30 @@ export class ArenaEngine {
           let goalY = this.map.height * 0.5;
           let goalFloor: FloorLevel = bFloor;
 
+          const medkitMaxDist =
+            diff === 'RUTHLESS'
+              ? bot.hp <= 74
+                ? 9999
+                : bot.hp < 92
+                  ? 340
+                  : 0
+              : diff === 'TACTICAL'
+                ? bot.hp <= 64
+                  ? 9999
+                  : bot.hp < 86
+                    ? 230
+                    : 0
+                : bot.hp <= 45
+                  ? 9999
+                  : 0;
           const medkitTarget =
-            bot.hp <= 55
+            medkitMaxDist > 0
               ? this.pickups
                   .filter(
                     (p) =>
                       p.kind === 'medkit' &&
                       sameFloor(p.floor, bFloor) &&
+                      dist(bot.x, bot.y, p.x, p.y) <= medkitMaxDist &&
                       this.canBotSeePoint(bot, p.x, p.y, bFloor, true)
                   )
                   .sort((a, b) => dist(bot.x, bot.y, a.x, a.y) - dist(bot.x, bot.y, b.x, b.y))[0]

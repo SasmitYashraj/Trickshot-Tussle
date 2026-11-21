@@ -1912,6 +1912,8 @@ class SoundEngine {
       minRate: number;
       maxRate: number;
       loopXfade: number;
+      stage2FadeIn?: number;
+      stage2LoopXfade?: number;
       climaxRateBoost: number;
     }
   > = {
@@ -1930,12 +1932,14 @@ class SoundEngine {
     mansion_wood: {
       url: '/assets/aistudio/horror-music-soundtrack-dark-tension-loop-game-ready-2-466681_16cf1bd3.mp3',
       stage1: { start: 0.02, end: 15.0 },
-      stage2: { start: 30.0, end: 45.0 },
+      stage2: { start: 32.0, end: 45.0 },
       baseGain: 0.32,
       rampGain: 0.24,
       minRate: 0.98,
       maxRate: 1.08,
       loopXfade: 0.24,
+      stage2FadeIn: 4.0,
+      stage2LoopXfade: 1.25,
       climaxRateBoost: 0.025,
     },
   };
@@ -2140,7 +2144,7 @@ class SoundEngine {
         now,
         initialStart,
         safeEnd,
-        initialStart > 0.05 ? 0.12 : 0.02,
+        initialStage === 2 ? (cfg.stage2FadeIn ?? 1.45) : initialStart > 0.05 ? 0.12 : 0.02,
         targetRate
       );
       nodes.currentSource = spawned.source;
@@ -2163,7 +2167,7 @@ class SoundEngine {
 
     // Smoothly equal-power crossfade from Stage 1 -> Stage 2 when reaching final showdown
     if (nodes.stage === 1 && finalStage) {
-      const xfadeDur = 1.45;
+      const xfadeDur = cfg.stage2FadeIn ?? 1.45;
       const stage2Seg = cfg.stage2;
       const safeS2End = Math.min(buffer.duration - 0.15, stage2Seg.end);
       if (nodes.currentGain && nodes.currentSource) {
@@ -2196,7 +2200,8 @@ class SoundEngine {
     const activeSeg = nodes.stage === 2 ? cfg.stage2 : cfg.stage1;
     const safeEnd = Math.min(buffer.duration - 0.15, activeSeg.end);
     const segSpan = Math.max(2, safeEnd - activeSeg.start);
-    const loopXfade = Math.min(cfg.loopXfade, segSpan * 0.25);
+    const rawLoopXfade = nodes.stage === 2 ? (cfg.stage2LoopXfade ?? cfg.loopXfade) : cfg.loopXfade;
+    const loopXfade = Math.min(rawLoopXfade, segSpan * 0.25);
 
     // Schedule seamless overlap crossfade right before segment boundary
     if (!nodes.nextScheduled && nodes.estOffset >= safeEnd - loopXfade - 0.18) {

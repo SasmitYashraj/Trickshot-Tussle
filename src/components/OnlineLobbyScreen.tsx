@@ -215,7 +215,7 @@ export function OnlineLobbyScreen({
                   {PLAYER_COLOR_PALETTE.find((c) => c.id === mySlotObj?.colorId)?.name ?? 'Unique per player'}
                 </span>
               </div>
-              <div className="grid grid-cols-9 gap-1.5">
+              <div className="grid grid-cols-7 sm:grid-cols-11 gap-1.5">
                 {PLAYER_COLOR_PALETTE.map((opt) => {
                   const isMine = mySlotObj?.colorId === opt.id;
                   const takenByHuman = humanTakenColors.has(opt.id);

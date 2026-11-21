@@ -1,5 +1,6 @@
-import { useId, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import type { PlayerSkinFinish } from '../game/types';
+import { PlayerAvatar } from './PlayerAvatar';
 
 interface TouchControlsProps {
   ammo: number;
@@ -34,11 +35,6 @@ export function TouchControls({
   onStickChange,
   onStickRelease,
 }: TouchControlsProps) {
-  const uid = useId().replace(/:/g, '_');
-  const gradId = `joy_grad_${uid}`;
-  const patId = `joy_pat_${uid}`;
-  const clipId = `joy_clip_${uid}`;
-
   const baseRef = useRef<HTMLDivElement | null>(null);
   const pointerIdRef = useRef<number | null>(null);
   const lastAngleRef = useRef<number>(0);
@@ -160,104 +156,18 @@ export function TouchControls({
               ? `0 0 18px rgba(250, 204, 21, 0.55), 0 4px 12px rgba(0, 0, 0, 0.55)`
               : `0 0 14px ${hexToRgba(playerColor, knobOffset.active ? 0.48 : 0.26)}, 0 4px 12px rgba(0, 0, 0, 0.55)`,
           }}
-          className={`pointer-events-none absolute h-[42%] w-[42%] rounded-full flex items-center justify-center ${
+          className={`pointer-events-none absolute h-[44%] w-[44%] rounded-full flex items-center justify-center ${
             armed ? 'ring-2 ring-amber-300/80' : ''
           }`}
         >
-          <svg viewBox="0 0 36 36" className="h-full w-full drop-shadow-sm" aria-hidden="true">
-            <defs>
-              <clipPath id={clipId}>
-                <circle cx="18" cy="18" r="16" />
-              </clipPath>
-
-              {playerFinish === 'metal' ? (
-                <linearGradient id={gradId} x1="0%" y1="0%" x2="100%" y2="100%">
-                  <stop offset="0%" stopColor="#F8FAFC" />
-                  <stop offset="28%" stopColor={playerAccentColor} />
-                  <stop offset="52%" stopColor="#475569" />
-                  <stop offset="76%" stopColor="#E2E8F0" />
-                  <stop offset="100%" stopColor="#1E293B" />
-                </linearGradient>
-              ) : (
-                <radialGradient id={gradId} cx="34%" cy="30%" r="72%">
-                  <stop offset="0%" stopColor="#FFFFFF" />
-                  <stop offset="24%" stopColor={playerAccentColor} />
-                  <stop offset="70%" stopColor={playerColor} />
-                  <stop offset="100%" stopColor="#0F172A" />
-                </radialGradient>
-              )}
-
-              {playerFinish === 'fish_scale' && (
-                <pattern id={patId} width="10" height="8" patternUnits="userSpaceOnUse">
-                  <path
-                    d="M0 4 Q5 9 10 4 M-5 0 Q0 5 5 0 M5 0 Q10 5 15 0"
-                    fill="none"
-                    stroke="rgba(255,255,255,0.42)"
-                    strokeWidth="1.2"
-                  />
-                  <path
-                    d="M0 8 Q5 13 10 8"
-                    fill="none"
-                    stroke="rgba(15,23,42,0.42)"
-                    strokeWidth="1.1"
-                  />
-                </pattern>
-              )}
-
-              {playerFinish === 'wood' && (
-                <pattern id={patId} width="14" height="12" patternUnits="userSpaceOnUse">
-                  <rect width="14" height="12" fill="rgba(120,53,15,0.22)" />
-                  <path
-                    d="M0 3 Q7 1.5 14 3 M0 8 Q7 10 14 8"
-                    fill="none"
-                    stroke="rgba(253,224,71,0.24)"
-                    strokeWidth="1.1"
-                  />
-                  <path
-                    d="M0 5.5 Q7 4.2 14 5.5 M0 10.5 Q7 11.5 14 10.5"
-                    fill="none"
-                    stroke="rgba(28,10,2,0.55)"
-                    strokeWidth="1.2"
-                  />
-                </pattern>
-              )}
-
-              {playerFinish === 'metal' && (
-                <pattern id={patId} width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(35)">
-                  <line x1="0" y1="2" x2="12" y2="2" stroke="rgba(255,255,255,0.45)" strokeWidth="1.3" />
-                  <line x1="0" y1="6" x2="12" y2="6" stroke="rgba(15,23,42,0.28)" strokeWidth="1" />
-                  <line x1="0" y1="10" x2="12" y2="10" stroke="rgba(241,245,249,0.25)" strokeWidth="1" />
-                </pattern>
-              )}
-            </defs>
-
-            <circle cx="18" cy="18" r="16" fill={`url(#${gradId})`} stroke="#090D16" strokeWidth="2.4" />
-
-            {playerFinish !== 'solid' && playerFinish !== 'animated_sparkle' && (
-              <circle cx="18" cy="18" r="16" fill={`url(#${patId})`} clipPath={`url(#${clipId})`} />
-            )}
-
-            {playerFinish === 'animated_sparkle' && (
-              <g clipPath={`url(#${clipId})`}>
-                <path
-                  d="M9 6 L10.2 9.2 L13.4 10.4 L10.2 11.6 L9 14.8 L7.8 11.6 L4.6 10.4 L7.8 9.2 Z"
-                  fill="#FEF9C3"
-                  className="animate-pulse"
-                />
-                <path
-                  d="M25 11 L25.9 13.4 L28.3 14.3 L25.9 15.2 L25 17.6 L24.1 15.2 L21.7 14.3 L24.1 13.4 Z"
-                  fill="#FFFFFF"
-                />
-                <path
-                  d="M14 24 L14.8 26.2 L17 27 L14.8 27.8 L14 30 L13.2 27.8 L11 27 L13.2 26.2 Z"
-                  fill="#FEF08A"
-                />
-              </g>
-            )}
-
-            {/* Tactile inner grip dimple */}
-            <circle cx="18" cy="18" r="5" fill="rgba(9, 13, 22, 0.34)" stroke="rgba(255,255,255,0.22)" strokeWidth="1" />
-          </svg>
+          <PlayerAvatar
+            color={playerColor}
+            accentColor={playerAccentColor}
+            finish={playerFinish}
+            showVisor={false}
+            className="!h-full !w-full"
+          />
+          <span className="pointer-events-none absolute h-[28%] w-[28%] rounded-full bg-slate-950/35 border border-white/25" />
         </div>
       </div>
     </div>

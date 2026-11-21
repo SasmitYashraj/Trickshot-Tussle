@@ -114,13 +114,13 @@ export function TitleScreen({
                 Move with <span className="font-semibold text-slate-100">WASD</span> (hold <span className="font-semibold text-slate-100">Shift</span> to creep), aim 360° with your cursor, and press <span className="font-semibold text-slate-100">Spacebar</span> to fire on PC—or drag &amp; release on touchscreens.
               </p>
 
-              {/* Compact 17-Swatch Skin & Material Palette */}
+              {/* Compact Skin & Material Palette */}
               <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/65 p-3">
                 <div className="flex items-center justify-between gap-2 mb-2">
                   <span className="text-xs font-semibold text-slate-200">Fighter Colors &amp; Finishes</span>
-                  <span className="text-[11px] text-slate-400">{activeColorOpt.name}</span>
+                  <span className="text-[11px] font-medium text-sky-300">{activeColorOpt.name}</span>
                 </div>
-                <div className="grid grid-cols-9 sm:grid-cols-9 gap-1.5">
+                <div className="grid grid-cols-7 sm:grid-cols-11 gap-1.5">
                   {PLAYER_COLOR_PALETTE.map((opt) => {
                     const selected = activeColorId === opt.id;
                     return (
