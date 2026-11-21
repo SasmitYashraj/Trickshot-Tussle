@@ -1806,7 +1806,7 @@ function getLibraryUpperFloorCanvas(map: ArenaMap): HTMLCanvasElement {
   const libImg = getLibraryFloorTexture();
   const woolImg = getPersianWoolTexture();
   const carpetImg = getLibraryCarpetTexture();
-  const key = `${map.id}_upper_${map.width}x${map.height}_v4${libImg ? '_aitex' : ''}${woolImg ? '_w' : ''}${carpetImg ? '_c' : ''}`;
+  const key = `${map.id}_upper_${map.width}x${map.height}_v5${libImg ? '_aitex' : ''}${woolImg ? '_w' : ''}${carpetImg ? '_c' : ''}`;
   const existing = floorCache.get(key);
   if (existing) return existing;
 
@@ -1824,7 +1824,7 @@ function getLibraryUpperFloorCanvas(map: ArenaMap): HTMLCanvasElement {
   }
   ctx.clip();
 
-  ctx.fillStyle = '#251209';
+  ctx.fillStyle = '#211007';
   ctx.fillRect(0, 0, map.width, map.height);
 
   if (libImg) {
@@ -1833,13 +1833,13 @@ function getLibraryUpperFloorCanvas(map: ArenaMap): HTMLCanvasElement {
       ctx.fillStyle = libPat;
       ctx.fillRect(0, 0, map.width, map.height);
     }
-    // Rich dark chestnut/umber antique depth (zero bright yellow tint!)
-    ctx.fillStyle = 'rgba(28, 12, 5, 0.24)';
+    // Rich dark espresso/umber antique wood finish matching Ground Floor
+    ctx.fillStyle = 'rgba(20, 8, 3, 0.30)';
     ctx.fillRect(0, 0, map.width, map.height);
   } else {
     const plankH = 34;
     const plankW = 152;
-    const tones = ['#361B0D', '#412110', '#2E170B', '#482513', '#32190D'];
+    const tones = ['#2B140A', '#351A0D', '#231007', '#3B1D0E', '#271208'];
     const rows = Math.ceil(map.height / plankH);
     for (let r = 0; r < rows; r++) {
       const y = r * plankH;
@@ -1855,6 +1855,21 @@ function getLibraryUpperFloorCanvas(map: ArenaMap): HTMLCanvasElement {
         ctx.strokeRect(x, y, plankW, plankH);
       }
     }
+  }
+
+  // Deep antique perimeter wainscot & balcony fascia depth shading around the mezzanine opening
+  const pad = 24;
+  ctx.strokeStyle = 'rgba(6, 2, 1, 0.62)';
+  ctx.lineWidth = 22;
+  ctx.strokeRect(pad, pad, map.width - pad * 2, map.height - pad * 2);
+
+  // Carved dark mahogany balcony lip framing guarded edges only (leaving 4 stair landings open)
+  for (const rail of map.walls) {
+    if (rail.kind !== 'mezzanine_rail') continue;
+    ctx.fillStyle = 'rgba(5, 2, 1, 0.72)';
+    ctx.fillRect(rail.x - 10, rail.y - 10, rail.w + 20, rail.h + 20);
+    ctx.fillStyle = 'rgba(54, 24, 11, 0.56)';
+    ctx.fillRect(rail.x - 3, rail.y - 3, rail.w + 6, rail.h + 6);
   }
 
   // Olive-moss woven mezzanine walkway runners matching DOORS Library photo #3
@@ -2039,16 +2054,37 @@ function drawObstacle(ctx: CanvasRenderingContext2D, wall: WallRect, world?: Ren
       ctx.restore();
     } else if (kind === 'perimeter_wood') {
       ctx.save();
-      ctx.fillStyle = '#2E1306';
-      ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
-      const wg = getCachedPattern(ctx, getWoodFurnitureCanvas());
-      if (wg) {
-        ctx.fillStyle = wg;
+      if (isLibrary) {
+        ctx.fillStyle = '#1B0B05';
         ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
+        const libImg = getLibraryFloorTexture();
+        if (libImg) {
+          const lp = getCachedPattern(ctx, libImg);
+          if (lp) {
+            ctx.save();
+            ctx.globalAlpha = 0.62;
+            ctx.fillStyle = lp;
+            ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
+            ctx.restore();
+          }
+        }
+        ctx.fillStyle = 'rgba(10, 4, 1, 0.45)';
+        ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
+        ctx.strokeStyle = '#3D1D0E';
+        ctx.lineWidth = 1.6;
+        ctx.strokeRect(wall.x + 1, wall.y + 1, wall.w - 2, wall.h - 2);
+      } else {
+        ctx.fillStyle = '#2E1306';
+        ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
+        const wg = getCachedPattern(ctx, getWoodFurnitureCanvas());
+        if (wg) {
+          ctx.fillStyle = wg;
+          ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
+        }
+        ctx.strokeStyle = '#7C3A16';
+        ctx.lineWidth = 1.8;
+        ctx.strokeRect(wall.x + 1, wall.y + 1, wall.w - 2, wall.h - 2);
       }
-      ctx.strokeStyle = '#7C3A16';
-      ctx.lineWidth = 1.8;
-      ctx.strokeRect(wall.x + 1, wall.y + 1, wall.w - 2, wall.h - 2);
       ctx.restore();
     } else if (kind === 'perimeter_ice') {
       ctx.save();
@@ -2870,45 +2906,92 @@ function drawObstacle(ctx: CanvasRenderingContext2D, wall: WallRect, world?: Ren
   if (kind === 'mezzanine_rail' || kind === 'stair_rail') {
     ctx.save();
     const isVert = wall.h > wall.w;
-    ctx.fillStyle = '#2B1206';
-    ctx.strokeStyle = '#5C2912';
+
+    // Grounded drop shadow cast below the dark mahogany balustrade
+    ctx.fillStyle = 'rgba(4, 1, 0, 0.56)';
+    ctx.beginPath();
+    ctx.roundRect(wall.x + 3, wall.y + 4, wall.w, wall.h, 3);
+    ctx.fill();
+
+    // Base dark espresso-mahogany rail plinth matching Library floors & bookcases
+    ctx.fillStyle = '#1A0A04';
+    ctx.beginPath();
+    ctx.roundRect(wall.x, wall.y, wall.w, wall.h, 2.5);
+    ctx.fill();
+
+    const libImg = getLibraryFloorTexture();
+    if (libImg) {
+      const lp = getCachedPattern(ctx, libImg);
+      if (lp) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.roundRect(wall.x, wall.y, wall.w, wall.h, 2.5);
+        ctx.clip();
+        ctx.globalAlpha = 0.55;
+        ctx.fillStyle = lp;
+        ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
+        ctx.restore();
+      }
+    }
+
+    // Beveled dark mahogany top handrail molding
+    const railG = isVert
+      ? ctx.createLinearGradient(wall.x, 0, wall.x + wall.w, 0)
+      : ctx.createLinearGradient(0, wall.y, 0, wall.y + wall.h);
+    railG.addColorStop(0, '#120602');
+    railG.addColorStop(0.24, '#2F150A');
+    railG.addColorStop(0.48, '#462111');
+    railG.addColorStop(0.76, '#281108');
+    railG.addColorStop(1, '#0F0502');
+    ctx.fillStyle = railG;
+    if (isVert) {
+      ctx.fillRect(wall.x + 2, wall.y + 1, wall.w - 4, wall.h - 2);
+      ctx.fillStyle = 'rgba(182, 122, 74, 0.20)';
+      ctx.fillRect(wall.x + wall.w * 0.5 - 1.2, wall.y + 2, 2.4, wall.h - 4);
+    } else {
+      ctx.fillRect(wall.x + 1, wall.y + 2, wall.w - 2, wall.h - 4);
+      ctx.fillStyle = 'rgba(182, 122, 74, 0.20)';
+      ctx.fillRect(wall.x + 2, wall.y + wall.h * 0.5 - 1.2, wall.w - 4, 2.4);
+    }
+
+    // Crisp outer dark border
+    ctx.strokeStyle = '#0D0402';
     ctx.lineWidth = 1.4;
     ctx.beginPath();
-    ctx.roundRect(wall.x, wall.y, wall.w, wall.h, 3);
-    ctx.fill();
+    ctx.roundRect(wall.x + 0.5, wall.y + 0.5, wall.w - 1, wall.h - 1, 2.5);
     ctx.stroke();
 
-    const wg = getCachedPattern(ctx, getWoodFurnitureCanvas());
-    if (wg) {
-      ctx.fillStyle = wg;
-      ctx.fill();
-    }
+    // Chamfered square walnut newel posts + subtle antique-bronze finial caps (no bright cartoon dots)
+    const drawNewelPost = (cx: number, cy: number, size: number) => {
+      const hs = size * 0.5;
+      ctx.fillStyle = '#0D0402';
+      ctx.fillRect(cx - hs - 1, cy - hs - 1, size + 2, size + 2);
+      ctx.fillStyle = '#381A0D';
+      ctx.fillRect(cx - hs, cy - hs, size, size);
+      ctx.strokeStyle = 'rgba(192, 134, 82, 0.28)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(cx - hs + 0.5, cy - hs + 0.5, size - 1, size - 1);
+      ctx.fillStyle = '#6E4826';
+      ctx.fillRect(cx - 2, cy - 2, 4, 4);
+    };
 
-    ctx.fillStyle = '#7C3E18';
+    const step = 64;
     if (isVert) {
-      ctx.fillRect(wall.x + 4, wall.y + 3, wall.w - 8, wall.h - 6);
-    } else {
-      ctx.fillRect(wall.x + 3, wall.y + 4, wall.w - 6, wall.h - 8);
-    }
-
-    ctx.fillStyle = '#B4692B';
-    ctx.strokeStyle = '#1E0B03';
-    ctx.lineWidth = 1.1;
-    const step = 46;
-    if (isVert) {
-      for (let py = wall.y + 8; py <= wall.y + wall.h - 6; py += step) {
-        ctx.beginPath();
-        ctx.arc(wall.x + wall.w * 0.5, py, 4.2, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
+      drawNewelPost(wall.x + wall.w * 0.5, wall.y + 6, 11);
+      for (let py = wall.y + 18; py < wall.y + wall.h - 14; py += step) {
+        ctx.fillStyle = 'rgba(16, 6, 2, 0.72)';
+        ctx.fillRect(wall.x + 3, py, wall.w - 6, 2);
+        drawNewelPost(wall.x + wall.w * 0.5, py + 10, 9);
       }
+      drawNewelPost(wall.x + wall.w * 0.5, wall.y + wall.h - 6, 11);
     } else {
-      for (let px = wall.x + 8; px <= wall.x + wall.w - 6; px += step) {
-        ctx.beginPath();
-        ctx.arc(px, wall.y + wall.h * 0.5, 4.2, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
+      drawNewelPost(wall.x + 6, wall.y + wall.h * 0.5, 11);
+      for (let px = wall.x + 18; px < wall.x + wall.w - 14; px += step) {
+        ctx.fillStyle = 'rgba(16, 6, 2, 0.72)';
+        ctx.fillRect(px, wall.y + 3, 2, wall.h - 6);
+        drawNewelPost(px + 10, wall.y + wall.h * 0.5, 9);
       }
+      drawNewelPost(wall.x + wall.w - 6, wall.y + wall.h * 0.5, 11);
     }
     ctx.restore();
     return;
@@ -3482,26 +3565,32 @@ function drawLibraryStairs(
   if (stairs.length === 0) return;
 
   const lights = getConeLightSources(map);
-  const woodGrain = getCachedPattern(ctx, getWoodFurnitureCanvas());
+  const libFloorImg = getLibraryFloorTexture();
+  const libFloorPat = libFloorImg ? getCachedPattern(ctx, libFloorImg) : null;
+  const woolImg = getPersianWoolTexture();
+  const woolPat = woolImg ? getCachedPattern(ctx, woolImg) : null;
+  const carpetWeavePat = getCachedPattern(ctx, getCarpetWeaveCanvas());
 
   ctx.save();
   for (const st of stairs) {
-    // Deep warm timber stairwell frame
-    ctx.fillStyle = '#120804';
-    ctx.strokeStyle = '#3B1B0C';
-    ctx.lineWidth = 2.2;
+    // Deep espresso-mahogany stairwell casing matching Library floor & mezzanine
+    ctx.fillStyle = '#0E0502';
+    ctx.strokeStyle = '#2B1308';
+    ctx.lineWidth = 2;
     ctx.fillRect(st.x, st.y, st.w, st.h);
     ctx.strokeRect(st.x, st.y, st.w, st.h);
 
     const vertical = st.upDir === 'up' || st.upDir === 'down';
     const steps = 11;
     const lookingUpFromGround = libraryBlend < 0.5;
-    const railW = 7;
+    const railW = 8;
 
     if (vertical) {
       const stepH = st.h / steps;
       const sideInset = railW;
       const treadW = st.w - sideInset * 2;
+      const runnerW = Math.max(30, treadW * 0.56);
+      const runnerX = st.x + st.w * 0.5 - runnerW * 0.5;
 
       for (let i = 0; i < steps; i++) {
         // elev = 0 at Ground Floor, 1 at Upper Mezzanine
@@ -3517,72 +3606,104 @@ function drawLibraryStairs(
           if (d < 520) lampWarmth = Math.max(lampWarmth, 1 - d / 520);
         }
 
-        // Key depth cue:
-        // - From Ground Floor (looking UP): upper steps rise toward illuminated mezzanine balcony
-        // - From Upper Floor (looking DOWN): upper landing stays bright, lower steps descend into shadow
         const lightLevel = lookingUpFromGround
-          ? Math.min(1, (0.42 + elev * 0.52) * (0.78 + lampWarmth * 0.34))
-          : Math.max(0.14, (0.18 + elev * 0.78) * (0.76 + lampWarmth * 0.32));
+          ? Math.min(1, (0.38 + elev * 0.54) * (0.78 + lampWarmth * 0.30))
+          : Math.max(0.14, (0.16 + elev * 0.78) * (0.76 + lampWarmth * 0.30));
 
-        const r = Math.round(30 + lightLevel * 86);
-        const g = Math.round(16 + lightLevel * 49);
-        const b = Math.round(8 + lightLevel * 25);
+        // Dark espresso-mahogany treads (zero bright orange wood tone!)
+        const r = Math.round(18 + lightLevel * 44);
+        const g = Math.round(9 + lightLevel * 22);
+        const b = Math.round(4 + lightLevel * 11);
 
-        const riserDark = `rgb(${Math.round(r * 0.52)}, ${Math.round(g * 0.52)}, ${Math.round(b * 0.52)})`;
+        const riserDark = `rgb(${Math.round(r * 0.45)}, ${Math.round(g * 0.45)}, ${Math.round(b * 0.45)})`;
         const treadMain = `rgb(${r}, ${g}, ${b})`;
-        const nosingWarm = `rgb(${Math.min(255, Math.round(r * 1.26))}, ${Math.min(255, Math.round(g * 1.24))}, ${Math.min(255, Math.round(b * 1.2))})`;
+        const nosingWarm = `rgb(${Math.min(255, Math.round(r * 1.24))}, ${Math.min(255, Math.round(g * 1.22))}, ${Math.min(255, Math.round(b * 1.18))})`;
 
         const treadGrad = ctx.createLinearGradient(0, sy, 0, sy + stepH);
         if (st.upDir === 'up') {
-          // Higher step is toward top (-Y): bright nosing edge sits at bottom of each tread casting a crisp riser shadow beneath it
           treadGrad.addColorStop(0, riserDark);
-          treadGrad.addColorStop(0.22, treadMain);
+          treadGrad.addColorStop(0.24, treadMain);
           treadGrad.addColorStop(0.84, treadMain);
           treadGrad.addColorStop(1, nosingWarm);
         } else {
           treadGrad.addColorStop(0, nosingWarm);
           treadGrad.addColorStop(0.16, treadMain);
-          treadGrad.addColorStop(0.78, treadMain);
+          treadGrad.addColorStop(0.76, treadMain);
           treadGrad.addColorStop(1, riserDark);
         }
         ctx.fillStyle = treadGrad;
         ctx.fillRect(st.x + sideInset, sy, treadW, stepH);
 
-        if (woodGrain) {
+        if (libFloorPat) {
           ctx.save();
-          ctx.globalAlpha = 0.42;
-          ctx.fillStyle = woodGrain;
+          ctx.globalAlpha = 0.28 + lightLevel * 0.16;
+          ctx.fillStyle = libFloorPat;
           ctx.fillRect(st.x + sideInset, sy, treadW, stepH);
           ctx.restore();
         }
 
-        // Woven olive-moss carpet stair runner down center of treads (DOORS Library photo #3)
-        const runnerW = Math.max(24, treadW * 0.56);
-        const runnerX = st.x + st.w * 0.5 - runnerW * 0.5;
-        ctx.fillStyle = `rgba(${Math.round(38 + lightLevel * 32)}, ${Math.round(46 + lightLevel * 36)}, ${Math.round(22 + lightLevel * 18)}, 0.92)`;
+        // Woven olive-moss carpet stair runner matching mezzanine walkways
+        ctx.fillStyle = `rgb(${Math.round(28 + lightLevel * 22)}, ${Math.round(35 + lightLevel * 26)}, ${Math.round(16 + lightLevel * 12)})`;
         ctx.fillRect(runnerX, sy, runnerW, stepH);
-        ctx.fillStyle = 'rgba(148, 160, 82, 0.22)';
-        ctx.fillRect(runnerX, sy, 2, stepH);
-        ctx.fillRect(runnerX + runnerW - 2, sy, 2, stepH);
 
-        // Crisp nosing highlight on step front edge (facing lower floor) & riser drop shadow cast onto next lower step
-        const lipY = st.upDir === 'up' ? sy + stepH - 2.4 : sy + 0.4;
-        ctx.fillStyle = `rgba(232, 178, 120, ${0.14 + lightLevel * 0.24})`;
-        ctx.fillRect(st.x + sideInset + 1, lipY, treadW - 2, 2);
+        if (woolPat) {
+          ctx.save();
+          ctx.globalCompositeOperation = 'multiply';
+          ctx.globalAlpha = 0.52;
+          ctx.fillStyle = woolPat;
+          ctx.fillRect(runnerX, sy, runnerW, stepH);
+          ctx.restore();
+        }
+        if (carpetWeavePat) {
+          ctx.save();
+          ctx.globalAlpha = 0.26;
+          ctx.fillStyle = carpetWeavePat;
+          ctx.fillRect(runnerX, sy, runnerW, stepH);
+          ctx.restore();
+        }
 
-        const riserShadowY = st.upDir === 'up' ? sy : sy + stepH - 3.6;
-        ctx.fillStyle = 'rgba(4, 2, 1, 0.56)';
-        ctx.fillRect(st.x + sideInset, riserShadowY, treadW, 3.6);
+        // Subtle sage-gold woven runner selvedge borders
+        ctx.fillStyle = `rgba(132, 146, 76, ${0.18 + lightLevel * 0.18})`;
+        ctx.fillRect(runnerX + 3, sy, 2, stepH);
+        ctx.fillRect(runnerX + runnerW - 5, sy, 2, stepH);
+
+        // Burnished antique-brass stair rod securing runner at step crease
+        const rodY = st.upDir === 'up' ? sy + 1.8 : sy + stepH - 3.6;
+        ctx.fillStyle = `rgba(118, 84, 42, ${0.42 + lightLevel * 0.34})`;
+        ctx.fillRect(runnerX - 3, rodY, runnerW + 6, 2);
+        ctx.fillStyle = `rgba(196, 152, 92, ${0.28 + lightLevel * 0.24})`;
+        ctx.fillRect(runnerX - 1, rodY, runnerW + 2, 0.9);
+
+        // Subtle mahogany step nosing bevel & crisp dark riser shadow
+        const lipY = st.upDir === 'up' ? sy + stepH - 2.2 : sy + 0.4;
+        ctx.fillStyle = `rgba(168, 114, 72, ${0.10 + lightLevel * 0.16})`;
+        ctx.fillRect(st.x + sideInset + 1, lipY, treadW - 2, 1.8);
+
+        const riserShadowY = st.upDir === 'up' ? sy : sy + stepH - 3.8;
+        ctx.fillStyle = 'rgba(3, 1, 0, 0.66)';
+        ctx.fillRect(st.x + sideInset, riserShadowY, treadW, 3.8);
       }
 
-      // Carved wooden stair side handrails / banisters (clearly anchors stairs onto floor levels)
+      // Dark mahogany stair side banisters + chamfered square newel caps matching mezzanine_rail
       for (const rx of [st.x + 1, st.x + st.w - railW]) {
         const rg = ctx.createLinearGradient(rx, 0, rx + railW, 0);
-        rg.addColorStop(0, '#3D1B0B');
-        rg.addColorStop(0.45, '#7A3E1D');
-        rg.addColorStop(1, '#261006');
+        rg.addColorStop(0, '#120602');
+        rg.addColorStop(0.45, '#3E1D0E');
+        rg.addColorStop(1, '#100502');
         ctx.fillStyle = rg;
         ctx.fillRect(rx, st.y, railW - 1, st.h);
+
+        ctx.fillStyle = 'rgba(182, 122, 74, 0.18)';
+        ctx.fillRect(rx + railW * 0.5 - 1, st.y + 2, 1.5, st.h - 4);
+
+        for (const py of [st.y + 5, st.y + st.h - 5]) {
+          ctx.fillStyle = '#0D0402';
+          ctx.fillRect(rx - 1, py - 5, railW + 1, 10);
+          ctx.fillStyle = '#381A0D';
+          ctx.fillRect(rx, py - 4, railW - 1, 8);
+          ctx.fillStyle = '#6E4826';
+          ctx.fillRect(rx + railW * 0.5 - 1.8, py - 1.5, 3, 3);
+        }
       }
 
       // Dynamic cast shadow on steps if any entity stands on or right above this stairwell
@@ -3599,9 +3720,7 @@ function drawLibraryStairs(
         }
       }
 
-      // Directional floor depth lighting:
-      // - On Ground (blend < 0.5): slight ambient occlusion at bottom entrance transitioning UP into warm balcony light!
-      // - On Upper (blend >= 0.5): ground pit at bottom fades down into darkness while upper mezzanine landing stays bright!
+      // Directional floor depth lighting
       const gY = st.upDir === 'up' ? st.y + st.h : st.y;
       const uY = st.upDir === 'up' ? st.y : st.y + st.h;
       const depthGrad = ctx.createLinearGradient(0, gY, 0, uY);
@@ -3609,64 +3728,77 @@ function drawLibraryStairs(
         const enterOcc = Math.max(0.08, 0.34 * (1 - libraryBlend * 2));
         depthGrad.addColorStop(0, `rgba(4, 2, 1, ${enterOcc})`);
         depthGrad.addColorStop(0.42, 'rgba(4, 2, 1, 0.05)');
-        depthGrad.addColorStop(0.76, 'rgba(218, 152, 92, 0.09)');
-        depthGrad.addColorStop(1, 'rgba(232, 168, 108, 0.22)');
+        depthGrad.addColorStop(0.76, 'rgba(188, 122, 68, 0.07)');
+        depthGrad.addColorStop(1, 'rgba(202, 134, 78, 0.16)');
       } else {
         const downFade = Math.min(0.92, (libraryBlend - 0.45) * 1.65);
         depthGrad.addColorStop(0, `rgba(4, 2, 1, ${downFade})`);
         depthGrad.addColorStop(0.45, `rgba(4, 2, 1, ${downFade * 0.42})`);
-        depthGrad.addColorStop(1, 'rgba(220, 154, 96, 0.14)');
+        depthGrad.addColorStop(1, 'rgba(196, 128, 72, 0.12)');
       }
       ctx.fillStyle = depthGrad;
       ctx.fillRect(st.x + 2, st.y + 2, st.w - 4, st.h - 4);
 
-      // Subtle carved brass chevron showing climb direction toward destination floor
+      // Subtle inlaid antique-brass directional hairline at mouth of stairs
       const midX = st.x + st.w * 0.5;
       const midY = st.y + st.h * 0.5;
       const arrowDir =
         libraryBlend >= 0.5 ? (st.upDir === 'up' ? 1 : -1) : st.upDir === 'up' ? -1 : 1;
-      ctx.strokeStyle = 'rgba(226, 178, 118, 0.36)';
-      ctx.lineWidth = 2.2;
+      ctx.strokeStyle = 'rgba(182, 140, 86, 0.22)';
+      ctx.lineWidth = 1.6;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       ctx.beginPath();
-      ctx.moveTo(midX - 13, midY - arrowDir * 4);
-      ctx.lineTo(midX, midY + arrowDir * 8);
-      ctx.lineTo(midX + 13, midY - arrowDir * 4);
+      ctx.moveTo(midX - 10, midY - arrowDir * 3);
+      ctx.lineTo(midX, midY + arrowDir * 6);
+      ctx.lineTo(midX + 10, midY - arrowDir * 3);
       ctx.stroke();
     } else {
       const stepW = st.w / steps;
       const treadH = st.h - railW * 2;
+      const runnerH = Math.max(30, treadH * 0.56);
+      const runnerY = st.y + st.h * 0.5 - runnerH * 0.5;
       for (let i = 0; i < steps; i++) {
         const t = (i + 0.5) / steps;
         const elev = st.upDir === 'left' ? 1 - t : t;
         const sx = st.x + i * stepW;
         const lightLevel = lookingUpFromGround
-          ? Math.min(1, 0.44 + elev * 0.52)
-          : Math.max(0.16, 0.18 + elev * 0.78);
-        const r = Math.round(30 + lightLevel * 84);
-        const g = Math.round(16 + lightLevel * 48);
-        const b = Math.round(8 + lightLevel * 24);
+          ? Math.min(1, 0.38 + elev * 0.54)
+          : Math.max(0.14, 0.16 + elev * 0.78);
+        const r = Math.round(18 + lightLevel * 44);
+        const g = Math.round(9 + lightLevel * 22);
+        const b = Math.round(4 + lightLevel * 11);
         ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
         ctx.fillRect(sx, st.y + railW, stepW, treadH);
-        if (woodGrain) {
+        if (libFloorPat) {
           ctx.save();
-          ctx.globalAlpha = 0.4;
-          ctx.fillStyle = woodGrain;
+          ctx.globalAlpha = 0.28 + lightLevel * 0.16;
+          ctx.fillStyle = libFloorPat;
           ctx.fillRect(sx, st.y + railW, stepW, treadH);
           ctx.restore();
         }
+        ctx.fillStyle = `rgb(${Math.round(28 + lightLevel * 22)}, ${Math.round(35 + lightLevel * 26)}, ${Math.round(16 + lightLevel * 12)})`;
+        ctx.fillRect(sx, runnerY, stepW, runnerH);
+        if (carpetWeavePat) {
+          ctx.save();
+          ctx.globalAlpha = 0.26;
+          ctx.fillStyle = carpetWeavePat;
+          ctx.fillRect(sx, runnerY, stepW, runnerH);
+          ctx.restore();
+        }
         const lipX = st.upDir === 'left' ? sx + stepW - 2.2 : sx + 0.4;
-        ctx.fillStyle = `rgba(232, 178, 120, ${0.14 + lightLevel * 0.24})`;
+        ctx.fillStyle = `rgba(168, 114, 72, ${0.12 + lightLevel * 0.18})`;
         ctx.fillRect(lipX, st.y + railW, 2, treadH);
-        const shadowX = st.upDir === 'left' ? sx : sx + stepW - 3.4;
-        ctx.fillStyle = 'rgba(4, 2, 1, 0.54)';
-        ctx.fillRect(shadowX, st.y + railW, 3.4, treadH);
+        const shadowX = st.upDir === 'left' ? sx : sx + stepW - 3.6;
+        ctx.fillStyle = 'rgba(3, 1, 0, 0.62)';
+        ctx.fillRect(shadowX, st.y + railW, 3.6, treadH);
       }
-      // Horizontal stair handrails
+      // Horizontal mahogany handrails
       for (const ry of [st.y + 1, st.y + st.h - railW]) {
-        ctx.fillStyle = '#5C2C14';
+        ctx.fillStyle = '#2A1207';
         ctx.fillRect(st.x, ry, st.w, railW - 1);
+        ctx.fillStyle = 'rgba(182, 122, 74, 0.18)';
+        ctx.fillRect(st.x + 2, ry + railW * 0.5 - 1, st.w - 4, 1.5);
       }
     }
   }
@@ -6571,10 +6703,10 @@ function getCargoVentSources(map: ArenaMap): ConeLightSource[] {
     x: p.x,
     y: p.y,
     dirY: 0,
-    range: 250,
-    beamLen: 250,
+    range: 145,
+    beamLen: 145,
     beamHalfBase: 40,
-    beamHalfEnd: 250,
+    beamHalfEnd: 145,
     coneMaxHalfAngle: Math.PI,
     colorRgb: '52, 211, 153',
   }));
@@ -7050,39 +7182,66 @@ function drawAmbientArenaLights(
       ctx.fill();
     }
   } else if (map.floorTheme === 'maple_cargo') {
-    // Subdued emerald-green louvered floor vents matching Cargo Deck aesthetic
+    // Glowing emerald louvered vents matching reference: bright internal neon slats, very faint localized floor spill
     const grates = getCargoVentSources(map);
-    const pulse = 0.92 + 0.08 * Math.sin(world.elapsedTime * 2.4);
+    const pulse = 0.94 + 0.06 * Math.sin(world.elapsedTime * 2.4);
     for (const g of grates) {
-      if (viewBounds && (g.x + 240 < viewBounds.left || g.x - 240 > viewBounds.right || g.y + 240 < viewBounds.top || g.y - 240 > viewBounds.bottom)) {
+      if (viewBounds && (g.x + 150 < viewBounds.left || g.x - 150 > viewBounds.right || g.y + 150 < viewBounds.top || g.y - 150 > viewBounds.bottom)) {
         continue;
       }
-      const grad = ctx.createRadialGradient(g.x, g.y, 14, g.x, g.y, 240);
-      grad.addColorStop(0, `rgba(74, 222, 128, ${0.27 * pulse})`);
-      grad.addColorStop(0.45, `rgba(34, 197, 94, ${0.13 * pulse})`);
-      grad.addColorStop(0.8, `rgba(16, 185, 129, ${0.04 * pulse})`);
-      grad.addColorStop(1, 'rgba(16, 185, 129, 0)');
-      ctx.fillStyle = grad;
+
+      // Very faint, tight emerald glow escaping onto immediately surrounding floor tiles
+      const spillGrad = ctx.createRadialGradient(g.x, g.y, 26, g.x, g.y, 132);
+      spillGrad.addColorStop(0, `rgba(74, 222, 128, ${0.14 * pulse})`);
+      spillGrad.addColorStop(0.45, `rgba(34, 197, 94, ${0.055 * pulse})`);
+      spillGrad.addColorStop(1, 'rgba(16, 185, 129, 0)');
+      ctx.fillStyle = spillGrad;
       ctx.beginPath();
-      ctx.arc(g.x, g.y, 240, 0, Math.PI * 2);
+      ctx.arc(g.x, g.y, 132, 0, Math.PI * 2);
       ctx.fill();
 
-      // Brushed gunmetal vent bezel
-      ctx.fillStyle = '#071419';
-      ctx.strokeStyle = '#475569';
+      // Brushed gunmetal-olive outer chamfered vent bezel
+      ctx.fillStyle = '#2B3A37';
+      ctx.strokeStyle = '#0F1817';
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.roundRect(g.x - 40, g.y - 40, 80, 80, 4);
+      ctx.roundRect(g.x - 41, g.y - 41, 82, 82, 4);
       ctx.fill();
       ctx.stroke();
 
-      // Softly glowing emerald louvered slats
-      for (let gy = -28; gy <= 24; gy += 11) {
-        ctx.fillStyle = 'rgba(34, 197, 94, 0.65)';
-        ctx.fillRect(g.x - 29, g.y + gy, 58, 6);
-        ctx.fillStyle = 'rgba(187, 247, 208, 0.42)';
-        ctx.fillRect(g.x - 27, g.y + gy + 1, 54, 2);
+      ctx.strokeStyle = 'rgba(148, 176, 168, 0.28)';
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(g.x - 39.5, g.y - 39.5, 79, 79);
+
+      // Deep recessed vent cavity with rich internal emerald bloom
+      ctx.fillStyle = '#04120B';
+      ctx.fillRect(g.x - 33, g.y - 33, 66, 66);
+
+      const innerBloom = ctx.createRadialGradient(g.x, g.y, 4, g.x, g.y, 44);
+      innerBloom.addColorStop(0, `rgba(74, 222, 128, ${0.52 * pulse})`);
+      innerBloom.addColorStop(0.6, `rgba(22, 163, 74, ${0.32 * pulse})`);
+      innerBloom.addColorStop(1, 'rgba(4, 24, 14, 0)');
+      ctx.fillStyle = innerBloom;
+      ctx.fillRect(g.x - 33, g.y - 33, 66, 66);
+
+      // 6 clearly glowing horizontal emerald louver slats inside the vent housing
+      for (let i = 0; i < 6; i++) {
+        const sy = g.y - 30 + i * 10.6;
+        // Soft green bloom gap around each louver bar
+        ctx.fillStyle = `rgba(34, 197, 94, ${0.42 * pulse})`;
+        ctx.fillRect(g.x - 31, sy - 1.5, 62, 8.5);
+        // Glowing emerald louver core
+        ctx.fillStyle = `rgba(74, 222, 128, ${0.92 * pulse})`;
+        ctx.fillRect(g.x - 30, sy, 60, 5.2);
+        // Bright mint-emerald specular center bar
+        ctx.fillStyle = `rgba(187, 247, 208, ${0.78 * pulse})`;
+        ctx.fillRect(g.x - 28, sy + 1.2, 56, 2.2);
       }
+
+      // Inner bevel shadow framing the recessed glowing louvers
+      ctx.strokeStyle = 'rgba(4, 12, 9, 0.85)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(g.x - 33, g.y - 33, 66, 66);
     }
   } else if (map.floorTheme === 'winter_snow') {
     const t = world.elapsedTime;
@@ -7229,13 +7388,13 @@ function drawVolumetricArenaLights(
             bctx.translate(worldTx, worldTy);
             bctx.scale(scale, scale);
 
-            const vg = bctx.createRadialGradient(v.x, v.y, 16, v.x, v.y, 240);
-            vg.addColorStop(0, 'rgba(74, 222, 128, 0.18)');
-            vg.addColorStop(0.48, 'rgba(34, 197, 94, 0.09)');
+            const vg = bctx.createRadialGradient(v.x, v.y, 20, v.x, v.y, 138);
+            vg.addColorStop(0, 'rgba(74, 222, 128, 0.105)');
+            vg.addColorStop(0.5, 'rgba(34, 197, 94, 0.04)');
             vg.addColorStop(1, 'rgba(34, 197, 94, 0)');
             bctx.fillStyle = vg;
             bctx.beginPath();
-            bctx.arc(v.x, v.y, 240, 0, Math.PI * 2);
+            bctx.arc(v.x, v.y, 138, 0, Math.PI * 2);
             bctx.fill();
 
             bctx.globalCompositeOperation = 'destination-out';
