@@ -110,6 +110,7 @@ export interface MatchModifiers {
   bulletSpeed: ModifierLevel;
   bulletCapacity: ModifierLevel;
   stunTime: ModifierLevel;
+  spawnProtection: ModifierLevel;
   keepBulletsOnStun: boolean;
   postStunGrace: boolean;
 }
@@ -124,6 +125,7 @@ export const DEFAULT_MATCH_MODIFIERS: MatchModifiers = {
   bulletSpeed: 'MEDIUM',
   bulletCapacity: 'MEDIUM',
   stunTime: 'MEDIUM',
+  spawnProtection: 'MEDIUM',
   keepBulletsOnStun: true,
   postStunGrace: true,
 };
@@ -594,7 +596,7 @@ export const IMMERSIVE_VIEW_HEIGHT = 740;
 export const PLAYER_RADIUS = 42;
 export const PLAYER_MAX_SPEED = 245;
 export const PLAYER_MAX_ACCEL = 1950;
-export const PLAYER_TURN_SPEED = 11.5;
+export const PLAYER_TURN_SPEED = 10.0;
 export const PLAYER_MAX_HP = 100;
 export const PLAYER_MAX_AMMO = 5;
 
@@ -627,7 +629,7 @@ export const CARDBOARD_FADE_OUT = 0.34;
 export const STUN_DURATION = 0.85;
 export const POST_STUN_GRACE_DURATION = 0.5;
 export const RESPAWN_DELAY = 2.6;
-export const SPAWN_INVULN_DURATION = 1.0;
+export const SPAWN_INVULN_DURATION = 1.5;
 export const KILL_STREAK_WINDOW = 3.0;
 
 export const MONSTER_RADIUS = PLAYER_RADIUS * 1.5;

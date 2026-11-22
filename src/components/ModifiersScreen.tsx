@@ -44,6 +44,12 @@ const LEVEL_ROWS: LevelRowDef[] = [
     hint: 'Post-hit shock window',
     labels: { LOW: '0.45s', MEDIUM: '0.85s', HIGH: '1.45s' },
   },
+  {
+    key: 'spawnProtection',
+    label: 'Spawn Protection',
+    hint: 'Respawn shield & speed boost',
+    labels: { LOW: '0.9s +25%', MEDIUM: '1.5s +55%', HIGH: '2.2s +85%' },
+  },
 ];
 
 const LEVELS: ModifierLevel[] = ['LOW', 'MEDIUM', 'HIGH'];
@@ -78,7 +84,7 @@ export function ModifiersScreen({
   };
 
   const isDefault = (Object.keys(DEFAULT_MATCH_MODIFIERS) as Array<keyof MatchModifiers>).every(
-    (k) => modifiers[k] === DEFAULT_MATCH_MODIFIERS[k]
+    (k) => (modifiers[k] ?? DEFAULT_MATCH_MODIFIERS[k]) === DEFAULT_MATCH_MODIFIERS[k]
   );
 
   return (
@@ -114,7 +120,7 @@ export function ModifiersScreen({
 
           <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
             {LEVEL_ROWS.map((row) => {
-              const current = modifiers[row.key];
+              const current = modifiers[row.key] ?? DEFAULT_MATCH_MODIFIERS[row.key];
               return (
                 <div
                   key={row.key}

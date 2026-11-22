@@ -69,6 +69,10 @@ function sanitizeModifiers(raw: Partial<MatchModifiers> | undefined): MatchModif
     bulletSpeed: sanitizeModifierLevel(raw.bulletSpeed, DEFAULT_MATCH_MODIFIERS.bulletSpeed),
     bulletCapacity: sanitizeModifierLevel(raw.bulletCapacity, DEFAULT_MATCH_MODIFIERS.bulletCapacity),
     stunTime: sanitizeModifierLevel(raw.stunTime, DEFAULT_MATCH_MODIFIERS.stunTime),
+    spawnProtection: sanitizeModifierLevel(
+      raw.spawnProtection,
+      DEFAULT_MATCH_MODIFIERS.spawnProtection
+    ),
     keepBulletsOnStun:
       typeof raw.keepBulletsOnStun === 'boolean'
         ? raw.keepBulletsOnStun

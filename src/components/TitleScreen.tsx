@@ -61,7 +61,7 @@ export function TitleScreen({
   const mapPreview = MAP_PREVIEW_URLS[config.mapId];
 
   const modifiedCount = (Object.keys(DEFAULT_MATCH_MODIFIERS) as Array<keyof MatchModifiers>).filter(
-    (k) => activeModifiers[k] !== DEFAULT_MATCH_MODIFIERS[k]
+    (k) => (activeModifiers[k] ?? DEFAULT_MATCH_MODIFIERS[k]) !== DEFAULT_MATCH_MODIFIERS[k]
   ).length;
 
   return (

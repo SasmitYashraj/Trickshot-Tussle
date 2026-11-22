@@ -146,6 +146,18 @@ const STUN_TIME_VALUES: Record<ModifierLevel, number> = {
   HIGH: 1.45,
 };
 
+const SPAWN_PROTECTION_DURATION: Record<ModifierLevel, number> = {
+  LOW: 0.9,
+  MEDIUM: SPAWN_INVULN_DURATION,
+  HIGH: 2.2,
+};
+
+const SPAWN_PROTECTION_BOOST: Record<ModifierLevel, number> = {
+  LOW: 0.25,
+  MEDIUM: 0.55,
+  HIGH: 0.85,
+};
+
 export function canCollectBookSpot(
   player: { x: number; y: number; floor?: FloorLevel },
   book: LibraryBookSpot,
@@ -439,6 +451,14 @@ export class ArenaEngine {
     return BULLET_SPEED * BULLET_SPEED_MULTS[this.getModifiers().bulletSpeed];
   }
 
+  private getSpawnProtectionDuration(): number {
+    return SPAWN_PROTECTION_DURATION[this.getModifiers().spawnProtection] ?? SPAWN_INVULN_DURATION;
+  }
+
+  private getSpawnProtectionBoostBonus(): number {
+    return SPAWN_PROTECTION_BOOST[this.getModifiers().spawnProtection] ?? 0.55;
+  }
+
   constructor(config: MatchConfig, slots?: SlotSetup[]) {
     this.config = config;
     this.map = ARENA_MAPS[config.mapId];
@@ -573,7 +593,7 @@ export class ArenaEngine {
         stunTimer: 0,
         hurtFlashTimer: 0,
         respawnTimer: 0,
-        spawnInvulnTimer: SPAWN_INVULN_DURATION,
+        spawnInvulnTimer: this.getSpawnProtectionDuration(),
         alive: true,
         kills: 0,
         deaths: 0,
@@ -1670,10 +1690,14 @@ export class ArenaEngine {
   }
 
   private getSpawnBoostMultiplier(player: Player): number {
-    if (player.spawnInvulnTimer <= 0 || SPAWN_INVULN_DURATION <= 0) return 1;
-    const t = clamp(1 - player.spawnInvulnTimer / SPAWN_INVULN_DURATION, 0, 1);
-    const bell = 0.5 - 0.5 * Math.cos(Math.PI * 2 * t);
-    return 1 + 0.26 * bell;
+    const duration = this.getSpawnProtectionDuration();
+    if (player.spawnInvulnTimer <= 0 || duration <= 0) return 1;
+    const t = clamp(1 - player.spawnInvulnTimer / duration, 0, 1);
+    const u = clamp(t / 0.16, 0, 1);
+    const rise = u * u * (3 - 2 * u);
+    const d = clamp((1 - t) / 0.38, 0, 1);
+    const fall = d * d * (3 - 2 * d);
+    return 1 + this.getSpawnProtectionBoostBonus() * rise * fall;
   }
 
   private applyAnalogInput(
@@ -3181,7 +3205,7 @@ export class ArenaEngine {
     player.stunTimer = 0;
     player.postStunGraceTimer = 0;
     player.alive = true;
-    player.spawnInvulnTimer = SPAWN_INVULN_DURATION;
+    player.spawnInvulnTimer = this.getSpawnProtectionDuration();
     player.angle = Math.atan2(this.map.height / 2 - bestSpawn.y, this.map.width / 2 - bestSpawn.x);
     this.spawnParticles(player.x, player.y, player.color, 14, 120, player.floor);
     this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 10), 'SPAWN!', player.accentColor, player.floor);
