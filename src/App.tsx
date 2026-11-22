@@ -787,13 +787,42 @@ export default function App() {
       pressedKeysRef.current.clear();
     };
 
+    const onVisibilityOrHide = () => {
+      const hidden = document.hidden || document.visibilityState === 'hidden';
+      if (hidden) {
+        pressedKeysRef.current.clear();
+        cursorScreenRef.current = null;
+      }
+      sound.setAppBackgrounded(hidden);
+    };
+
+    const onPageHide = () => {
+      pressedKeysRef.current.clear();
+      cursorScreenRef.current = null;
+      sound.setAppBackgrounded(true);
+    };
+
+    const onPageShowOrFocus = () => {
+      if (!document.hidden && document.visibilityState !== 'hidden') {
+        sound.setAppBackgrounded(false);
+      }
+    };
+
     window.addEventListener('keydown', onKeyDown, { capture: true });
     window.addEventListener('keyup', onKeyUp, { capture: true });
     window.addEventListener('blur', onBlur);
+    document.addEventListener('visibilitychange', onVisibilityOrHide);
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('pageshow', onPageShowOrFocus);
+    window.addEventListener('focus', onPageShowOrFocus);
     return () => {
       window.removeEventListener('keydown', onKeyDown, { capture: true });
       window.removeEventListener('keyup', onKeyUp, { capture: true });
       window.removeEventListener('blur', onBlur);
+      document.removeEventListener('visibilitychange', onVisibilityOrHide);
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('pageshow', onPageShowOrFocus);
+      window.removeEventListener('focus', onPageShowOrFocus);
     };
   }, [togglePause, togglePcStealth]);
 
@@ -1300,6 +1329,7 @@ export default function App() {
               cursorScreen: cursorScreenRef.current,
               hideJoystick: controlSchemeRef.current === 'DRAG_STICK',
               spectateTargetId: spectateTargetIdRef.current,
+              dt,
             }
           );
           ctx.restore();

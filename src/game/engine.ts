@@ -203,7 +203,10 @@ interface BotAiMemory {
   rageBaitTimer: number;
   rageBaitCooldown: number;
   dialTimer: number;
+  dialTargetTime: number;
   dialMistakeDone: boolean;
+  lastKnownHp: number;
+  defendPillarTimer: number;
   lastProgressX: number;
   lastProgressY: number;
   stuckTimer: number;
@@ -384,9 +387,21 @@ export class ArenaEngine {
   private rapidStreaks = new Map<number, { count: number; lastKillAt: number }>();
 
   private static arenaBotGraphCache = new Map<string, NavNode[]>();
+  private static navBucketCache = new WeakMap<
+    NavNode[],
+    { cellSize: number; cols: number; rows: number; bucketsByFloor: [Map<number, NavNode[]>, Map<number, NavNode[]>] }
+  >();
 
+  private wallsByFloor: [WallRect[], WallRect[]] = [[], []];
   private navNodes: NavNode[] = [];
   private botNavNodes: NavNode[] = [];
+  private astarCap = 0;
+  private astarG = new Float32Array(0);
+  private astarF = new Float32Array(0);
+  private astarCameFrom = new Int32Array(0);
+  private astarClosed = new Uint8Array(0);
+  private astarInOpen = new Uint8Array(0);
+  private astarHeap: number[] = [];
   private monsterPath: NavNode[] = [];
   private monsterPathTimer = 0;
   private monsterStepTimer = 0.25;
@@ -456,6 +471,10 @@ export class ArenaEngine {
     this.winnerReason = '';
     this.rapidStreaks.clear();
     this.libraryState = undefined;
+    this.wallsByFloor = [
+      this.map.walls.filter((w) => isWallOnFloor(w, 0)),
+      this.map.walls.filter((w) => isWallOnFloor(w, 1)),
+    ];
     this.navNodes = [];
     this.botNavNodes = [];
     this.monsterPath = [];
@@ -840,8 +859,7 @@ export class ArenaEngine {
       );
       if (!inUpper && !onStair) return false;
     }
-    for (const wall of this.map.walls) {
-      if (!isWallOnFloor(wall, floor)) continue;
+    for (const wall of this.wallsByFloor[floor]) {
       if (circleIntersectsRect(x, y, radius, wall)) return false;
     }
     return true;
@@ -998,8 +1016,7 @@ export class ArenaEngine {
       const halfW = box.w * 0.5;
       const halfH = box.h * 0.5;
       const boxFloor = box.floor ?? 0;
-      for (const wall of this.map.walls) {
-        if (!isWallOnFloor(wall, boxFloor)) continue;
+      for (const wall of this.wallsByFloor[boxFloor]) {
         const boxLeft = box.x - halfW;
         const boxRight = box.x + halfW;
         const boxTop = box.y - halfH;
@@ -1092,8 +1109,7 @@ export class ArenaEngine {
     halfH: number
   ) {
     const floor = item.floor ?? 0;
-    for (const wall of this.map.walls) {
-      if (!isWallOnFloor(wall, floor)) continue;
+    for (const wall of this.wallsByFloor[floor]) {
       const overlapX = Math.min(item.x + halfW, wall.x + wall.w) - Math.max(item.x - halfW, wall.x);
       const overlapY = Math.min(item.y + halfH, wall.y + wall.h) - Math.max(item.y - halfH, wall.y);
       if (overlapX > 0 && overlapY > 0) {
@@ -1363,9 +1379,9 @@ export class ArenaEngine {
       }
 
       const pFloor = player.floor ?? 0;
+      const floorWalls = this.wallsByFloor[pFloor];
       for (let pass = 0; pass < 2; pass++) {
-        for (const wall of this.map.walls) {
-          if (!isWallOnFloor(wall, pFloor)) continue;
+        for (const wall of floorWalls) {
           const closestX = clamp(player.x, wall.x, wall.x + wall.w);
           const closestY = clamp(player.y, wall.y, wall.y + wall.h);
           const dx = player.x - closestX;
@@ -1542,8 +1558,7 @@ export class ArenaEngine {
     let pinY: -1 | 0 | 1 = 0;
     const tol = 7;
 
-    for (const wall of this.map.walls) {
-      if (!isWallOnFloor(wall, floor)) continue;
+    for (const wall of this.wallsByFloor[floor]) {
       const overlapY = Math.min(cy + halfH, wall.y + wall.h) - Math.max(cy - halfH, wall.y);
       if (overlapY > 3) {
         if (Math.abs(cx - halfW - (wall.x + wall.w)) <= tol) pinX = -1;
@@ -1654,6 +1669,13 @@ export class ArenaEngine {
     return true;
   }
 
+  private getSpawnBoostMultiplier(player: Player): number {
+    if (player.spawnInvulnTimer <= 0 || SPAWN_INVULN_DURATION <= 0) return 1;
+    const t = clamp(1 - player.spawnInvulnTimer / SPAWN_INVULN_DURATION, 0, 1);
+    const bell = 0.5 - 0.5 * Math.cos(Math.PI * 2 * t);
+    return 1 + 0.26 * bell;
+  }
+
   private applyAnalogInput(
     player: Player,
     active: boolean,
@@ -1676,14 +1698,15 @@ export class ArenaEngine {
       const normalizedRatio =
         magnitude <= deadzone ? 0 : (magnitude - deadzone) / (1 - deadzone);
 
-      const targetSpeed = this.getPlayerMaxSpeed() * normalizedRatio;
+      const boost = this.getSpawnBoostMultiplier(player);
+      const targetSpeed = this.getPlayerMaxSpeed() * boost * normalizedRatio;
       const targetVx = Math.cos(moveAngle) * targetSpeed;
       const targetVy = Math.sin(moveAngle) * targetSpeed;
 
       const dvx = targetVx - player.vx;
       const dvy = targetVy - player.vy;
       const dv = Math.hypot(dvx, dvy);
-      const maxStep = PLAYER_MAX_ACCEL * dt;
+      const maxStep = PLAYER_MAX_ACCEL * boost * dt;
       if (dv <= maxStep) {
         player.vx = targetVx;
         player.vy = targetVy;
@@ -1730,7 +1753,10 @@ export class ArenaEngine {
         rageBaitTimer: 0,
         rageBaitCooldown: 2.5,
         dialTimer: 0,
+        dialTargetTime: 15 + Math.random() * 5,
         dialMistakeDone: false,
+        lastKnownHp: bot.hp,
+        defendPillarTimer: 0,
         lastProgressX: bot.x,
         lastProgressY: bot.y,
         stuckTimer: 0,
@@ -1914,7 +1940,7 @@ export class ArenaEngine {
   ): number | null {
     const floor = shooter.floor ?? 0;
     const bSpeed = this.getBulletSpeed();
-    const floorWalls = this.map.walls.filter((w) => isWallOnFloor(w, floor));
+    const floorWalls = this.wallsByFloor[floor];
     const candidates: number[] = [];
     const seenBuckets = new Set<number>();
     const addCand = (ang: number) => {
@@ -2328,7 +2354,7 @@ export class ArenaEngine {
         isSeekingPickup = true;
 
         // Still fire opportunistically while routing through the medkit!
-        if (bot.ammo > 0 && target && target.stunTimer <= 0 && (target.postStunGraceTimer ?? 0) <= 0 && bot.aiHoldShotTimer <= 0) {
+        if (bot.ammo > 0 && target && target.spawnInvulnTimer <= 0 && target.stunTimer <= 0 && (target.postStunGraceTimer ?? 0) <= 0 && bot.aiHoldShotTimer <= 0) {
           if (explosiveShotAngle !== null) {
             const aimA = explosiveShotAngle + (Math.random() - 0.5) * aimSpread * 0.45;
             mem.pendingShotAngle = aimA;
@@ -2372,7 +2398,7 @@ export class ArenaEngine {
           moveRatio = 0.92;
         }
       } else if (target) {
-        const targetShootable = target.stunTimer <= 0 && (target.postStunGraceTimer ?? 0) <= 0;
+        const targetShootable = target.spawnInvulnTimer <= 0 && target.stunTimer <= 0 && (target.postStunGraceTimer ?? 0) <= 0;
         if (explosiveShotAngle !== null && bot.aiHoldShotTimer <= 0) {
           const aimA = explosiveShotAngle + (Math.random() - 0.5) * aimSpread * 0.45;
           mem.pendingShotAngle = aimA;
@@ -2578,13 +2604,14 @@ export class ArenaEngine {
       }
     }
 
-    const targetSpeed = this.getPlayerMaxSpeed() * bot.aiMoveRatio;
+    const boost = this.getSpawnBoostMultiplier(bot);
+    const targetSpeed = this.getPlayerMaxSpeed() * boost * bot.aiMoveRatio;
     const targetVx = Math.cos(bot.aiTargetAngle) * targetSpeed;
     const targetVy = Math.sin(bot.aiTargetAngle) * targetSpeed;
     const dvx = targetVx - bot.vx;
     const dvy = targetVy - bot.vy;
     const dv = Math.hypot(dvx, dvy);
-    const maxStep = PLAYER_MAX_ACCEL * dt;
+    const maxStep = PLAYER_MAX_ACCEL * boost * dt;
     if (dv <= maxStep) {
       bot.vx = targetVx;
       bot.vy = targetVy;
@@ -2601,8 +2628,7 @@ export class ArenaEngine {
     y2: number,
     floor: FloorLevel = 0
   ): boolean {
-    for (const wall of this.map.walls) {
-      if (!isWallOnFloor(wall, floor)) continue;
+    for (const wall of this.wallsByFloor[floor]) {
       if (segmentIntersectsRect(x1, y1, x2, y2, wall)) return false;
     }
     return true;
@@ -2682,8 +2708,7 @@ export class ArenaEngine {
 
         let hitWall = false;
         const bFloor = b.floor ?? 0;
-        for (const wall of this.map.walls) {
-          if (!isWallOnFloor(wall, bFloor)) continue;
+        for (const wall of this.wallsByFloor[bFloor]) {
           const cx = clamp(b.x, wall.x, wall.x + wall.w);
           const cy = clamp(b.y, wall.y, wall.y + wall.h);
           const dx = b.x - cx;
@@ -2829,7 +2854,7 @@ export class ArenaEngine {
         }
 
         for (const player of this.players) {
-          if (!player.alive || player.stunTimer > 0 || (player.postStunGraceTimer ?? 0) > 0 || !sameFloor(player.floor, bFloor)) continue;
+          if (!player.alive || player.spawnInvulnTimer > 0 || player.stunTimer > 0 || (player.postStunGraceTimer ?? 0) > 0 || !sameFloor(player.floor, bFloor)) continue;
           if (player.id === b.ownerId && b.age < BULLET_SELF_GRACE) continue;
           if (player.id !== b.ownerId && this.isTeammate(b.ownerId, player.id)) continue;
           if (dist(b.x, b.y, player.x, player.y) <= b.radius + PLAYER_RADIUS) {
@@ -3548,8 +3573,46 @@ export class ArenaEngine {
   }
 
   private buildLibraryNavGraph() {
-    this.navNodes = this.buildGridNavGraph(32, MONSTER_RADIUS + 2);
-    this.botNavNodes = this.buildGridNavGraph(36, PLAYER_RADIUS + 4);
+    const monsterKey = `${this.map.id}:monster32`;
+    let cachedMonster = ArenaEngine.arenaBotGraphCache.get(monsterKey);
+    if (!cachedMonster) {
+      cachedMonster = this.buildGridNavGraph(32, MONSTER_RADIUS + 2);
+      ArenaEngine.arenaBotGraphCache.set(monsterKey, cachedMonster);
+    }
+    this.navNodes = cachedMonster;
+
+    const botKey = `${this.map.id}:bot36`;
+    let cachedBots = ArenaEngine.arenaBotGraphCache.get(botKey);
+    if (!cachedBots) {
+      cachedBots = this.buildGridNavGraph(36, PLAYER_RADIUS + 4);
+      ArenaEngine.arenaBotGraphCache.set(botKey, cachedBots);
+    }
+    this.botNavNodes = cachedBots;
+  }
+
+  private getNavBuckets(graph: NavNode[]) {
+    let entry = ArenaEngine.navBucketCache.get(graph);
+    if (!entry) {
+      const cellSize = 180;
+      const cols = Math.max(1, Math.ceil(this.map.width / cellSize));
+      const rows = Math.max(1, Math.ceil(this.map.height / cellSize));
+      const bucketsByFloor: [Map<number, NavNode[]>, Map<number, NavNode[]>] = [new Map(), new Map()];
+      for (const n of graph) {
+        const cx = clamp(Math.floor(n.x / cellSize), 0, cols - 1);
+        const cy = clamp(Math.floor(n.y / cellSize), 0, rows - 1);
+        const idx = cy * cols + cx;
+        const map = bucketsByFloor[n.floor];
+        let arr = map.get(idx);
+        if (!arr) {
+          arr = [];
+          map.set(idx, arr);
+        }
+        arr.push(n);
+      }
+      entry = { cellSize, cols, rows, bucketsByFloor };
+      ArenaEngine.navBucketCache.set(graph, entry);
+    }
+    return entry;
   }
 
   private findClosestNavNodeOnGraph(
@@ -3559,10 +3622,37 @@ export class ArenaEngine {
     floor: FloorLevel,
     preferLos = true
   ): NavNode | null {
+    if (graph.length === 0) return null;
+    const { cellSize, cols, rows, bucketsByFloor } = this.getNavBuckets(graph);
+    const floorMap = bucketsByFloor[floor];
+    const centerCx = clamp(Math.floor(x / cellSize), 0, cols - 1);
+    const centerCy = clamp(Math.floor(y / cellSize), 0, rows - 1);
+
     let bestLos: NavNode | null = null;
     let bestLosD = Infinity;
     let bestAny: NavNode | null = null;
     let bestAnyD = Infinity;
+
+    for (let cy = Math.max(0, centerCy - 2); cy <= Math.min(rows - 1, centerCy + 2); cy++) {
+      for (let cx = Math.max(0, centerCx - 2); cx <= Math.min(cols - 1, centerCx + 2); cx++) {
+        const bucket = floorMap.get(cy * cols + cx);
+        if (!bucket) continue;
+        for (const n of bucket) {
+          const d = dist(x, y, n.x, n.y);
+          if (d < bestAnyD) {
+            bestAnyD = d;
+            bestAny = n;
+          }
+          if (preferLos && d < 240 && d < bestLosD && this.hasLineOfSight(x, y, n.x, n.y, floor)) {
+            bestLosD = d;
+            bestLos = n;
+          }
+        }
+      }
+    }
+
+    if (bestLos) return bestLos;
+    if (bestAny) return bestAny;
 
     for (const n of graph) {
       if (n.floor !== floor) continue;
@@ -3581,6 +3671,23 @@ export class ArenaEngine {
 
   private findClosestNavNode(x: number, y: number, floor: FloorLevel): NavNode | null {
     return this.findClosestNavNodeOnGraph(this.navNodes, x, y, floor, true);
+  }
+
+  private ensureAstarBuffers(nCount: number) {
+    if (this.astarCap < nCount) {
+      this.astarCap = nCount;
+      this.astarG = new Float32Array(nCount);
+      this.astarF = new Float32Array(nCount);
+      this.astarCameFrom = new Int32Array(nCount);
+      this.astarClosed = new Uint8Array(nCount);
+      this.astarInOpen = new Uint8Array(nCount);
+    }
+    this.astarG.fill(Infinity, 0, nCount);
+    this.astarF.fill(Infinity, 0, nCount);
+    this.astarCameFrom.fill(-1, 0, nCount);
+    this.astarClosed.fill(0, 0, nCount);
+    this.astarInOpen.fill(0, 0, nCount);
+    this.astarHeap.length = 0;
   }
 
   private findNavPathOnGraph(
@@ -3618,13 +3725,15 @@ export class ArenaEngine {
     const brokenPits = avoidHazards ? this.icePits.filter((pit) => pit.broken) : [];
 
     const nCount = graph.length;
-    const gScore = new Float32Array(nCount).fill(Infinity);
-    const fScore = new Float32Array(nCount).fill(Infinity);
-    const cameFrom = new Int32Array(nCount).fill(-1);
-    const closed = new Uint8Array(nCount);
-    const inOpen = new Uint8Array(nCount);
+    this.ensureAstarBuffers(nCount);
+    const gScore = this.astarG;
+    const fScore = this.astarF;
+    const cameFrom = this.astarCameFrom;
+    const closed = this.astarClosed;
+    const inOpen = this.astarInOpen;
+    const heap = this.astarHeap;
+    heap.push(start.id);
 
-    const heap: number[] = [start.id];
     const pushHeap = (id: number) => {
       heap.push(id);
       let idx = heap.length - 1;
@@ -4234,8 +4343,7 @@ export class ArenaEngine {
         }
 
         for (let pass = 0; pass < 2; pass++) {
-          for (const wall of this.map.walls) {
-            if (!isWallOnFloor(wall, m.floor)) continue;
+          for (const wall of this.wallsByFloor[m.floor]) {
             const cx = clamp(m.x, wall.x, wall.x + wall.w);
             const cy = clamp(m.y, wall.y, wall.y + wall.h);
             const wdx = m.x - cx;
@@ -4385,8 +4493,14 @@ export class ArenaEngine {
     mem.rageBaitCooldown = Math.max(0, mem.rageBaitCooldown - dt);
     mem.unstickTimer = Math.max(0, mem.unstickTimer - dt);
     mem.goalLockTimer = Math.max(0, mem.goalLockTimer - dt);
+    mem.defendPillarTimer = Math.max(0, mem.defendPillarTimer - dt);
     mem.pendingShotExpire = Math.max(0, mem.pendingShotExpire - dt);
     if (mem.pendingShotExpire <= 0) mem.pendingShotAngle = null;
+
+    if (bot.hp < mem.lastKnownHp || bot.hurtFlashTimer > 0 || bot.stunTimer > 0) {
+      mem.defendPillarTimer = 2.6;
+    }
+    mem.lastKnownHp = bot.hp;
 
     const sameFloorMonster = sameFloor(m.floor, bFloor);
     const monsterDist = sameFloorMonster ? dist(bot.x, bot.y, m.x, m.y) : 9999;
@@ -4424,16 +4538,38 @@ export class ArenaEngine {
       }
     }
 
-    // 2. Fair Central Pillar Dialing (~2.2s - 4.5s realistic code dialing)
-    if (prog && door && prog.collectedCount >= LIBRARY_BOOKS_PER_PLAYER && bFloor === 0 && dist(bot.x, bot.y, door.x, door.y) <= 135 && cooldown <= 0) {
+    // 2. Central Pillar Code Filling (15-20s randomized duration, pauses & fights defensively if attacked!)
+    const doorDist = door ? dist(bot.x, bot.y, door.x, door.y) : Infinity;
+    if (prog && door && prog.collectedCount >= LIBRARY_BOOKS_PER_PLAYER && bFloor === 0 && doorDist <= 145 && cooldown <= 0) {
       const figureTooClose = m.stunTimer <= 0 && sameFloorMonster && monsterDist < 260;
-      if (!figureTooClose) {
-        const dialNeed = diff === 'RUTHLESS' ? 2.2 : diff === 'TACTICAL' ? 3.3 : 4.6;
+      const armedTntNear = this.pickups.some(
+        (p) => p.kind === 'tnt' && p.armed && sameFloor(p.floor, bFloor) && dist(bot.x, bot.y, p.x, p.y) < TNT_BLAST_RADIUS + 46
+      );
+      const incomingBullet = this.bullets.some(
+        (b) =>
+          sameFloor(b.floor, bFloor) &&
+          !(b.ownerId === bot.id && b.age < BULLET_SELF_GRACE) &&
+          dist(bot.x, bot.y, b.x, b.y) < 220
+      );
+      const closeThreatRival = this.players.some(
+        (e) =>
+          e.id !== bot.id &&
+          e.alive &&
+          !this.isTeammate(bot.id, e.id) &&
+          this.canBotSeePoint(bot, e.x, e.y, e.floor ?? 0) &&
+          dist(bot.x, bot.y, e.x, e.y) < (diff === 'CHILL' ? 190 : 340)
+      );
+      const underAttackAtPillar =
+        mem.defendPillarTimer > 0 || closeThreatRival || incomingBullet || armedTntNear;
+
+      if (!figureTooClose && !underAttackAtPillar) {
+        const dialNeed = mem.dialTargetTime;
         mem.dialTimer += dt;
         const digitIdx = Math.min(LIBRARY_CODE_LEN - 1, Math.floor((mem.dialTimer / dialNeed) * LIBRARY_CODE_LEN));
         const solution = this.librarySolutions.get(bot.id);
         if (solution && mem.dialTimer >= dialNeed) {
           mem.dialTimer = 0;
+          mem.dialTargetTime = 15 + Math.random() * 5;
           this.botCodeCooldown.set(bot.id, 1.8);
           if (diff === 'CHILL' && !mem.dialMistakeDone && Math.random() < 0.35) {
             mem.dialMistakeDone = true;
@@ -4444,15 +4580,19 @@ export class ArenaEngine {
             this.submitDoorCode(bot.id, solution);
           }
           return;
-        } else if (solution && Math.random() < dt * 2.5) {
+        } else if (solution && Math.random() < dt * 0.45) {
           this.setDoorDialDigit(bot.id, digitIdx, solution[digitIdx]);
         }
         bot.vx *= Math.exp(-10 * dt);
         bot.vy *= Math.exp(-10 * dt);
+        const faceDoor = Math.atan2(door.y - bot.y, door.x - bot.x);
+        const fdDiff = normalizeAngle(faceDoor - bot.angle);
+        const maxTurn = this.getPlayerTurnSpeed() * dt;
+        bot.angle = normalizeAngle(bot.angle + clamp(fdDiff, -maxTurn, maxTurn));
         return;
       }
-    } else {
-      mem.dialTimer = 0;
+    } else if (doorDist > 280 || !prog || prog.collectedCount < LIBRARY_BOOKS_PER_PLAYER) {
+      mem.dialTimer = Math.max(0, mem.dialTimer - dt * 0.5);
     }
 
     // Stuck detector (ignored while inside committed stair traversal unless genuinely wedged)
@@ -4601,10 +4741,13 @@ export class ArenaEngine {
       if (
         !mem.pendingShotAngle &&
         visibleRivals.length > 0 &&
-        (diff !== 'RUTHLESS' || bot.ammo >= 2 || visibleRivals.some((e) => dist(bot.x, bot.y, e.x, e.y) < 260 || e.hp <= BULLET_DAMAGE))
+        (diff !== 'RUTHLESS' ||
+          mem.defendPillarTimer > 0 ||
+          bot.ammo >= 2 ||
+          visibleRivals.some((e) => dist(bot.x, bot.y, e.x, e.y) < 260 || e.hp <= BULLET_DAMAGE))
       ) {
         const target = visibleRivals[0];
-        if (target.stunTimer <= 0 && (target.postStunGraceTimer ?? 0) <= 0) {
+        if (target.spawnInvulnTimer <= 0 && target.stunTimer <= 0 && (target.postStunGraceTimer ?? 0) <= 0) {
           const aimSpread = diff === 'RUTHLESS' ? 0.025 : diff === 'TACTICAL' ? 0.11 : 0.45;
           const dT = dist(bot.x, bot.y, target.x, target.y);
           const travelT = dT / this.getBulletSpeed();
@@ -4617,6 +4760,12 @@ export class ArenaEngine {
           mem.pendingShotTargetId = target.id;
           mem.pendingShotIsTrick = false;
           activeAimAngle = shotA;
+        }
+      }
+      if (!activeAimAngle && mem.defendPillarTimer > 0 && bot.lastHitBy !== null) {
+        const attacker = this.players.find((pl) => pl.id === bot.lastHitBy && pl.alive && sameFloor(pl.floor, bFloor));
+        if (attacker && dist(bot.x, bot.y, attacker.x, attacker.y) < 620) {
+          activeAimAngle = Math.atan2(attacker.y - bot.y, attacker.x - bot.x);
         }
       }
     }
@@ -4881,13 +5030,14 @@ export class ArenaEngine {
       }
     }
 
-    const targetSpeed = this.getPlayerMaxSpeed() * bot.aiMoveRatio;
+    const boost = this.getSpawnBoostMultiplier(bot);
+    const targetSpeed = this.getPlayerMaxSpeed() * boost * bot.aiMoveRatio;
     const targetVx = Math.cos(bot.aiTargetAngle) * targetSpeed;
     const targetVy = Math.sin(bot.aiTargetAngle) * targetSpeed;
     const dvx = targetVx - bot.vx;
     const dvy = targetVy - bot.vy;
     const dv = Math.hypot(dvx, dvy);
-    const maxStep = PLAYER_MAX_ACCEL * dt;
+    const maxStep = PLAYER_MAX_ACCEL * boost * dt;
     if (dv <= maxStep) {
       bot.vx = targetVx;
       bot.vy = targetVy;

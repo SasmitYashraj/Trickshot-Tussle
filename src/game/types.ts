@@ -627,7 +627,7 @@ export const CARDBOARD_FADE_OUT = 0.34;
 export const STUN_DURATION = 0.85;
 export const POST_STUN_GRACE_DURATION = 0.5;
 export const RESPAWN_DELAY = 2.6;
-export const SPAWN_INVULN_DURATION = 0.85;
+export const SPAWN_INVULN_DURATION = 1.0;
 export const KILL_STREAK_WINDOW = 3.0;
 
 export const MONSTER_RADIUS = PLAYER_RADIUS * 1.5;

@@ -41,6 +41,7 @@ export interface SpatialAudioOpts {
 class SoundEngine {
   private ctx: AudioContext | null = null;
   private muted = false;
+  private appBackgrounded = false;
   private ambientNodes: AmbientNodes | null = null;
   private ambientActive = false;
   private ambientExtraDark = false;
@@ -135,8 +136,27 @@ class SoundEngine {
     return this.muted;
   }
 
+  public setAppBackgrounded(backgrounded: boolean) {
+    if (this.appBackgrounded === backgrounded) return;
+    this.appBackgrounded = backgrounded;
+    if (!this.ctx) return;
+
+    if (backgrounded) {
+      if (this.ctx.state === 'running') {
+        this.ctx.suspend().catch(() => {});
+      }
+    } else if (!this.muted) {
+      if (this.immersiveTrackNodes) {
+        this.immersiveTrackNodes.lastCtxTime = this.ctx.currentTime;
+      }
+      if (this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+    }
+  }
+
   private ensureCtx(): AudioContext | null {
-    if (this.muted) return null;
+    if (this.muted || this.appBackgrounded) return null;
     if (typeof window === 'undefined') return null;
     if (!this.ctx) {
       const AudioCtx =
