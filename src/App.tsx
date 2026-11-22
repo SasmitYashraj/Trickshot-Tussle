@@ -1,5 +1,6 @@
-import { ChevronLeft, ChevronRight, Eye, Pause, Play, RotateCcw, Volume2, VolumeX } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Eye, Pause, Play, Volume2, VolumeX } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { ColorSelectScreen } from './components/ColorSelectScreen';
 import { GameOverModal } from './components/GameOverModal';
 import { LibraryLoadingScreen } from './components/LibraryLoadingScreen';
 import { LibraryOverlays } from './components/LibraryOverlays';
@@ -32,6 +33,7 @@ import {
   type MatchConfig,
   type MatchMode,
   OnlineRoomState,
+  PLAYER_MAX_SPEED,
   WorldSyncState,
 } from './game/types';
 import { MultiplayerClient } from './net/multiplayerClient';
@@ -292,6 +294,17 @@ function worldToSnapshot(world: WorldSyncState, localSlot: number): GameSnapshot
   };
 }
 
+function getHudSnapshotSignature(snap: GameSnapshot): string {
+  const sec = Math.max(0, Math.floor(snap.elapsedTime));
+  let s = `${sec}|${snap.winnerId ?? 'n'}|${snap.winnerTeam ?? 'n'}`;
+  for (const p of snap.players) {
+    const stun = p.stunTimer > 0 ? Math.ceil(p.stunTimer * 2) : 0;
+    const resp = p.respawnTimer > 0 ? Math.ceil(p.respawnTimer * 2) : 0;
+    s += `;${p.id}:${p.hp},${p.ammo},${p.alive ? 1 : 0},${p.kills},${p.deaths},${stun},${resp},${p.hearts ?? ''},${p.escapedRank ?? ''},${p.eliminated ? 1 : 0}`;
+  }
+  return s;
+}
+
 export default function App() {
   const initialRoomCode =
     typeof window !== 'undefined'
@@ -299,7 +312,7 @@ export default function App() {
       : '';
 
   const [gameState, setGameState] = useState<GameState>('TITLE_MENU');
-  const [menuStep, setMenuStep] = useState<'HUB' | 'MAP_SELECT'>('HUB');
+  const [menuStep, setMenuStep] = useState<'HUB' | 'MAP_SELECT' | 'COLOR_SELECT'>('HUB');
   const [config, setConfig] = useState<MatchConfig>(DEFAULT_SOLO_CONFIG);
   const [muted, setMuted] = useState(false);
   const [hasUsedJoystick, setHasUsedJoystick] = useState(false);
@@ -370,6 +383,7 @@ export default function App() {
   const spectateTargetIdRef = useRef<number | null>(spectateTargetId);
   const libraryLockOpenRef = useRef<boolean>(libraryLockOpen);
   const libraryUiRef = useRef<LibraryUiSnapshot | null>(libraryUi);
+  const lastHudSigRef = useRef<string>('');
   const immersiveSpectateRef = useRef<Array<{ id: number; name: string }>>([]);
   const jumpscareTimerRef = useRef<number | null>(null);
   const clientRef = useRef<MultiplayerClient | null>(null);
@@ -480,6 +494,7 @@ export default function App() {
           setImmersiveSpectateList([]);
           setLibraryUi(null);
           libraryUiRef.current = null;
+          lastHudSigRef.current = '';
           setGameState('PLAYING');
         } else if (room.phase === 'GAME_OVER') {
           setKillStreak((prev) => (prev?.mode === 'ELIMINATION' ? prev : null));
@@ -518,7 +533,12 @@ export default function App() {
             triggerJumpscareFlash
           );
         }
-        setSnapshot(worldToSnapshot(world, mySlot));
+        const nextSnap = worldToSnapshot(world, mySlot);
+        const sig = getHudSnapshotSignature(nextSnap);
+        if (sig !== lastHudSigRef.current) {
+          lastHudSigRef.current = sig;
+          setSnapshot(nextSnap);
+        }
       },
       onError: (message) => {
         setOnlineConnecting(false);
@@ -574,7 +594,9 @@ export default function App() {
       cameraRef.current.initialized = false;
       engineRef.current.reset(nextCfg);
       engineRef.current.setControlScheme(controlSchemeRef.current);
-      setSnapshot(engineRef.current.getSnapshot(0));
+      const initialSnap = engineRef.current.getSnapshot(0);
+      lastHudSigRef.current = getHudSnapshotSignature(initialSnap);
+      setSnapshot(initialSnap);
       setHasUsedJoystick(false);
       setKillStreak(null);
       setSelfKillPopup(null);
@@ -785,7 +807,7 @@ export default function App() {
       const rect = stage.getBoundingClientRect();
       const width = Math.max(100, Math.floor(rect.width));
       const height = Math.max(100, Math.floor(rect.height));
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
 
       canvas.width = Math.floor(width * dpr);
       canvas.height = Math.floor(height * dpr);
@@ -884,16 +906,25 @@ export default function App() {
             );
           }
           if (engine.winnerId !== null) {
-            setSnapshot(engine.getSnapshot(0));
+            const finalSnap = engine.getSnapshot(0);
+            lastHudSigRef.current = getHudSnapshotSignature(finalSnap);
+            setSnapshot(finalSnap);
             setLibraryLockOpen(false);
             setGameState('GAME_OVER');
           }
         }
 
+        const inLibraryIntro =
+          engine.map.id === 'library' && (engine.libraryState?.introTimer ?? 0) > 0;
         hudAccumulator += dt;
-        if (hudAccumulator >= 0.08) {
+        if (!inLibraryIntro && hudAccumulator >= 0.08) {
           hudAccumulator = 0;
-          setSnapshot(engine.getSnapshot(0));
+          const nextSnap = engine.getSnapshot(0);
+          const sig = getHudSnapshotSignature(nextSnap);
+          if (sig !== lastHudSigRef.current) {
+            lastHudSigRef.current = sig;
+            setSnapshot(nextSnap);
+          }
         }
 
         worldToRender = {
@@ -991,7 +1022,17 @@ export default function App() {
           prevUi.playerAlive !== pAlive ||
           prevUi.spectateCandidates.length !== spectateCandidates.length;
 
-        if (stateFlipped || libHudAccumulator >= 0.08) {
+        const speedPctChanged =
+          !prevUi ||
+          Math.round((prevUi.playerSpeed / PLAYER_MAX_SPEED) * 100) !==
+            Math.round((pSpeed / PLAYER_MAX_SPEED) * 100);
+        const stunSecChanged =
+          !prevUi ||
+          Math.ceil(prevUi.state.monster.stunTimer) !== Math.ceil(libState.monster.stunTimer);
+        const introActive = libState.introTimer > 0;
+
+        const hudInterval = introActive ? 0.1 : 0.08;
+        if (stateFlipped || (libHudAccumulator >= hudInterval && (introActive || speedPctChanged || stunSecChanged))) {
           libHudAccumulator = 0;
           setLibraryUi(nextLibUi);
         }
@@ -1129,6 +1170,12 @@ export default function App() {
         const libInRage = worldToRender.libraryState?.monster.mode === 'rage';
         sound.updateLibraryMusic(dt, isLibraryPlaying, libProgress, libInRage);
 
+        sound.setMapEnvironment(mapTheme, isImmersivePlaying);
+        sound.updateAmbientCritters(
+          dt,
+          isImmersivePlaying && !isLibrary && mapTheme === 'grass_outdoors'
+        );
+
         // Seamless 2-stage ramping music tracks for Emerald Grove & Wooden Mansion
         const useImmersiveTrack =
           isImmersivePlaying &&
@@ -1141,16 +1188,18 @@ export default function App() {
           const alivePlayers = worldToRender.players.filter((p) => p.alive).length;
           const deadPlayers = Math.max(0, totalPlayers - alivePlayers);
           const deadRatio = deadPlayers / Math.max(1, totalPlayers - 1);
-          const timeBuild = Math.min(0.45, worldToRender.elapsedTime / 70);
+          const timeBuild = Math.min(0.42, worldToRender.elapsedTime / 75);
           const activeCfg = isOnlineRef.current
             ? roomStateRef.current?.config ?? DEFAULT_ONLINE_CONFIG
             : engineRef.current.config;
           if (activeCfg.mode === 'ELIMINATION') {
-            immersiveProgress = Math.min(
-              1,
-              Math.max(deadRatio * 0.85, timeBuild) + deadRatio * 0.15
-            );
             immersiveFinalStage = alivePlayers <= 2;
+            const stage1To3Ratio =
+              totalPlayers > 3 ? Math.min(1, deadPlayers / (totalPlayers - 2)) : deadRatio;
+            immersiveProgress =
+              mapTheme === 'mansion_wood' && !immersiveFinalStage
+                ? Math.min(0.66, Math.max(stage1To3Ratio * 0.54, timeBuild * 0.6) + stage1To3Ratio * 0.12)
+                : Math.min(1, Math.max(deadRatio * 0.85, timeBuild) + deadRatio * 0.15);
           } else {
             const scorePlayers = isOnlineRef.current
               ? onlineWorldRef.current?.players ?? []
@@ -1226,8 +1275,13 @@ export default function App() {
         );
       }
 
+      const hideBehindLibIntro = Boolean(
+        worldToRender &&
+          worldToRender.mapId === 'library' &&
+          (worldToRender.libraryState?.introTimer ?? 0) > 0
+      );
       const canvas = canvasRef.current;
-      if (canvas && worldToRender) {
+      if (canvas && worldToRender && !hideBehindLibIntro) {
         const ctx = canvas.getContext('2d');
         if (ctx) {
           const dpr = canvas.width / Math.max(1, width);
@@ -1259,6 +1313,8 @@ export default function App() {
     return () => {
       cancelAnimationFrame(rafId);
       sound.setImmersiveAmbient(false, false);
+      sound.setMapEnvironment('mansion_wood', false);
+      sound.updateAmbientCritters(0, false);
       sound.updateNormalMusic(0, false, 0);
       sound.updateLibraryMusic(0, false, 0, false);
       sound.updateImmersiveMapMusic(0, false, 'mansion_wood', 0, false);
@@ -1323,6 +1379,16 @@ export default function App() {
       );
     }
 
+    if (menuStep === 'COLOR_SELECT') {
+      return (
+        <ColorSelectScreen
+          config={config}
+          onSelectColor={(playerColorId) => setConfig((prev) => ({ ...prev, playerColorId }))}
+          onBack={() => setMenuStep('HUB')}
+        />
+      );
+    }
+
     return (
       <TitleScreen
         config={config}
@@ -1331,6 +1397,7 @@ export default function App() {
         onlineConnecting={onlineConnecting}
         onChangeConfig={setConfig}
         onOpenMapSelect={() => setMenuStep('MAP_SELECT')}
+        onOpenColorSelect={() => setMenuStep('COLOR_SELECT')}
         onStartSolo={() => startSoloMatch(config)}
         onCreateOnlineRoom={handleCreateOnlineRoom}
         onJoinOnlineRoom={handleJoinOnlineRoom}
@@ -1446,28 +1513,18 @@ export default function App() {
           </button>
 
           {!isOnline ? (
-            <>
-              <button
-                type="button"
-                onClick={() => startSoloMatch()}
-                aria-label="Restart match"
-                className="h-9 w-9 inline-flex items-center justify-center rounded-lg border border-slate-800 bg-slate-900 text-slate-300 hover:text-white hover:border-slate-700 transition-colors cursor-pointer"
-              >
-                <RotateCcw className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                onClick={togglePause}
-                className="h-9 px-3 inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 text-xs font-semibold text-slate-100 hover:bg-slate-700 transition-colors cursor-pointer whitespace-nowrap shrink-0"
-              >
-                {gameState === 'PAUSED' ? (
-                  <Play className="w-3.5 h-3.5" />
-                ) : (
-                  <Pause className="w-3.5 h-3.5" />
-                )}
-                <span>{gameState === 'PAUSED' ? 'Resume' : 'Pause'}</span>
-              </button>
-            </>
+            <button
+              type="button"
+              onClick={togglePause}
+              className="h-9 px-3 inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800 text-xs font-semibold text-slate-100 hover:bg-slate-700 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+            >
+              {gameState === 'PAUSED' ? (
+                <Play className="w-3.5 h-3.5" />
+              ) : (
+                <Pause className="w-3.5 h-3.5" />
+              )}
+              <span>{gameState === 'PAUSED' ? 'Resume' : 'Pause'}</span>
+            </button>
           ) : (
             <button
               type="button"
@@ -1591,28 +1648,18 @@ export default function App() {
               {muted ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
             </button>
             {!isOnline ? (
-              <>
-                <button
-                  type="button"
-                  onClick={() => startSoloMatch()}
-                  aria-label="Restart match"
-                  className="h-8 w-8 inline-flex items-center justify-center rounded-lg bg-slate-950/55 text-slate-200 hover:bg-slate-900/80 transition-colors cursor-pointer"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={togglePause}
-                  aria-label={gameState === 'PAUSED' ? 'Resume match' : 'Pause match'}
-                  className="h-8 w-8 inline-flex items-center justify-center rounded-lg bg-slate-950/55 text-slate-100 hover:bg-slate-900/80 transition-colors cursor-pointer"
-                >
-                  {gameState === 'PAUSED' ? (
-                    <Play className="w-3.5 h-3.5" />
-                  ) : (
-                    <Pause className="w-3.5 h-3.5" />
-                  )}
-                </button>
-              </>
+              <button
+                type="button"
+                onClick={togglePause}
+                aria-label={gameState === 'PAUSED' ? 'Resume match' : 'Pause match'}
+                className="h-8 w-8 inline-flex items-center justify-center rounded-lg bg-slate-950/55 text-slate-100 hover:bg-slate-900/80 transition-colors cursor-pointer"
+              >
+                {gameState === 'PAUSED' ? (
+                  <Play className="w-3.5 h-3.5" />
+                ) : (
+                  <Pause className="w-3.5 h-3.5" />
+                )}
+              </button>
             ) : (
               <button
                 type="button"
@@ -1838,7 +1885,7 @@ export default function App() {
             controlScheme === 'CURSOR_SPACE' &&
             gameState === 'PLAYING' &&
             (libraryUi?.state.introTimer ?? LIBRARY_INTRO_DURATION) <= 0 && (
-              <div className="lg:hidden pointer-events-auto absolute bottom-3 left-3 z-20 w-48 rounded-xl border border-amber-500/35 bg-slate-950/65 backdrop-blur-sm px-3 py-2 text-[11px] text-slate-200 shadow-lg">
+              <div className="lg:hidden pointer-events-auto absolute bottom-3 left-3 z-20 w-48 rounded-xl border border-amber-500/35 bg-slate-950/80 px-3 py-2 text-[11px] text-slate-200 shadow-lg">
                 <div className="flex items-center justify-between mb-1">
                   <span className="font-semibold text-amber-200">Walk Cap</span>
                   <span className="font-mono-tabular font-bold text-emerald-300">
@@ -1936,7 +1983,7 @@ export default function App() {
             gameState === 'PLAYING' &&
             !localSnap?.alive &&
             immersiveSpectateList.length > 0 && (
-              <div className="pointer-events-auto absolute bottom-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 rounded-xl border border-slate-700/70 bg-slate-950/65 backdrop-blur-sm px-3 py-2 text-xs text-slate-100 shadow-xl">
+              <div className="pointer-events-auto absolute bottom-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 rounded-xl border border-slate-700/70 bg-slate-950/85 px-3 py-2 text-xs text-slate-100 shadow-xl">
                 <div className="flex items-center gap-1.5 pr-1">
                   <Eye className="w-4 h-4 text-sky-400 shrink-0" />
                   <span className="font-semibold text-slate-200 whitespace-nowrap">

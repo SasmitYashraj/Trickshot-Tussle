@@ -159,6 +159,11 @@ export function getArenaViewTransform(
 
 const floorCache = new Map<string, HTMLCanvasElement>();
 const intactIceCache = new Map<string, HTMLCanvasElement>();
+const staticObstaclesCache = new Map<string, HTMLCanvasElement>();
+const staticAmbientCache = new Map<string, HTMLCanvasElement>();
+const staticWallShadowsCache = new Map<string, HTMLCanvasElement>();
+const staticWallShadowPolyCache = new Map<string, ShadowPolygon[]>();
+const glowSpriteCache = new Map<string, HTMLCanvasElement>();
 const patternCache = new WeakMap<CanvasRenderingContext2D, Map<CanvasImageSource, CanvasPattern | null>>();
 let sharedLightCanvas: HTMLCanvasElement | null = null;
 let sharedBeamScratchCanvas: HTMLCanvasElement | null = null;
@@ -175,7 +180,38 @@ let sharedCarpetWeaveCanvas: HTMLCanvasElement | null = null;
 let sharedMahoganyGrainCanvas: HTMLCanvasElement | null = null;
 let sharedBookshelfVTileCanvas: HTMLCanvasElement | null = null;
 let sharedBookshelfHTileCanvas: HTMLCanvasElement | null = null;
+let sharedFireflySpriteCanvas: HTMLCanvasElement | null = null;
 const sharedSkinTileCache = new Map<string, HTMLCanvasElement>();
+
+function setBoundedCache<V>(cache: Map<string, V>, key: string, value: V, maxEntries = 6): void {
+  if (cache.size >= maxEntries && !cache.has(key)) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey !== undefined) {
+      cache.delete(oldestKey);
+    }
+  }
+  cache.set(key, value);
+}
+
+function getGlowSprite(
+  key: string,
+  radius: number,
+  build: (gctx: CanvasRenderingContext2D, r: number) => void
+): HTMLCanvasElement {
+  const existing = glowSpriteCache.get(key);
+  if (existing) return existing;
+  const r = Math.max(4, Math.ceil(radius));
+  const off = document.createElement('canvas');
+  off.width = r * 2;
+  off.height = r * 2;
+  const gctx = off.getContext('2d');
+  if (gctx) {
+    gctx.translate(r, r);
+    build(gctx, r);
+  }
+  setBoundedCache(glowSpriteCache, key, off, 64);
+  return off;
+}
 
 function getCachedPattern(
   ctx: CanvasRenderingContext2D,
@@ -839,6 +875,26 @@ function getBeamScratchCanvas(width: number, height: number): HTMLCanvasElement 
     sharedBeamScratchCanvas.height = height;
   }
   return sharedBeamScratchCanvas;
+}
+
+function getFireflySpriteCanvas(): HTMLCanvasElement {
+  if (sharedFireflySpriteCanvas) return sharedFireflySpriteCanvas;
+  const off = document.createElement('canvas');
+  off.width = 28;
+  off.height = 28;
+  const c = off.getContext('2d');
+  if (c) {
+    const g = c.createRadialGradient(14, 14, 0.5, 14, 14, 13);
+    g.addColorStop(0, 'rgba(254, 240, 138, 0.92)');
+    g.addColorStop(0.55, 'rgba(250, 204, 21, 0.34)');
+    g.addColorStop(1, 'rgba(250, 204, 21, 0)');
+    c.fillStyle = g;
+    c.beginPath();
+    c.arc(14, 14, 13, 0, Math.PI * 2);
+    c.fill();
+  }
+  sharedFireflySpriteCanvas = off;
+  return off;
 }
 
 function getWinterFogCanvas(): HTMLCanvasElement {
@@ -2003,6 +2059,53 @@ function getBookshelfBayTileCanvas(vertical: boolean): HTMLCanvasElement {
   if (vertical) sharedBookshelfVTileCanvas = off;
   else sharedBookshelfHTileCanvas = off;
   return off;
+}
+
+function getObstacleTexVersionKey(): string {
+  return `${getWinterIceTexture() ? 1 : 0}${getLibraryFloorTexture() ? 1 : 0}${getLibraryCarpetTexture() ? 1 : 0}${getPersianWoolTexture() ? 1 : 0}`;
+}
+
+function getStaticObstaclesCanvas(
+  map: ArenaMap,
+  world: RenderableWorld,
+  floorFilter?: FloorLevel
+): HTMLCanvasElement {
+  const key = `${map.id}_obs_${floorFilter ?? 'all'}_${map.width}x${map.height}_${getObstacleTexVersionKey()}`;
+  const existing = staticObstaclesCache.get(key);
+  if (existing) return existing;
+
+  const off = document.createElement('canvas');
+  off.width = map.width;
+  off.height = map.height;
+  const octx = off.getContext('2d');
+  if (octx) {
+    for (const wall of map.walls) {
+      if (wall.kind === 'library_pillar') continue;
+      if (floorFilter !== undefined && !wall.kind?.startsWith('perimeter') && (wall.floor ?? 0) !== floorFilter) {
+        continue;
+      }
+      drawObstacle(octx, wall, world);
+    }
+  }
+  setBoundedCache(staticObstaclesCache, key, off, 6);
+  return off;
+}
+
+function blitCroppedWorldCanvas(
+  ctx: CanvasRenderingContext2D,
+  src: HTMLCanvasElement,
+  map: ArenaMap,
+  viewBounds?: ViewBounds
+) {
+  const sx = viewBounds ? Math.max(0, Math.floor(viewBounds.left)) : 0;
+  const sy = viewBounds ? Math.max(0, Math.floor(viewBounds.top)) : 0;
+  if (sx >= src.width || sy >= src.height) return;
+  const ex = viewBounds ? Math.min(src.width, Math.ceil(viewBounds.right)) : Math.min(src.width, map.width);
+  const ey = viewBounds ? Math.min(src.height, Math.ceil(viewBounds.bottom)) : Math.min(src.height, map.height);
+  const sw = ex - sx;
+  const sh = ey - sy;
+  if (sw <= 0 || sh <= 0) return;
+  ctx.drawImage(src, sx, sy, sw, sh, sx, sy, sw, sh);
 }
 
 function drawObstacle(ctx: CanvasRenderingContext2D, wall: WallRect, world?: RenderableWorld) {
@@ -3567,9 +3670,6 @@ function drawLibraryStairs(
   const lights = getConeLightSources(map);
   const libFloorImg = getLibraryFloorTexture();
   const libFloorPat = libFloorImg ? getCachedPattern(ctx, libFloorImg) : null;
-  const woolImg = getPersianWoolTexture();
-  const woolPat = woolImg ? getCachedPattern(ctx, woolImg) : null;
-  const carpetWeavePat = getCachedPattern(ctx, getCarpetWeaveCanvas());
 
   ctx.save();
   for (const st of stairs) {
@@ -3589,8 +3689,6 @@ function drawLibraryStairs(
       const stepH = st.h / steps;
       const sideInset = railW;
       const treadW = st.w - sideInset * 2;
-      const runnerW = Math.max(30, treadW * 0.56);
-      const runnerX = st.x + st.w * 0.5 - runnerW * 0.5;
 
       for (let i = 0; i < steps; i++) {
         // elev = 0 at Ground Floor, 1 at Upper Mezzanine
@@ -3610,7 +3708,7 @@ function drawLibraryStairs(
           ? Math.min(1, (0.38 + elev * 0.54) * (0.78 + lampWarmth * 0.30))
           : Math.max(0.14, (0.16 + elev * 0.78) * (0.76 + lampWarmth * 0.30));
 
-        // Dark espresso-mahogany treads (zero bright orange wood tone!)
+        // Dark espresso-mahogany treads (matching DOORS Library bare timber stairs, no green strip)
         const r = Math.round(18 + lightLevel * 44);
         const g = Math.round(9 + lightLevel * 22);
         const b = Math.round(4 + lightLevel * 11);
@@ -3641,38 +3739,6 @@ function drawLibraryStairs(
           ctx.fillRect(st.x + sideInset, sy, treadW, stepH);
           ctx.restore();
         }
-
-        // Woven olive-moss carpet stair runner matching mezzanine walkways
-        ctx.fillStyle = `rgb(${Math.round(28 + lightLevel * 22)}, ${Math.round(35 + lightLevel * 26)}, ${Math.round(16 + lightLevel * 12)})`;
-        ctx.fillRect(runnerX, sy, runnerW, stepH);
-
-        if (woolPat) {
-          ctx.save();
-          ctx.globalCompositeOperation = 'multiply';
-          ctx.globalAlpha = 0.52;
-          ctx.fillStyle = woolPat;
-          ctx.fillRect(runnerX, sy, runnerW, stepH);
-          ctx.restore();
-        }
-        if (carpetWeavePat) {
-          ctx.save();
-          ctx.globalAlpha = 0.26;
-          ctx.fillStyle = carpetWeavePat;
-          ctx.fillRect(runnerX, sy, runnerW, stepH);
-          ctx.restore();
-        }
-
-        // Subtle sage-gold woven runner selvedge borders
-        ctx.fillStyle = `rgba(132, 146, 76, ${0.18 + lightLevel * 0.18})`;
-        ctx.fillRect(runnerX + 3, sy, 2, stepH);
-        ctx.fillRect(runnerX + runnerW - 5, sy, 2, stepH);
-
-        // Burnished antique-brass stair rod securing runner at step crease
-        const rodY = st.upDir === 'up' ? sy + 1.8 : sy + stepH - 3.6;
-        ctx.fillStyle = `rgba(118, 84, 42, ${0.42 + lightLevel * 0.34})`;
-        ctx.fillRect(runnerX - 3, rodY, runnerW + 6, 2);
-        ctx.fillStyle = `rgba(196, 152, 92, ${0.28 + lightLevel * 0.24})`;
-        ctx.fillRect(runnerX - 1, rodY, runnerW + 2, 0.9);
 
         // Subtle mahogany step nosing bevel & crisp dark riser shadow
         const lipY = st.upDir === 'up' ? sy + stepH - 2.2 : sy + 0.4;
@@ -3756,8 +3822,6 @@ function drawLibraryStairs(
     } else {
       const stepW = st.w / steps;
       const treadH = st.h - railW * 2;
-      const runnerH = Math.max(30, treadH * 0.56);
-      const runnerY = st.y + st.h * 0.5 - runnerH * 0.5;
       for (let i = 0; i < steps; i++) {
         const t = (i + 0.5) / steps;
         const elev = st.upDir === 'left' ? 1 - t : t;
@@ -3775,15 +3839,6 @@ function drawLibraryStairs(
           ctx.globalAlpha = 0.28 + lightLevel * 0.16;
           ctx.fillStyle = libFloorPat;
           ctx.fillRect(sx, st.y + railW, stepW, treadH);
-          ctx.restore();
-        }
-        ctx.fillStyle = `rgb(${Math.round(28 + lightLevel * 22)}, ${Math.round(35 + lightLevel * 26)}, ${Math.round(16 + lightLevel * 12)})`;
-        ctx.fillRect(sx, runnerY, stepW, runnerH);
-        if (carpetWeavePat) {
-          ctx.save();
-          ctx.globalAlpha = 0.26;
-          ctx.fillStyle = carpetWeavePat;
-          ctx.fillRect(sx, runnerY, stepW, runnerH);
           ctx.restore();
         }
         const lipX = st.upDir === 'left' ? sx + stepW - 2.2 : sx + 0.4;
@@ -5289,14 +5344,18 @@ export function renderArena(
       ctx.translate(item.x, item.y + bob);
 
       if (item.kind === 'bullet') {
-        const glow = ctx.createRadialGradient(0, 0, 4, 0, 0, item.radius + 7);
-        glow.addColorStop(0, 'rgba(56, 189, 248, 0.32)');
-        glow.addColorStop(0.75, 'rgba(56, 189, 248, 0.14)');
-        glow.addColorStop(1, 'rgba(56, 189, 248, 0)');
-        ctx.fillStyle = glow;
-        ctx.beginPath();
-        ctx.arc(0, 0, item.radius + 7, 0, Math.PI * 2);
-        ctx.fill();
+        const glowR = item.radius + 7;
+        const glowSprite = getGlowSprite(`pickup_bullet_${glowR}`, glowR, (gc, r) => {
+          const glow = gc.createRadialGradient(0, 0, 4, 0, 0, r);
+          glow.addColorStop(0, 'rgba(56, 189, 248, 0.32)');
+          glow.addColorStop(0.75, 'rgba(56, 189, 248, 0.14)');
+          glow.addColorStop(1, 'rgba(56, 189, 248, 0)');
+          gc.fillStyle = glow;
+          gc.beginPath();
+          gc.arc(0, 0, r, 0, Math.PI * 2);
+          gc.fill();
+        });
+        ctx.drawImage(glowSprite, -glowR, -glowR, glowR * 2, glowR * 2);
 
         ctx.fillStyle = 'rgba(14, 165, 233, 0.16)';
         ctx.strokeStyle = '#38BDF8';
@@ -5445,8 +5504,9 @@ export function renderArena(
         drawDynamicLightShadows(ctx, map, world, 0, viewBounds);
       }
       drawPickupsOnFloor(0);
+      blitCroppedFloor(getStaticObstaclesCanvas(map, world, 0));
       for (const wall of map.walls) {
-        if (isWallOnFloor(wall, 0) && inViewRect(wall.x, wall.y, wall.w, wall.h)) {
+        if (wall.kind === 'library_pillar' && isWallOnFloor(wall, 0) && inViewRect(wall.x, wall.y, wall.w, wall.h)) {
           drawObstacle(ctx, wall, world);
         }
       }
@@ -5463,22 +5523,8 @@ export function renderArena(
           drawSinglePlayer(player);
         }
       }
-      if (inViewCircle(monster.x, monster.y, 110)) {
-        if (monster.transitioning) {
-          if (monster.fromFloor === 0) {
-            ctx.save();
-            ctx.globalAlpha *= 1 - Math.max(0, Math.min(1, monster.transitionProgress ?? 0));
-            drawLibraryMonster(ctx, monster, world.elapsedTime);
-            ctx.restore();
-          } else if (monster.toFloor === 0) {
-            ctx.save();
-            ctx.globalAlpha *= Math.max(0, Math.min(1, monster.transitionProgress ?? 0));
-            drawLibraryMonster(ctx, monster, world.elapsedTime);
-            ctx.restore();
-          }
-        } else if (monster.floor === 0 && !monsterOnStair) {
-          drawLibraryMonster(ctx, monster, world.elapsedTime);
-        }
+      if (!monster.transitioning && monster.floor === 0 && !monsterOnStair && inViewCircle(monster.x, monster.y, 110)) {
+        drawLibraryMonster(ctx, monster, world.elapsedTime);
       }
     }
 
@@ -5488,21 +5534,8 @@ export function renderArena(
       ctx.fillRect(viewLeft, viewTop, viewRight - viewLeft, viewBottom - viewTop);
     }
 
-    // 1C. Staircases + any entities currently walking on stairs
+    // 1C. Staircases
     drawLibraryStairs(ctx, map, world, libraryBlend);
-    for (const player of world.players) {
-      if (isPlayerMidStair(player) && inViewCircle(player.x, player.y, 90)) {
-        drawSinglePlayer(player);
-      }
-    }
-    if (
-      monsterOnStair &&
-      !monster.transitioning &&
-      inViewCircle(monster.x, monster.y, 110) &&
-      (monster.floor === localFloor || (libraryBlend > 0.05 && libraryBlend < 0.95))
-    ) {
-      drawLibraryMonster(ctx, monster, world.elapsedTime);
-    }
 
     // 1D. Upper Mezzanine Floor (revealed smoothly only while on/past stairs)
     if (libraryBlend > 0.01) {
@@ -5516,8 +5549,9 @@ export function renderArena(
       }
       drawSpawnPads();
       drawPickupsOnFloor(1);
+      blitCroppedFloor(getStaticObstaclesCanvas(map, world, 1));
       for (const wall of map.walls) {
-        if (isWallOnFloor(wall, 1) && inViewRect(wall.x, wall.y, wall.w, wall.h)) {
+        if (wall.kind === 'library_pillar' && isWallOnFloor(wall, 1) && inViewRect(wall.x, wall.y, wall.w, wall.h)) {
           drawObstacle(ctx, wall, world);
         }
       }
@@ -5534,24 +5568,37 @@ export function renderArena(
           drawSinglePlayer(player);
         }
       }
-      if (inViewCircle(monster.x, monster.y, 110)) {
-        if (monster.transitioning) {
-          if (monster.fromFloor === 1) {
-            ctx.save();
-            ctx.globalAlpha *= 1 - Math.max(0, Math.min(1, monster.transitionProgress ?? 0));
-            drawLibraryMonster(ctx, monster, world.elapsedTime);
-            ctx.restore();
-          } else if (monster.toFloor === 1) {
-            ctx.save();
-            ctx.globalAlpha *= Math.max(0, Math.min(1, monster.transitionProgress ?? 0));
-            drawLibraryMonster(ctx, monster, world.elapsedTime);
-            ctx.restore();
-          }
-        } else if (monster.floor === 1 && !monsterOnStair) {
-          drawLibraryMonster(ctx, monster, world.elapsedTime);
-        }
+      if (!monster.transitioning && monster.floor === 1 && !monsterOnStair && inViewCircle(monster.x, monster.y, 110)) {
+        drawLibraryMonster(ctx, monster, world.elapsedTime);
       }
       ctx.restore();
+    }
+
+    // 1E. Entities on Stairs (drawn AFTER both stairs & upper floor so climbers never clip under upper mezzanine,
+    // and Figure smoothly fades in on arrival floor / fades out on departure floor directly along the steps!)
+    for (const player of world.players) {
+      if (isPlayerMidStair(player) && inViewCircle(player.x, player.y, 90)) {
+        drawSinglePlayer(player);
+      }
+    }
+    if (inViewCircle(monster.x, monster.y, 110)) {
+      if (monster.transitioning) {
+        const prog = Math.max(0, Math.min(1, monster.transitionProgress ?? 0));
+        const w0 = monster.fromFloor === 0 ? 1 - prog : monster.toFloor === 0 ? prog : 0;
+        const w1 = monster.fromFloor === 1 ? 1 - prog : monster.toFloor === 1 ? prog : 0;
+        const transAlpha = w0 * (1 - libraryBlend) + w1 * libraryBlend;
+        if (transAlpha > 0.01) {
+          ctx.save();
+          ctx.globalAlpha *= transAlpha;
+          drawLibraryMonster(ctx, monster, world.elapsedTime);
+          ctx.restore();
+        }
+      } else if (
+        monsterOnStair &&
+        (monster.floor === localFloor || (libraryBlend > 0.05 && libraryBlend < 0.95))
+      ) {
+        drawLibraryMonster(ctx, monster, world.elapsedTime);
+      }
     }
   } else {
     // 1. Standard Single-Floor Rendering
@@ -5566,11 +5613,7 @@ export function renderArena(
     drawSpawnPads();
     drawPickupsOnFloor();
 
-    for (const wall of map.walls) {
-      if (inViewRect(wall.x, wall.y, wall.w, wall.h)) {
-        drawObstacle(ctx, wall, world);
-      }
-    }
+    blitCroppedFloor(getStaticObstaclesCanvas(map, world));
     for (const box of world.boxes) {
       if (inViewRect(box.x - box.w * 0.5, box.y - box.h * 0.5, box.w, box.h)) {
         drawCardboardBox(ctx, box);
@@ -5638,7 +5681,7 @@ export function renderArena(
         monster &&
         Math.abs(monster.x - p.x) <= range + 50 &&
         Math.abs(monster.y - p.y) <= range + 50 &&
-        (!isLibrary || monster.floor === localFloor || isMonsterOnStair(monster))
+        (!isLibrary || monster.floor === localFloor || monster.transitioning || isMonsterOnStair(monster))
       ) {
         const mw = buildCircleFlashlightShadowWedge(
           p.x,
@@ -5706,8 +5749,9 @@ export function renderArena(
 
   // 8. Cinematic Additive Light Interaction (Feathered Flashlight Floor Glow with Cast Shadows + Glowing Bullets + Object Rim Light)
   if (isImmersive) {
-    // Subtle floating golden forest fireflies in Emerald Grove matching collage mood
+    // Subtle floating golden forest fireflies in Emerald Grove matching collage mood (cached sprite + culled)
     if (map.floorTheme === 'grass_outdoors') {
+      const ffSprite = getFireflySpriteCanvas();
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
       for (let i = 0; i < 42; i++) {
@@ -5715,14 +5759,10 @@ export function renderArena(
         const by = seededRand(i * 67 + 13) * map.height;
         const fx = bx + Math.sin(world.elapsedTime * 0.7 + i) * 26;
         const fy = by + Math.cos(world.elapsedTime * 0.55 + i * 1.4) * 22;
+        if (!inViewCircle(fx, fy, 16)) continue;
         const twinkle = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(world.elapsedTime * 2.6 + i * 2.1));
-        const g = ctx.createRadialGradient(fx, fy, 0.5, fx, fy, 11);
-        g.addColorStop(0, `rgba(254, 240, 138, ${0.42 * twinkle})`);
-        g.addColorStop(1, 'rgba(250, 204, 21, 0)');
-        ctx.fillStyle = g;
-        ctx.beginPath();
-        ctx.arc(fx, fy, 11, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.globalAlpha = 0.45 * twinkle;
+        ctx.drawImage(ffSprite, fx - 12, fy - 12, 24, 24);
       }
       ctx.restore();
     }
@@ -5803,27 +5843,43 @@ export function renderArena(
     ctx.globalCompositeOperation = 'lighter';
 
     const bulletGlowRadius = isExtraDark ? 82 : 52;
+    const muzzleSprite = getGlowSprite('bullet_muzzle_95', 95, (gc, r) => {
+      const mg = gc.createRadialGradient(0, 0, 2, 0, 0, r);
+      mg.addColorStop(0, 'rgba(254, 240, 138, 1)');
+      mg.addColorStop(1, 'rgba(254, 240, 138, 0)');
+      gc.fillStyle = mg;
+      gc.beginPath();
+      gc.arc(0, 0, r, 0, Math.PI * 2);
+      gc.fill();
+    });
+
     for (const b of world.bullets) {
       if (isLibrary && (b.floor ?? 0) !== localFloor) continue;
       if (!inViewCircle(b.x, b.y, 120)) continue;
-      const grad = ctx.createRadialGradient(b.x, b.y, 2, b.x, b.y, bulletGlowRadius);
-      grad.addColorStop(0, hexWithAlpha(b.color, isExtraDark ? 0.48 : 0.3));
-      grad.addColorStop(0.45, hexWithAlpha(b.color, isExtraDark ? 0.2 : 0.12));
-      grad.addColorStop(1, hexWithAlpha(b.color, 0));
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(b.x, b.y, bulletGlowRadius, 0, Math.PI * 2);
-      ctx.fill();
+      const bGlowSprite = getGlowSprite(`bullet_${b.color}_${bulletGlowRadius}_${isExtraDark ? 1 : 0}`, bulletGlowRadius, (gc, r) => {
+        const grad = gc.createRadialGradient(0, 0, 2, 0, 0, r);
+        grad.addColorStop(0, hexWithAlpha(b.color, isExtraDark ? 0.48 : 0.3));
+        grad.addColorStop(0.45, hexWithAlpha(b.color, isExtraDark ? 0.2 : 0.12));
+        grad.addColorStop(1, hexWithAlpha(b.color, 0));
+        gc.fillStyle = grad;
+        gc.beginPath();
+        gc.arc(0, 0, r, 0, Math.PI * 2);
+        gc.fill();
+      });
+      ctx.drawImage(
+        bGlowSprite,
+        b.x - bulletGlowRadius,
+        b.y - bulletGlowRadius,
+        bulletGlowRadius * 2,
+        bulletGlowRadius * 2
+      );
 
       if (b.age < 0.2) {
         const flashA = (1 - b.age / 0.2) * 0.45;
-        const mg = ctx.createRadialGradient(b.x, b.y, 2, b.x, b.y, 95);
-        mg.addColorStop(0, `rgba(254, 240, 138, ${flashA})`);
-        mg.addColorStop(1, 'rgba(254, 240, 138, 0)');
-        ctx.fillStyle = mg;
-        ctx.beginPath();
-        ctx.arc(b.x, b.y, 95, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.save();
+        ctx.globalAlpha = flashA;
+        ctx.drawImage(muzzleSprite, b.x - 95, b.y - 95, 190, 190);
+        ctx.restore();
       }
 
       for (const wall of map.walls) {
@@ -5846,19 +5902,25 @@ export function renderArena(
       }
     }
 
+    const tntGlowSprite = getGlowSprite('tnt_armed_aura_82', 82, (gc, r) => {
+      const g = gc.createRadialGradient(0, 0, 4, 0, 0, r);
+      g.addColorStop(0, 'rgba(239, 68, 68, 1)');
+      g.addColorStop(1, 'rgba(239, 68, 68, 0)');
+      gc.fillStyle = g;
+      gc.beginPath();
+      gc.arc(0, 0, r, 0, Math.PI * 2);
+      gc.fill();
+    });
     for (const item of world.pickups) {
       if (isLibrary && (item.floor ?? 0) !== localFloor) continue;
       if (item.kind === 'tnt' && item.armed) {
         if (!inViewCircle(item.x, item.y, 96)) continue;
         const pulse = 0.5 + 0.5 * Math.sin(world.elapsedTime * 14);
         const r = 64 + pulse * 18;
-        const g = ctx.createRadialGradient(item.x, item.y, 4, item.x, item.y, r);
-        g.addColorStop(0, `rgba(239, 68, 68, ${isExtraDark ? 0.32 : 0.16})`);
-        g.addColorStop(1, 'rgba(239, 68, 68, 0)');
-        ctx.fillStyle = g;
-        ctx.beginPath();
-        ctx.arc(item.x, item.y, r, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.save();
+        ctx.globalAlpha = isExtraDark ? 0.32 : 0.16;
+        ctx.drawImage(tntGlowSprite, item.x - r, item.y - r, r * 2, r * 2);
+        ctx.restore();
       }
     }
 
@@ -6048,30 +6110,39 @@ export function renderArena(
         }
       }
 
-      for (const b of world.bullets) {
-        if (isLibrary && (b.floor ?? 0) !== localFloor) continue;
-        const br = b.age < 0.2 ? 125 : 88;
-        const bg = lctx.createRadialGradient(b.x, b.y, 4, b.x, b.y, br);
+      const bulletCutSprite = getGlowSprite('dark_cut_bullet_100', 100, (gc, r) => {
+        const bg = gc.createRadialGradient(0, 0, 4, 0, 0, r);
         bg.addColorStop(0, 'rgba(0, 0, 0, 0.94)');
         bg.addColorStop(0.5, 'rgba(0, 0, 0, 0.45)');
         bg.addColorStop(1, 'rgba(0, 0, 0, 0)');
-        lctx.fillStyle = bg;
-        lctx.beginPath();
-        lctx.arc(b.x, b.y, br, 0, Math.PI * 2);
-        lctx.fill();
+        gc.fillStyle = bg;
+        gc.beginPath();
+        gc.arc(0, 0, r, 0, Math.PI * 2);
+        gc.fill();
+      });
+      for (const b of world.bullets) {
+        if (isLibrary && (b.floor ?? 0) !== localFloor) continue;
+        const br = b.age < 0.2 ? 125 : 88;
+        lctx.drawImage(bulletCutSprite, b.x - br, b.y - br, br * 2, br * 2);
       }
 
+      const pickupCutSprite = getGlowSprite('dark_cut_pickup_84', 84, (gc, r) => {
+        const pg = gc.createRadialGradient(0, 0, 2, 0, 0, r);
+        pg.addColorStop(0, 'rgba(0, 0, 0, 1)');
+        pg.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        gc.fillStyle = pg;
+        gc.beginPath();
+        gc.arc(0, 0, r, 0, Math.PI * 2);
+        gc.fill();
+      });
       for (const item of world.pickups) {
         if (isLibrary && (item.floor ?? 0) !== localFloor) continue;
         const pr = item.kind === 'tnt' ? 84 : 44;
         const strength = item.kind === 'tnt' ? 0.88 : 0.56;
-        const pg = lctx.createRadialGradient(item.x, item.y, 2, item.x, item.y, pr);
-        pg.addColorStop(0, `rgba(0, 0, 0, ${strength})`);
-        pg.addColorStop(1, 'rgba(0, 0, 0, 0)');
-        lctx.fillStyle = pg;
-        lctx.beginPath();
-        lctx.arc(item.x, item.y, pr, 0, Math.PI * 2);
-        lctx.fill();
+        lctx.save();
+        lctx.globalAlpha = strength;
+        lctx.drawImage(pickupCutSprite, item.x - pr, item.y - pr, pr * 2, pr * 2);
+        lctx.restore();
       }
 
       for (const ex of world.explosions) {
@@ -6125,11 +6196,20 @@ export function renderArena(
 
     if (isLibrary && world.libraryState) {
       const m = world.libraryState.monster;
-      if (m.floor === localFloor || (libraryBlend > 0.05 && libraryBlend < 0.95 && isMonsterOnStair(m))) {
+      let monsterGlowVis = 0;
+      if (m.transitioning) {
+        const prog = Math.max(0, Math.min(1, m.transitionProgress ?? 0));
+        const w0 = m.fromFloor === 0 ? 1 - prog : m.toFloor === 0 ? prog : 0;
+        const w1 = m.fromFloor === 1 ? 1 - prog : m.toFloor === 1 ? prog : 0;
+        monsterGlowVis = w0 * (1 - libraryBlend) + w1 * libraryBlend;
+      } else if (m.floor === localFloor || (libraryBlend > 0.05 && libraryBlend < 0.95 && isMonsterOnStair(m))) {
+        monsterGlowVis = 1;
+      }
+      if (monsterGlowVis > 0.01) {
         ctx.save();
         ctx.translate(m.x, m.y);
         ctx.rotate(m.angle);
-        ctx.globalAlpha = m.mode === 'rage' ? 0.58 : 0.34;
+        ctx.globalAlpha = (m.mode === 'rage' ? 0.58 : 0.34) * monsterGlowVis;
         const glow = ctx.createRadialGradient(18, 0, 2, 18, 0, 28);
         glow.addColorStop(0, m.mode === 'rage' ? '#FB923C' : '#F97316');
         glow.addColorStop(1, 'rgba(249, 115, 22, 0)');
@@ -6167,7 +6247,8 @@ export function renderArena(
       canvasHeight,
       worldTx,
       worldTy,
-      scale
+      scale,
+      viewBounds
     );
   }
 
@@ -6887,6 +6968,38 @@ function buildRectShadowFromPoint(
   };
 }
 
+function getStaticWallShadowPolys(
+  light: ConeLightSource,
+  map: ArenaMap,
+  shadowLen: number,
+  floorFilter?: FloorLevel
+): ShadowPolygon[] {
+  const key = `${map.id}_${Math.round(light.x)}_${Math.round(light.y)}_${light.dirY}_${shadowLen}_${floorFilter ?? 'all'}`;
+  const existing = staticWallShadowPolyCache.get(key);
+  if (existing) return existing;
+
+  const polys: ShadowPolygon[] = [];
+  for (const wall of map.walls) {
+    if (wall.kind?.startsWith('perimeter')) continue;
+    if (floorFilter !== undefined && (wall.floor ?? 0) !== floorFilter) continue;
+    const poly = buildRectShadowFromPoint(
+      light.x,
+      light.y,
+      wall.x,
+      wall.y,
+      wall.w,
+      wall.h,
+      light.range,
+      shadowLen,
+      light.dirY,
+      light.coneMaxHalfAngle
+    );
+    if (poly) polys.push(poly);
+  }
+  setBoundedCache(staticWallShadowPolyCache, key, polys, 96);
+  return polys;
+}
+
 function collectLightShadowPolys(
   light: ConeLightSource,
   map: ArenaMap,
@@ -6970,26 +7083,58 @@ function collectLightShadowPolys(
   }
 
   if (includeWalls) {
-    for (const wall of map.walls) {
-      if (wall.kind?.startsWith('perimeter')) continue;
-      if (floorFilter !== undefined && (wall.floor ?? 0) !== floorFilter) continue;
-      const poly = buildRectShadowFromPoint(
-        light.x,
-        light.y,
-        wall.x,
-        wall.y,
-        wall.w,
-        wall.h,
-        light.range,
-        shadowLen,
-        light.dirY,
-        light.coneMaxHalfAngle
-      );
-      if (poly) out.push(poly);
+    const wallPolys = getStaticWallShadowPolys(light, map, shadowLen, floorFilter);
+    for (let i = 0; i < wallPolys.length; i++) {
+      out.push(wallPolys[i]);
     }
   }
 
   return out;
+}
+
+function getStaticWallShadowsCanvas(
+  map: ArenaMap,
+  floorFilter?: FloorLevel
+): HTMLCanvasElement {
+  const key = `${map.id}_sws_${floorFilter ?? 'all'}_${map.width}x${map.height}`;
+  const existing = staticWallShadowsCache.get(key);
+  if (existing) return existing;
+
+  const off = document.createElement('canvas');
+  off.width = map.width;
+  off.height = map.height;
+  const sctx = off.getContext('2d');
+  if (sctx) {
+    const isWinter = map.floorTheme === 'winter_snow';
+    const shadowRgb = isWinter ? '11, 30, 68' : '5, 6, 12';
+    const peakShadow = isWinter ? 0.34 : 0.44;
+    const midShadow = isWinter ? 0.15 : 0.2;
+    const lights = [...getConeLightSources(map), ...getCargoVentSources(map)];
+    for (const light of lights) {
+      const isVent = light.dirY === 0;
+      const shadowLen = isVent ? 160 : isWinter ? 250 : 220;
+      const polys = getStaticWallShadowPolys(light, map, shadowLen, floorFilter);
+      const scaleAlpha = isVent ? 0.62 : 1;
+      for (const poly of polys) {
+        const mx = (poly.x0 + poly.x1) * 0.5;
+        const my = (poly.y0 + poly.y1) * 0.5;
+        const grad = sctx.createLinearGradient(mx, my, poly.tailX, poly.tailY);
+        grad.addColorStop(0, `rgba(${shadowRgb}, ${peakShadow * poly.strength * scaleAlpha})`);
+        grad.addColorStop(0.55, `rgba(${shadowRgb}, ${midShadow * poly.strength * scaleAlpha})`);
+        grad.addColorStop(1, `rgba(${shadowRgb}, 0)`);
+        sctx.fillStyle = grad;
+        sctx.beginPath();
+        sctx.moveTo(poly.x0, poly.y0);
+        sctx.lineTo(poly.fx0, poly.fy0);
+        sctx.lineTo(poly.fx1, poly.fy1);
+        sctx.lineTo(poly.x1, poly.y1);
+        sctx.closePath();
+        sctx.fill();
+      }
+    }
+  }
+  setBoundedCache(staticWallShadowsCache, key, off, 6);
+  return off;
 }
 
 function drawDynamicLightShadows(
@@ -7060,6 +7205,9 @@ function drawDynamicLightShadows(
     return;
   }
 
+  // Blit cached static wall shadows cleanly, then compute only moving dynamic entities
+  blitCroppedWorldCanvas(ctx, getStaticWallShadowsCanvas(map, floorFilter), map, viewBounds);
+
   const isWinter = map.floorTheme === 'winter_snow';
   const shadowRgb = isWinter ? '11, 30, 68' : '5, 6, 12';
   const peakShadow = isWinter ? 0.34 : 0.44;
@@ -7068,7 +7216,7 @@ function drawDynamicLightShadows(
   for (const light of lights) {
     if (!isConeLightVisible(light, viewBounds)) continue;
     const isVent = light.dirY === 0;
-    const polys = collectLightShadowPolys(light, map, world, isVent ? 160 : isWinter ? 250 : 220, true, floorFilter);
+    const polys = collectLightShadowPolys(light, map, world, isVent ? 160 : isWinter ? 250 : 220, false, floorFilter);
     for (const poly of polys) {
       if (viewBounds) {
         const minX = Math.min(poly.x0, poly.x1, poly.fx0, poly.fx1);
@@ -7100,6 +7248,115 @@ function drawDynamicLightShadows(
   ctx.restore();
 }
 
+function getStaticAmbientCanvas(
+  map: ArenaMap,
+  floorFilter?: FloorLevel
+): HTMLCanvasElement {
+  const key = `${map.id}_amb_${floorFilter ?? 'all'}_${map.width}x${map.height}`;
+  const existing = staticAmbientCache.get(key);
+  if (existing) return existing;
+
+  const off = document.createElement('canvas');
+  off.width = map.width;
+  off.height = map.height;
+  const actx = off.getContext('2d');
+  if (actx) {
+    if (map.floorTheme === 'mansion_wood') {
+      const lights = getConeLightSources(map);
+      for (const l of lights) {
+        const py = l.y + l.dirY * 145;
+        const topPool = actx.createRadialGradient(l.x, l.y + l.dirY * 65, 16, l.x, py, 330);
+        topPool.addColorStop(0, 'rgba(253, 224, 71, 0.24)');
+        topPool.addColorStop(0.55, 'rgba(250, 204, 21, 0.1)');
+        topPool.addColorStop(1, 'rgba(250, 204, 21, 0)');
+        actx.fillStyle = topPool;
+        actx.beginPath();
+        actx.arc(l.x, py, 330, 0, Math.PI * 2);
+        actx.fill();
+      }
+      const centerGlow = actx.createRadialGradient(
+        map.width * 0.5,
+        map.height * 0.5,
+        20,
+        map.width * 0.5,
+        map.height * 0.5,
+        map.immersive ? 420 : 280
+      );
+      centerGlow.addColorStop(0, 'rgba(254, 240, 138, 0.14)');
+      centerGlow.addColorStop(1, 'rgba(254, 240, 138, 0)');
+      actx.fillStyle = centerGlow;
+      actx.beginPath();
+      actx.arc(map.width * 0.5, map.height * 0.5, map.immersive ? 420 : 280, 0, Math.PI * 2);
+      actx.fill();
+    } else if (map.floorTheme === 'library_wood') {
+      const lights = getConeLightSources(map);
+      for (const l of lights) {
+        const py = l.y + l.dirY * 140;
+        const pool = actx.createRadialGradient(l.x, l.y + l.dirY * 60, 14, l.x, py, 330);
+        pool.addColorStop(0, 'rgba(218, 142, 78, 0.17)');
+        pool.addColorStop(0.55, 'rgba(196, 120, 62, 0.08)');
+        pool.addColorStop(1, 'rgba(196, 120, 62, 0)');
+        actx.fillStyle = pool;
+        actx.beginPath();
+        actx.arc(l.x, py, 330, 0, Math.PI * 2);
+        actx.fill();
+      }
+      if ((floorFilter ?? 0) === 0) {
+        const centerGlow = actx.createRadialGradient(map.width * 0.5, map.height * 0.5, 40, map.width * 0.5, map.height * 0.5, 520);
+        centerGlow.addColorStop(0, 'rgba(210, 138, 76, 0.12)');
+        centerGlow.addColorStop(1, 'rgba(196, 120, 62, 0)');
+        actx.fillStyle = centerGlow;
+        actx.beginPath();
+        actx.arc(map.width * 0.5, map.height * 0.5, 520, 0, Math.PI * 2);
+        actx.fill();
+      }
+      for (const st of map.stairs ?? []) {
+        const sx = st.x + st.w * 0.5;
+        const sy = st.upDir === 'up' ? st.y + 32 : st.y + st.h - 32;
+        const sg = actx.createRadialGradient(sx, sy, 12, sx, sy, 230);
+        sg.addColorStop(0, 'rgba(222, 148, 84, 0.16)');
+        sg.addColorStop(1, 'rgba(196, 120, 62, 0)');
+        actx.fillStyle = sg;
+        actx.beginPath();
+        actx.arc(sx, sy, 230, 0, Math.PI * 2);
+        actx.fill();
+      }
+    } else if (map.floorTheme === 'winter_snow') {
+      const coolWash = actx.createRadialGradient(
+        map.width * 0.5,
+        map.height * 0.45,
+        120,
+        map.width * 0.5,
+        map.height * 0.5,
+        map.width * 0.72
+      );
+      coolWash.addColorStop(0, 'rgba(186, 230, 253, 0.05)');
+      coolWash.addColorStop(0.65, 'rgba(96, 165, 250, 0.09)');
+      coolWash.addColorStop(1, 'rgba(15, 42, 92, 0.22)');
+      actx.fillStyle = coolWash;
+      actx.fillRect(0, 0, map.width, map.height);
+    } else if (map.floorTheme === 'grass_outdoors') {
+      const sunSpots = map.immersive ? [450, 1200, 1850] : [220, 620];
+      for (const sx of sunSpots) {
+        const sunGrad = actx.createLinearGradient(sx, 0, sx + 320, 620);
+        sunGrad.addColorStop(0, 'rgba(254, 249, 195, 0.18)');
+        sunGrad.addColorStop(0.55, 'rgba(254, 240, 138, 0.07)');
+        sunGrad.addColorStop(1, 'rgba(254, 249, 195, 0)');
+        actx.fillStyle = sunGrad;
+        actx.beginPath();
+        actx.moveTo(sx - 70, 0);
+        actx.lineTo(sx + 85, 0);
+        actx.lineTo(sx + 390, 620);
+        actx.lineTo(sx + 110, 620);
+        actx.closePath();
+        actx.fill();
+      }
+    }
+  }
+  setBoundedCache(staticAmbientCache, key, off, 6);
+  return off;
+}
+
 function drawAmbientArenaLights(
   ctx: CanvasRenderingContext2D,
   map: ArenaMap,
@@ -7108,79 +7365,8 @@ function drawAmbientArenaLights(
   viewBounds?: ViewBounds
 ) {
   ctx.save();
-  if (map.floorTheme === 'mansion_wood') {
-    const lights = getConeLightSources(map);
-    for (const l of lights) {
-      const py = l.y + l.dirY * 145;
-      if (viewBounds && (l.x + 330 < viewBounds.left || l.x - 330 > viewBounds.right || py + 330 < viewBounds.top || py - 330 > viewBounds.bottom)) {
-        continue;
-      }
-      const topPool = ctx.createRadialGradient(l.x, l.y + l.dirY * 65, 16, l.x, py, 330);
-      topPool.addColorStop(0, 'rgba(253, 224, 71, 0.24)');
-      topPool.addColorStop(0.55, 'rgba(250, 204, 21, 0.1)');
-      topPool.addColorStop(1, 'rgba(250, 204, 21, 0)');
-      ctx.fillStyle = topPool;
-      ctx.beginPath();
-      ctx.arc(l.x, py, 330, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    const centerGlow = ctx.createRadialGradient(
-      map.width * 0.5,
-      map.height * 0.5,
-      20,
-      map.width * 0.5,
-      map.height * 0.5,
-      map.immersive ? 420 : 280
-    );
-    centerGlow.addColorStop(0, 'rgba(254, 240, 138, 0.14)');
-    centerGlow.addColorStop(1, 'rgba(254, 240, 138, 0)');
-    ctx.fillStyle = centerGlow;
-    ctx.beginPath();
-    ctx.arc(map.width * 0.5, map.height * 0.5, map.immersive ? 420 : 280, 0, Math.PI * 2);
-    ctx.fill();
-  } else if (map.floorTheme === 'library_wood') {
-    // Soft warm antique candlelit sconce pools (bronze-amber, matching DOORS Library reference without yellow tint)
-    const lights = getConeLightSources(map);
-    for (const l of lights) {
-      const py = l.y + l.dirY * 140;
-      if (viewBounds && (l.x + 330 < viewBounds.left || l.x - 330 > viewBounds.right || py + 330 < viewBounds.top || py - 330 > viewBounds.bottom)) {
-        continue;
-      }
-      const pool = ctx.createRadialGradient(l.x, l.y + l.dirY * 60, 14, l.x, py, 330);
-      pool.addColorStop(0, 'rgba(218, 142, 78, 0.17)');
-      pool.addColorStop(0.55, 'rgba(196, 120, 62, 0.08)');
-      pool.addColorStop(1, 'rgba(196, 120, 62, 0)');
-      ctx.fillStyle = pool;
-      ctx.beginPath();
-      ctx.arc(l.x, py, 330, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    if ((floorFilter ?? 0) === 0) {
-      const centerGlow = ctx.createRadialGradient(map.width * 0.5, map.height * 0.5, 40, map.width * 0.5, map.height * 0.5, 520);
-      centerGlow.addColorStop(0, 'rgba(210, 138, 76, 0.12)');
-      centerGlow.addColorStop(1, 'rgba(196, 120, 62, 0)');
-      ctx.fillStyle = centerGlow;
-      ctx.beginPath();
-      ctx.arc(map.width * 0.5, map.height * 0.5, 520, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    for (const st of map.stairs ?? []) {
-      const sx = st.x + st.w * 0.5;
-      const sy = st.upDir === 'up' ? st.y + 32 : st.y + st.h - 32;
-      if (viewBounds && (sx + 230 < viewBounds.left || sx - 230 > viewBounds.right || sy + 230 < viewBounds.top || sy - 230 > viewBounds.bottom)) {
-        continue;
-      }
-      const sg = ctx.createRadialGradient(sx, sy, 12, sx, sy, 230);
-      sg.addColorStop(0, 'rgba(222, 148, 84, 0.16)');
-      sg.addColorStop(1, 'rgba(196, 120, 62, 0)');
-      ctx.fillStyle = sg;
-      ctx.beginPath();
-      ctx.arc(sx, sy, 230, 0, Math.PI * 2);
-      ctx.fill();
-    }
+  if (map.floorTheme === 'mansion_wood' || map.floorTheme === 'library_wood') {
+    blitCroppedWorldCanvas(ctx, getStaticAmbientCanvas(map, floorFilter), map, viewBounds);
   } else if (map.floorTheme === 'maple_cargo') {
     // Glowing emerald louvered vents matching reference: bright internal neon slats, very faint localized floor spill
     const grates = getCargoVentSources(map);
@@ -7245,20 +7431,18 @@ function drawAmbientArenaLights(
     }
   } else if (map.floorTheme === 'winter_snow') {
     const t = world.elapsedTime;
-    const coolWash = ctx.createRadialGradient(
-      map.width * 0.5,
-      map.height * 0.45,
-      120,
-      map.width * 0.5,
-      map.height * 0.5,
-      map.width * 0.72
-    );
-    coolWash.addColorStop(0, 'rgba(186, 230, 253, 0.05)');
-    coolWash.addColorStop(0.65, 'rgba(96, 165, 250, 0.09)');
-    coolWash.addColorStop(1, 'rgba(15, 42, 92, 0.22)');
-    ctx.fillStyle = coolWash;
-    ctx.fillRect(0, 0, map.width, map.height);
+    blitCroppedWorldCanvas(ctx, getStaticAmbientCanvas(map, floorFilter), map, viewBounds);
 
+    const fogSprite = getGlowSprite('winter_fog_bank_350', 350, (gc, r) => {
+      const fog = gc.createRadialGradient(0, 0, 15, 0, 0, r);
+      fog.addColorStop(0, 'rgba(219, 240, 255, 0.16)');
+      fog.addColorStop(0.55, 'rgba(147, 197, 253, 0.08)');
+      fog.addColorStop(1, 'rgba(147, 197, 253, 0)');
+      gc.fillStyle = fog;
+      gc.beginPath();
+      gc.arc(0, 0, r, 0, Math.PI * 2);
+      gc.fill();
+    });
     const fogBanks = [
       { bx: map.width * 0.28, by: map.height * 0.3, r: 320, spd: 0.28, amp: 55 },
       { bx: map.width * 0.72, by: map.height * 0.65, r: 350, spd: 0.22, amp: 65 },
@@ -7268,14 +7452,10 @@ function drawAmbientArenaLights(
       const f = fogBanks[i];
       const fx = f.bx + Math.sin(t * f.spd + i * 2.1) * f.amp;
       const fy = f.by + Math.cos(t * f.spd * 0.7 + i) * 22;
-      const fog = ctx.createRadialGradient(fx, fy, 15, fx, fy, f.r);
-      fog.addColorStop(0, 'rgba(219, 240, 255, 0.16)');
-      fog.addColorStop(0.55, 'rgba(147, 197, 253, 0.08)');
-      fog.addColorStop(1, 'rgba(147, 197, 253, 0)');
-      ctx.fillStyle = fog;
-      ctx.beginPath();
-      ctx.arc(fx, fy, f.r, 0, Math.PI * 2);
-      ctx.fill();
+      if (viewBounds && (fx + f.r < viewBounds.left || fx - f.r > viewBounds.right || fy + f.r < viewBounds.top || fy - f.r > viewBounds.bottom)) {
+        continue;
+      }
+      ctx.drawImage(fogSprite, fx - f.r, fy - f.r, f.r * 2, f.r * 2);
     }
   }
   ctx.restore();
@@ -7481,21 +7661,7 @@ function drawVolumetricArenaLights(
   } else if (map.floorTheme === 'grass_outdoors') {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    const sunSpots = map.immersive ? [450, 1200, 1850] : [220, 620];
-    for (const sx of sunSpots) {
-      const sunGrad = ctx.createLinearGradient(sx, 0, sx + 320, 620);
-      sunGrad.addColorStop(0, 'rgba(254, 249, 195, 0.18)');
-      sunGrad.addColorStop(0.55, 'rgba(254, 240, 138, 0.07)');
-      sunGrad.addColorStop(1, 'rgba(254, 249, 195, 0)');
-      ctx.fillStyle = sunGrad;
-      ctx.beginPath();
-      ctx.moveTo(sx - 70, 0);
-      ctx.lineTo(sx + 85, 0);
-      ctx.lineTo(sx + 390, 620);
-      ctx.lineTo(sx + 110, 620);
-      ctx.closePath();
-      ctx.fill();
-    }
+    blitCroppedWorldCanvas(ctx, getStaticAmbientCanvas(map, floorFilter), map, viewBounds);
     ctx.restore();
   }
 
@@ -7510,20 +7676,25 @@ function drawWinterFogOverlay(
   _canvasHeight: number,
   _worldTx: number,
   _worldTy: number,
-  _scale: number
+  _scale: number,
+  viewBounds?: ViewBounds
 ) {
   const t = world.elapsedTime;
   const fogTex = getWinterFogCanvas();
   const wispTex = getWinterWispCanvas();
+  const vx0 = viewBounds ? Math.max(0, viewBounds.left) : 0;
+  const vy0 = viewBounds ? Math.max(0, viewBounds.top) : 0;
+  const vw = viewBounds ? Math.max(1, Math.min(map.width, viewBounds.right) - vx0) : map.width;
+  const vh = viewBounds ? Math.max(1, Math.min(map.height, viewBounds.bottom) - vy0) : map.height;
 
   ctx.save();
   ctx.beginPath();
-  ctx.rect(0, 0, map.width, map.height);
+  ctx.rect(vx0, vy0, vw, vh);
   ctx.clip();
 
-  // Lightweight atmospheric arctic mist veil + cached-pattern drifting cloud & wisp layers
+  // Lightweight atmospheric arctic mist veil + cached-pattern drifting cloud & wisp layers (viewport-clipped)
   ctx.fillStyle = 'rgba(226, 240, 255, 0.14)';
-  ctx.fillRect(0, 0, map.width, map.height);
+  ctx.fillRect(vx0, vy0, vw, vh);
 
   const tile = 512;
   const drawScrollingFog = (tex: HTMLCanvasElement, vx: number, vy: number, waveAmp: number, alpha: number) => {
@@ -7535,7 +7706,7 @@ function drawWinterFogOverlay(
     ctx.globalAlpha = alpha;
     ctx.translate(ox, oy);
     ctx.fillStyle = pat;
-    ctx.fillRect(-ox - 32, -oy - 32, map.width + 64, map.height + 64);
+    ctx.fillRect(vx0 - ox - 32, vy0 - oy - 32, vw + 64, vh + 64);
     ctx.restore();
   };
 
@@ -7552,6 +7723,7 @@ function drawWinterFogOverlay(
         map.height +
         map.height) %
       map.height;
+    if (px < vx0 - 4 || px > vx0 + vw + 4 || py < vy0 - 4 || py > vy0 + vh + 4) continue;
     const alpha = 0.24 + 0.22 * Math.sin(t * 2.2 + m);
     ctx.fillStyle = `rgba(255, 255, 255, ${Math.max(0.1, alpha)})`;
     ctx.beginPath();

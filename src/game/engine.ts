@@ -209,6 +209,10 @@ interface BotAiMemory {
   stuckTimer: number;
   unstickTimer: number;
   unstickAngle: number;
+  stuckAvoidX: number;
+  stuckAvoidY: number;
+  stuckAvoidTimer: number;
+  lastSector: number;
 }
 
 const TNT_HALF_SIZE = 29;
@@ -379,6 +383,8 @@ export class ArenaEngine {
   private boxSpawnTimer = 4.0;
   private rapidStreaks = new Map<number, { count: number; lastKillAt: number }>();
 
+  private static arenaBotGraphCache = new Map<string, NavNode[]>();
+
   private navNodes: NavNode[] = [];
   private botNavNodes: NavNode[] = [];
   private monsterPath: NavNode[] = [];
@@ -386,6 +392,7 @@ export class ArenaEngine {
   private monsterStepTimer = 0.25;
   private monsterRageSpeedScale = 1.0;
   private monsterHearCheckTimer = 0;
+  private monsterChasedPlayerId: number | null = null;
   private monsterLastProgressX = 0;
   private monsterLastProgressY = 0;
   private monsterStuckTimer = 0;
@@ -399,6 +406,7 @@ export class ArenaEngine {
   private botPaths = new Map<number, { nodes: NavNode[]; timer: number; goalX: number; goalY: number; goalFloor: FloorLevel }>();
   private botCodeCooldown = new Map<number, number>();
   private botAiMemory = new Map<number, BotAiMemory>();
+  private recentSoundCues: Array<{ x: number; y: number; floor: FloorLevel; ttl: number; strength: number }> = [];
 
   private getModifiers(): MatchModifiers {
     return this.config.modifiers ?? DEFAULT_MATCH_MODIFIERS;
@@ -455,6 +463,7 @@ export class ArenaEngine {
     this.monsterStepTimer = 0.25;
     this.monsterRageSpeedScale = 1.0;
     this.monsterHearCheckTimer = 0;
+    this.monsterChasedPlayerId = null;
     this.monsterLastProgressX = 0;
     this.monsterLastProgressY = 0;
     this.monsterStuckTimer = 0;
@@ -468,6 +477,7 @@ export class ArenaEngine {
     this.botPaths.clear();
     this.botCodeCooldown.clear();
     this.botAiMemory.clear();
+    this.recentSoundCues = [];
 
     const mods = this.getModifiers();
     const isImmersive = this.map.immersive;
@@ -568,6 +578,14 @@ export class ArenaEngine {
     if (isLibrary) {
       this.buildLibraryNavGraph();
       this.initLibraryMatchState();
+    } else {
+      const cacheKey = `${this.map.id}:bot36`;
+      let cached = ArenaEngine.arenaBotGraphCache.get(cacheKey);
+      if (!cached) {
+        cached = this.buildGridNavGraph(36, PLAYER_RADIUS + 4);
+        ArenaEngine.arenaBotGraphCache.set(cacheKey, cached);
+      }
+      this.botNavNodes = cached;
     }
 
     // Calm initial pickups & movable cardboard cover boxes spread across the arena
@@ -730,6 +748,12 @@ export class ArenaEngine {
 
     this.elapsedTime += dt;
     this.screenShake = Math.max(0, this.screenShake - dt * 28);
+    for (let i = this.recentSoundCues.length - 1; i >= 0; i--) {
+      this.recentSoundCues[i].ttl -= dt;
+      if (this.recentSoundCues[i].ttl <= 0) {
+        this.recentSoundCues.splice(i, 1);
+      }
+    }
 
     this.updateSpawners(dt);
     this.updatePlayers(dt);
@@ -1712,6 +1736,10 @@ export class ArenaEngine {
         stuckTimer: 0,
         unstickTimer: 0,
         unstickAngle: bot.angle,
+        stuckAvoidX: bot.x,
+        stuckAvoidY: bot.y,
+        stuckAvoidTimer: 0,
+        lastSector: -1,
       };
       this.botAiMemory.set(bot.id, mem);
     }
@@ -1781,32 +1809,99 @@ export class ArenaEngine {
     return bestAngle;
   }
 
+  private segmentHitsHazardOnFloor(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    floor: FloorLevel = 0
+  ): boolean {
+    const segLen = dist(x1, y1, x2, y2);
+    if (segLen < 8) return false;
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const lenSq = dx * dx + dy * dy;
+
+    for (const p of this.pickups) {
+      if (!sameFloor(p.floor, floor)) continue;
+      if (p.kind !== 'nitro' && !(p.kind === 'tnt' && p.armed)) continue;
+      const rad = p.kind === 'nitro' ? NITRO_RADIUS + PLAYER_RADIUS + 32 : TNT_BLAST_RADIUS + 24;
+      const t = clamp(((p.x - x1) * dx + (p.y - y1) * dy) / lenSq, 0, 1);
+      const px = x1 + dx * t;
+      const py = y1 + dy * t;
+      if (dist(px, py, p.x, p.y) < rad) return true;
+    }
+
+    for (const pit of this.icePits) {
+      if (!pit.broken) continue;
+      const steps = Math.max(2, Math.ceil(segLen / 34));
+      for (let i = 1; i < steps; i++) {
+        const t = i / steps;
+        if (isPointInIcePit(x1 + dx * t, y1 + dy * t, pit, PLAYER_RADIUS + 24)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  private getMapSector(x: number, y: number): number {
+    const col = clamp(Math.floor((x / this.map.width) * 3), 0, 2);
+    const row = clamp(Math.floor((y / this.map.height) * 2), 0, 1);
+    return row * 3 + col;
+  }
+
   private pickArenaPatrolPoint(bot: Player): Vec2 {
-    const pad = ARENA_WALL_THICKNESS + PLAYER_RADIUS + 44;
-    const minDist = this.map.immersive ? 420 : 260;
-    // Prefer quadrants away from other bots so bots spread across the arena instead of clumping
+    const mem = this.getBotMemory(bot);
+    const pad = ARENA_WALL_THICKNESS + PLAYER_RADIUS + 54;
+    const minDist = this.map.immersive ? Math.max(680, this.map.width * 0.36) : 340;
+    const botSector = this.getMapSector(bot.x, bot.y);
+    const bFloor = bot.floor ?? 0;
+
     let bestPt: Vec2 | null = null;
-    let bestSpread = -Infinity;
-    for (let tries = 0; tries < 24; tries++) {
+    let bestScore = -Infinity;
+    for (let tries = 0; tries < 28; tries++) {
       const x = pad + Math.random() * (this.map.width - pad * 2);
       const y = pad + Math.random() * (this.map.height - pad * 2);
+      const dSelf = dist(bot.x, bot.y, x, y);
       if (
-        dist(bot.x, bot.y, x, y) >= minDist &&
-        this.isPointWalkableOnFloor(x, y, PLAYER_RADIUS + 10, bot.floor ?? 0)
+        dSelf >= (tries < 20 ? minDist : minDist * 0.55) &&
+        this.isPointWalkableOnFloor(x, y, PLAYER_RADIUS + 12, bFloor)
       ) {
-        let minBotDist = Infinity;
-        for (const other of this.players) {
-          if (other.id !== bot.id && other.alive && sameFloor(other.floor, bot.floor)) {
-            minBotDist = Math.min(minBotDist, dist(x, y, other.x, other.y));
+        const sec = this.getMapSector(x, y);
+        let score = dSelf * 0.35;
+        if (sec !== botSector) score += 420;
+        if (sec !== mem.lastSector) score += 260;
+        // Slightly avoid picking a point right next to a Nitro crate
+        for (const p of this.pickups) {
+          if (p.kind === 'nitro' && sameFloor(p.floor, bFloor) && dist(x, y, p.x, p.y) < 120) {
+            score -= 400;
           }
         }
-        if (minBotDist > bestSpread) {
-          bestSpread = minBotDist;
+        // Only softly spread from bots when >= 3 alive; when 2 remain, do NOT keep them in opposite corners!
+        const aliveCount = this.players.filter((p) => p.alive).length;
+        if (aliveCount >= 3) {
+          let minBotDist = Infinity;
+          for (const other of this.players) {
+            if (other.id !== bot.id && other.alive && !other.isHuman && sameFloor(other.floor, bFloor)) {
+              minBotDist = Math.min(minBotDist, dist(x, y, other.x, other.y));
+            }
+          }
+          if (Number.isFinite(minBotDist)) {
+            score += Math.min(350, minBotDist * 0.25);
+          }
+        }
+        if (score > bestScore) {
+          bestScore = score;
           bestPt = { x, y };
         }
       }
     }
-    return bestPt ?? { x: this.map.width * 0.5, y: this.map.height * 0.5 };
+    if (bestPt) {
+      mem.lastSector = this.getMapSector(bestPt.x, bestPt.y);
+      return bestPt;
+    }
+    return { x: this.map.width * 0.5, y: this.map.height * 0.5 };
   }
 
   private findTrickshotToPoint(
@@ -1814,37 +1909,41 @@ export class ArenaEngine {
     tx: number,
     ty: number,
     hitRadius = PLAYER_RADIUS + 14,
-    numRays = 24,
+    numRays = 20,
     maxBounces = 2
   ): number | null {
     const floor = shooter.floor ?? 0;
     const bSpeed = this.getBulletSpeed();
+    const floorWalls = this.map.walls.filter((w) => isWallOnFloor(w, floor));
     const candidates: number[] = [];
+    const seenBuckets = new Set<number>();
+    const addCand = (ang: number) => {
+      const na = normalizeAngle(ang);
+      const bucket = Math.round(na * 40);
+      if (!seenBuckets.has(bucket)) {
+        seenBuckets.add(bucket);
+        candidates.push(na);
+      }
+    };
 
-    // Include analytic reflection angles off perimeter & interior walls for crisp corner trickshots
-    for (const wall of this.map.walls) {
-      if (!isWallOnFloor(wall, floor)) continue;
+    // Analytic reflection angles off interior & perimeter walls
+    for (const wall of floorWalls) {
       if (wall.x > ARENA_WALL_THICKNESS && wall.x < this.map.width - ARENA_WALL_THICKNESS) {
-        const mirLeft = 2 * wall.x - tx;
-        const mirRight = 2 * (wall.x + wall.w) - tx;
-        candidates.push(Math.atan2(ty - shooter.y, mirLeft - shooter.x));
-        candidates.push(Math.atan2(ty - shooter.y, mirRight - shooter.x));
+        addCand(Math.atan2(ty - shooter.y, 2 * wall.x - tx - shooter.x));
+        addCand(Math.atan2(ty - shooter.y, 2 * (wall.x + wall.w) - tx - shooter.x));
       }
       if (wall.y > ARENA_WALL_THICKNESS && wall.y < this.map.height - ARENA_WALL_THICKNESS) {
-        const mirTop = 2 * wall.y - ty;
-        const mirBottom = 2 * (wall.y + wall.h) - ty;
-        candidates.push(Math.atan2(mirTop - shooter.y, tx - shooter.x));
-        candidates.push(Math.atan2(mirBottom - shooter.y, tx - shooter.x));
+        addCand(Math.atan2(2 * wall.y - ty - shooter.y, tx - shooter.x));
+        addCand(Math.atan2(2 * (wall.y + wall.h) - ty - shooter.y, tx - shooter.x));
       }
     }
-    // Outer arena walls reflections
-    candidates.push(Math.atan2(ty - shooter.y, 2 * ARENA_WALL_THICKNESS - tx - shooter.x));
-    candidates.push(Math.atan2(ty - shooter.y, 2 * (this.map.width - ARENA_WALL_THICKNESS) - tx - shooter.x));
-    candidates.push(Math.atan2(2 * ARENA_WALL_THICKNESS - ty - shooter.y, tx - shooter.x));
-    candidates.push(Math.atan2(2 * (this.map.height - ARENA_WALL_THICKNESS) - ty - shooter.y, tx - shooter.x));
+    addCand(Math.atan2(ty - shooter.y, 2 * ARENA_WALL_THICKNESS - tx - shooter.x));
+    addCand(Math.atan2(ty - shooter.y, 2 * (this.map.width - ARENA_WALL_THICKNESS) - tx - shooter.x));
+    addCand(Math.atan2(2 * ARENA_WALL_THICKNESS - ty - shooter.y, tx - shooter.x));
+    addCand(Math.atan2(2 * (this.map.height - ARENA_WALL_THICKNESS) - ty - shooter.y, tx - shooter.x));
 
     for (let i = 0; i < numRays; i++) {
-      candidates.push((i / numRays) * Math.PI * 2);
+      addCand((i / numRays) * Math.PI * 2);
     }
 
     let bestAngle: number | null = null;
@@ -1858,13 +1957,12 @@ export class ArenaEngine {
       let bounces = 0;
       let hitHazard = false;
 
-      for (let step = 0; step < 90; step++) {
-        const subDt = 0.016;
+      for (let step = 0; step < 64; step++) {
+        const subDt = 0.022;
         x += vx * subDt;
         y += vy * subDt;
 
-        // Abort if bouncing right back into shooter or teammate
-        if (step > 8 && dist(x, y, shooter.x, shooter.y) < PLAYER_RADIUS + 10) {
+        if (step > 6 && dist(x, y, shooter.x, shooter.y) < PLAYER_RADIUS + 10) {
           hitHazard = true;
           break;
         }
@@ -1878,8 +1976,7 @@ export class ArenaEngine {
         }
         if (hitHazard) break;
 
-        for (const wall of this.map.walls) {
-          if (!isWallOnFloor(wall, floor)) continue;
+        for (const wall of floorWalls) {
           const cx = clamp(x, wall.x, wall.x + wall.w);
           const cy = clamp(y, wall.y, wall.y + wall.h);
           const dx = x - cx;
@@ -1895,7 +1992,6 @@ export class ArenaEngine {
         }
         if (bounces > maxBounces) break;
         if (bounces >= 1 && dist(x, y, tx, ty) < hitRadius) {
-          // Prefer fewer bounces & shorter travel
           const score = bounces * 40 + step;
           if (score < bestScore) {
             bestScore = score;
@@ -1924,6 +2020,7 @@ export class ArenaEngine {
     mem.patrolTimer = Math.max(0, mem.patrolTimer - dt);
     mem.lastSeenTimer = Math.max(0, mem.lastSeenTimer - dt);
     mem.unstickTimer = Math.max(0, mem.unstickTimer - dt);
+    mem.stuckAvoidTimer = Math.max(0, mem.stuckAvoidTimer - dt);
     mem.pendingShotExpire = Math.max(0, mem.pendingShotExpire - dt);
     mem.scanPhase += dt * (this.config.extraDark ? 2.1 : 1.3);
 
@@ -1931,27 +2028,31 @@ export class ArenaEngine {
       mem.pendingShotAngle = null;
     }
 
-    // Stuck detection
-    if (dist(bot.x, bot.y, mem.lastProgressX, mem.lastProgressY) > 18) {
+    // Stuck detection — marks avoid zone & forces A* backtrack onto an alternate corridor!
+    if (dist(bot.x, bot.y, mem.lastProgressX, mem.lastProgressY) > 20) {
       mem.lastProgressX = bot.x;
       mem.lastProgressY = bot.y;
       mem.stuckTimer = 0;
     } else if (bot.aiMoveRatio > 0.25) {
       mem.stuckTimer += dt;
-      if (mem.stuckTimer > 0.65) {
+      if (mem.stuckTimer > 0.6) {
         mem.stuckTimer = 0;
         bot.aiStrafeDir *= -1;
-        mem.unstickTimer = 0.5;
+        mem.stuckAvoidX = bot.x;
+        mem.stuckAvoidY = bot.y;
+        mem.stuckAvoidTimer = 4.5;
+        this.botPaths.delete(bot.id);
+        mem.unstickTimer = 0.45;
         mem.unstickAngle = this.pickClearMoveAngle(
           bot,
-          normalizeAngle(bot.aiTargetAngle + bot.aiStrafeDir * 1.7),
-          84,
+          normalizeAngle(bot.aiTargetAngle + Math.PI * 0.85 * bot.aiStrafeDir),
+          88,
           bot.aiStrafeDir
         );
         const np = this.pickArenaPatrolPoint(bot);
         mem.patrolX = np.x;
         mem.patrolY = np.y;
-        mem.patrolTimer = 3.2;
+        mem.patrolTimer = 4.2;
       }
     }
 
@@ -2362,12 +2463,72 @@ export class ArenaEngine {
           goalY = nearestBullet.p.y;
           moveRatio = 0.94;
           isSeekingPickup = true;
+        } else if (diff !== 'CHILL' && this.recentSoundCues.length > 0) {
+          // Investigate recent gunshots / blasts across the map so remaining bots find fights cleanly
+          let bestCue: { x: number; y: number; d: number } | null = null;
+          for (const cue of this.recentSoundCues) {
+            if (!sameFloor(cue.floor, bFloor)) continue;
+            const dCue = dist(bot.x, bot.y, cue.x, cue.y);
+            if (dCue > 170 && (!bestCue || dCue < bestCue.d)) {
+              bestCue = { x: cue.x, y: cue.y, d: dCue };
+            }
+          }
+          if (bestCue) {
+            goalX = bestCue.x;
+            goalY = bestCue.y;
+            moveRatio = 0.9;
+          }
         }
       }
 
-      const rawMoveAngle = Math.atan2(goalY - bot.y, goalX - bot.x);
-      const goalDist = dist(bot.x, bot.y, goalX, goalY);
-      const probeDist = isSeekingPickup && goalDist < 130 ? Math.max(24, goalDist - 8) : 68;
+      // Use cached hazard-aware A* path whenever direct segment hits walls or Nitros/broken ice pits!
+      let wpX = goalX;
+      let wpY = goalY;
+      const directWallClear = this.isSegmentClearOnFloor(bot.x, bot.y, goalX, goalY, PLAYER_RADIUS + 2, bFloor);
+      const directHazardHit =
+        diff !== 'CHILL' && this.segmentHitsHazardOnFloor(bot.x, bot.y, goalX, goalY, bFloor);
+
+      if ((!directWallClear || directHazardHit) && this.botNavNodes.length > 0) {
+        const existing = this.botPaths.get(bot.id);
+        const needNewPath =
+          !existing ||
+          existing.timer <= 0 ||
+          existing.goalFloor !== bFloor ||
+          dist(existing.goalX, existing.goalY, goalX, goalY) > 95 ||
+          existing.nodes.length === 0;
+        if (needNewPath) {
+          const nodes = this.findNavPathOnGraph(this.botNavNodes, bot.x, bot.y, bFloor, goalX, goalY, bFloor, {
+            avoidHazards: diff !== 'CHILL',
+            avoidPoint:
+              mem.stuckAvoidTimer > 0
+                ? { x: mem.stuckAvoidX, y: mem.stuckAvoidY, radius: 135 }
+                : undefined,
+          });
+          this.botPaths.set(bot.id, { nodes, timer: 0.55, goalX, goalY, goalFloor: bFloor });
+        } else {
+          existing.timer -= reactionInterval;
+        }
+
+        const pathState = this.botPaths.get(bot.id);
+        if (pathState && pathState.nodes.length > 0) {
+          while (pathState.nodes.length > 0) {
+            const next = pathState.nodes[0];
+            if (dist(bot.x, bot.y, next.x, next.y) < 42 && pathState.nodes.length > 1) {
+              pathState.nodes.shift();
+            } else {
+              wpX = next.x;
+              wpY = next.y;
+              break;
+            }
+          }
+        }
+      } else {
+        this.botPaths.delete(bot.id);
+      }
+
+      const rawMoveAngle = Math.atan2(wpY - bot.y, wpX - bot.x);
+      const wpDist = dist(bot.x, bot.y, wpX, wpY);
+      const probeDist = isSeekingPickup && wpDist < 130 ? Math.max(24, wpDist - 8) : 68;
       bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawMoveAngle, probeDist, bot.aiStrafeDir);
       bot.aiMoveRatio = moveRatio;
     }
@@ -2494,6 +2655,8 @@ export class ArenaEngine {
     player.vy -= Math.sin(player.angle) * 35;
 
     this.emitEvent('shoot', bx, by, undefined, undefined, pFloor);
+    this.recentSoundCues.push({ x: player.x, y: player.y, floor: pFloor, ttl: 5.5, strength: 1 });
+    if (this.recentSoundCues.length > 10) this.recentSoundCues.shift();
     this.spawnParticles(bx, by, player.accentColor, 6, 120, pFloor);
   }
 
@@ -2728,6 +2891,14 @@ export class ArenaEngine {
 
       this.screenShake = Math.min(16, this.screenShake + (isTnt ? 11 : 8));
       this.emitEvent('explosion', current.item.x, current.item.y, isTnt ? 2 : 1, undefined, blastFloor);
+      this.recentSoundCues.push({
+        x: current.item.x,
+        y: current.item.y,
+        floor: blastFloor,
+        ttl: 7.0,
+        strength: 2,
+      });
+      if (this.recentSoundCues.length > 10) this.recentSoundCues.shift();
       this.spawnParticles(current.item.x, current.item.y, '#FACC15', isTnt ? 22 : 15, 250, blastFloor);
       this.spawnParticles(current.item.x, current.item.y, '#FEF08A', isTnt ? 14 : 10, 180, blastFloor);
       this.spawnSmokeParticles(current.item.x, current.item.y, isTnt ? 12 : 8, 95, blastFloor);
@@ -2744,6 +2915,7 @@ export class ArenaEngine {
           m.vx = 0;
           m.vy = 0;
           this.monsterPath = [];
+          this.monsterChasedPlayerId = null;
           this.emitEvent('monster_stun', m.x, m.y, undefined, undefined, m.floor);
           this.addFloatingText(m.x, m.y - (m.radius + 14), 'FIGURE STUNNED 15s!', '#FDE047', m.floor);
         } else {
@@ -3262,7 +3434,8 @@ export class ArenaEngine {
     const lookup = new Map<string, number>();
     const key = (gx: number, gy: number, fl: FloorLevel) => `${fl}:${gx}:${gy}`;
 
-    for (const fl of [0, 1] as FloorLevel[]) {
+    const floors: FloorLevel[] = this.map.id === 'library' ? [0, 1] : [0];
+    for (const fl of floors) {
       for (let gy = 0; gy < rows; gy++) {
         for (let gx = 0; gx < cols; gx++) {
           const wx = (gx + 0.5) * cell;
@@ -3280,7 +3453,7 @@ export class ArenaEngine {
 
     const baseGridCount = nodes.length;
 
-    for (const fl of [0, 1] as FloorLevel[]) {
+    for (const fl of floors) {
       for (let gy = 0; gy < rows; gy++) {
         for (let gx = 0; gx < cols; gx++) {
           const id = lookup.get(key(gx, gy, fl));
@@ -3417,13 +3590,32 @@ export class ArenaEngine {
     fromFloor: FloorLevel,
     toX: number,
     toY: number,
-    toFloor: FloorLevel
+    toFloor: FloorLevel,
+    opts?: {
+      avoidHazards?: boolean;
+      avoidPoint?: { x: number; y: number; radius: number };
+    }
   ): NavNode[] {
     if (graph.length === 0) return [];
     const start = this.findClosestNavNodeOnGraph(graph, fromX, fromY, fromFloor, true);
     const goal = this.findClosestNavNodeOnGraph(graph, toX, toY, toFloor, true);
     if (!start || !goal) return [];
     if (start.id === goal.id) return [goal];
+
+    const avoidHazards = Boolean(opts?.avoidHazards);
+    const avoidPt = opts?.avoidPoint;
+    const hazards = avoidHazards
+      ? this.pickups
+          .filter((p) => p.kind === 'nitro' || (p.kind === 'tnt' && p.armed))
+          .map((p) => ({
+            x: p.x,
+            y: p.y,
+            floor: p.floor ?? 0,
+            radius: p.kind === 'nitro' ? NITRO_RADIUS + PLAYER_RADIUS + 48 : TNT_BLAST_RADIUS + 44,
+            penalty: p.kind === 'nitro' ? 680 : 950,
+          }))
+      : [];
+    const brokenPits = avoidHazards ? this.icePits.filter((pit) => pit.broken) : [];
 
     const nCount = graph.length;
     const gScore = new Float32Array(nCount).fill(Infinity);
@@ -3491,7 +3683,22 @@ export class ArenaEngine {
       for (const nbId of curr.neighbors) {
         if (closed[nbId]) continue;
         const nb = graph[nbId];
-        const stepCost = curr.floor !== nb.floor ? 120 : dist(curr.x, curr.y, nb.x, nb.y);
+        let stepCost = curr.floor !== nb.floor ? 120 : dist(curr.x, curr.y, nb.x, nb.y);
+        if (avoidHazards) {
+          for (const h of hazards) {
+            if (h.floor === nb.floor && dist(nb.x, nb.y, h.x, h.y) < h.radius) {
+              stepCost += h.penalty;
+            }
+          }
+          for (const pit of brokenPits) {
+            if (isPointInIcePit(nb.x, nb.y, pit, PLAYER_RADIUS + 34)) {
+              stepCost += 900;
+            }
+          }
+        }
+        if (avoidPt && dist(nb.x, nb.y, avoidPt.x, avoidPt.y) < avoidPt.radius) {
+          stepCost += 460;
+        }
         const tentative = gScore[currId] + stepCost;
         if (tentative < gScore[nbId]) {
           cameFrom[nbId] = currId;
@@ -3655,7 +3862,12 @@ export class ArenaEngine {
     return clamp(this.libraryState.totalCollectedAll / totalMax, 0, 1);
   }
 
-  private triggerMonsterRage(targetX: number, targetY: number, targetFloor: FloorLevel) {
+  private triggerMonsterRage(
+    targetX: number,
+    targetY: number,
+    targetFloor: FloorLevel,
+    chasedPlayerId?: number
+  ) {
     if (!this.libraryState) return;
     const m = this.libraryState.monster;
     if (m.stunTimer > 0) return;
@@ -3669,6 +3881,9 @@ export class ArenaEngine {
     m.reachedHoldTimer = -1;
     m.rageFadeTimer = 0;
     this.monsterPathTimer = 0;
+    if (chasedPlayerId !== undefined) {
+      this.monsterChasedPlayerId = chasedPlayerId;
+    }
 
     if (wasCalm) {
       this.emitEvent('monster_roar', m.x, m.y, undefined, undefined, m.floor);
@@ -3782,12 +3997,13 @@ export class ArenaEngine {
       m.stunTimer = Math.max(0, m.stunTimer - dt);
       m.vx *= Math.exp(-8 * dt);
       m.vy *= Math.exp(-8 * dt);
+      this.monsterChasedPlayerId = null;
       return;
     }
 
-    // 1. Calm / Stealth / Loud-Sound Hearing Logic (900px circle on same floor = 40% central map area)
+    // 1. Calm / Stealth / Loud-Sound Hearing Logic (900px circle; keeps tracking chased player onto/across stairs)
     const maxPlayerSpd = this.getPlayerMaxSpeed();
-    let loudestSound: { x: number; y: number; floor: FloorLevel } | null = null;
+    let loudestSound: { x: number; y: number; floor: FloorLevel; playerId: number } | null = null;
     this.monsterHearCheckTimer -= dt;
     const checkProbabilisticStealth = this.monsterHearCheckTimer <= 0;
     if (checkProbabilisticStealth) {
@@ -3797,34 +4013,38 @@ export class ArenaEngine {
     for (const p of this.players) {
       if (!p.alive || p.stunTimer > 0) continue;
       const pFloor = p.floor ?? 0;
-      if (pFloor !== m.floor) continue;
+      const onSameFloor = pFloor === m.floor;
+      const onStairs = (p.stairBlend ?? 0) > 0.02 && (p.stairBlend ?? 0) < 0.98;
+      const activelyChased =
+        m.mode === 'rage' &&
+        p.id === this.monsterChasedPlayerId &&
+        dist(p.x, p.y, m.x, m.y) <= LIBRARY_HEARING_RADIUS;
+      if (!onSameFloor && !onStairs && !activelyChased) continue;
 
       const d = dist(p.x, p.y, m.x, m.y);
       if (d > LIBRARY_HEARING_RADIUS) continue;
 
       const speed = Math.hypot(p.vx, p.vy);
       const speedRatio = speed / maxPlayerSpd;
-      if (speedRatio >= 0.96) {
-        // 100% walking speed inside 900px hearing circle -> instant rage trigger!
-        loudestSound = { x: p.x, y: p.y, floor: pFloor };
+      if (speedRatio >= 0.96 || (activelyChased && (onStairs || !onSameFloor) && (speedRatio >= 0.55 || d <= 520))) {
+        loudestSound = { x: p.x, y: p.y, floor: pFloor, playerId: p.id };
         break;
-      } else if (speedRatio >= 0.80 && checkProbabilisticStealth) {
-        // 80%..100% speed: probability scales 0% at circumference (900px) -> up to 30% at 0.5 player diameter away
+      } else if (onSameFloor && speedRatio >= 0.80 && checkProbabilisticStealth) {
         const closeDist = m.radius + PLAYER_RADIUS + 42;
         const prox = clamp((LIBRARY_HEARING_RADIUS - d) / Math.max(1, LIBRARY_HEARING_RADIUS - closeDist), 0, 1);
         const speedWeight = clamp((speedRatio - 0.80) / 0.20, 0.25, 1.0);
         const chance = 0.30 * prox * speedWeight;
         if (Math.random() < chance) {
-          loudestSound = { x: p.x, y: p.y, floor: pFloor };
+          loudestSound = { x: p.x, y: p.y, floor: pFloor, playerId: p.id };
         }
       }
     }
 
     if (loudestSound) {
-      this.triggerMonsterRage(loudestSound.x, loudestSound.y, loudestSound.floor);
+      this.triggerMonsterRage(loudestSound.x, loudestSound.y, loudestSound.floor, loudestSound.playerId);
     }
 
-    // 2. Speed & Mode State Machine (Calm 0.50->0.85x, Rage 1.00->1.50x, 1s smooth fade-out, 3s bullet slowdown to calm speed)
+    // 2. Speed & Mode State Machine (Calm 0.50->0.85x, Rage 1.00->1.50x, 1s smooth fade-out, 5s bullet slowdown to calm speed)
     const calmRatio = 0.50 + progFrac * 0.35;
     const rageRatio = 1.00 + progFrac * 0.50;
 
@@ -3845,6 +4065,7 @@ export class ArenaEngine {
         // Begin 1s smooth fade-out back to Calm mode
         m.mode = 'calm';
         m.rageFadeTimer = 1.0;
+        this.monsterChasedPlayerId = null;
       }
     }
 
@@ -3888,16 +4109,16 @@ export class ArenaEngine {
       }
     };
 
-    // 3. Dedicated 2.0-second Smooth Cross-Floor Staircase Traversal & Fade
+    // 3. Dedicated 3.0-second Slow Cross-Floor Staircase Traversal & Fade
     if (m.transitioning) {
-      const nextP = clamp((m.transitionProgress ?? 0) + dt / 2.0, 0, 1);
+      const nextP = clamp((m.transitionProgress ?? 0) + dt / 3.0, 0, 1);
       m.transitionProgress = nextP;
       const dxT = this.monsterTransToX - this.monsterTransFromX;
       const dyT = this.monsterTransToY - this.monsterTransFromY;
       m.x = this.monsterTransFromX + dxT * nextP;
       m.y = this.monsterTransFromY + dyT * nextP;
-      m.vx = dxT / 2.0;
-      m.vy = dyT / 2.0;
+      m.vx = dxT / 3.0;
+      m.vy = dyT / 3.0;
       if (Math.hypot(dxT, dyT) > 2) {
         const desiredAngle = Math.atan2(dyT, dxT);
         const diff = normalizeAngle(desiredAngle - m.angle);
@@ -3938,7 +4159,7 @@ export class ArenaEngine {
         this.monsterPathTimer = 0.4;
       }
 
-      // Check if Monster has reached the stair mouth to begin a 2.0s cross-floor climb/descent
+      // Check if Monster has reached the stair mouth to begin a slow 3.0s cross-floor climb/descent
       let startedTransition = false;
       for (let idx = 0; idx < this.monsterPath.length; idx++) {
         const stepNode = this.monsterPath[idx];
@@ -3952,11 +4173,16 @@ export class ArenaEngine {
           );
           if (st) {
             const cx = st.x + st.w * 0.5;
-            const groundY = st.upDir === 'up' ? st.y + st.h + 52 : st.y - 52;
-            const upperY = st.upDir === 'up' ? st.y - 52 : st.y + st.h + 52;
+            const groundY = st.upDir === 'up' ? st.y + st.h + 24 : st.y - 24;
+            const upperY = st.upDir === 'up' ? st.y - 24 : st.y + st.h + 24;
             const entryX = cx;
             const entryY = m.floor === 0 ? groundY : upperY;
-            if (dist(m.x, m.y, entryX, entryY) <= 56) {
+            const insideStair =
+              m.x >= st.x - 8 &&
+              m.x <= st.x + st.w + 8 &&
+              m.y >= st.y - 28 &&
+              m.y <= st.y + st.h + 28;
+            if (insideStair || (Math.abs(m.x - entryX) <= 68 && Math.abs(m.y - entryY) <= 68)) {
               m.transitioning = true;
               m.fromFloor = m.floor;
               m.toFloor = stepNode.floor;

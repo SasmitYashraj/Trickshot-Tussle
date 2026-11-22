@@ -24,13 +24,13 @@ export function LibraryLoadingScreen({ introTimer }: LibraryLoadingScreenProps) 
       </div>
 
       {/* Main Split: Left Crisp Points | Right Figure Artwork (Always side-by-side so phone landscape fits completely!) */}
-      <div className="relative z-10 my-auto grid grid-cols-12 items-center gap-3 sm:gap-6 md:gap-10 max-w-5xl w-full mx-auto min-h-0">
-        <div className="col-span-7 sm:col-span-6 space-y-2 sm:space-y-3.5">
+      <div className="relative z-10 my-auto grid grid-cols-12 items-center gap-2.5 sm:gap-6 md:gap-10 max-w-5xl w-full mx-auto min-h-0">
+        <div className="col-span-7 sm:col-span-6 space-y-1.5 sm:space-y-3">
           {/* 1-Line Feather Graphic */}
           <div className="flex items-center text-amber-300/85">
             <svg
               viewBox="0 0 260 22"
-              className="w-36 sm:w-56 h-3.5 sm:h-5 overflow-visible"
+              className="w-32 sm:w-52 h-3 sm:h-4.5 overflow-visible"
               fill="none"
               aria-hidden="true"
             >
@@ -55,32 +55,39 @@ export function LibraryLoadingScreen({ introTimer }: LibraryLoadingScreenProps) 
             </svg>
           </div>
 
-          <ul className="space-y-1.5 sm:space-y-2.5 text-slate-200">
-            <li className="flex items-center gap-2 sm:gap-3">
-              <span className="h-2 w-2 rounded-full bg-amber-400 shrink-0" />
-              <span className="font-display text-xs sm:text-base md:text-lg font-bold text-amber-100 leading-snug">
+          <ul className="space-y-1 sm:space-y-2 text-slate-200">
+            <li className="flex items-center gap-1.5 sm:gap-2.5">
+              <span className="h-1.5 w-1.5 sm:h-2 sm:w-2 rounded-full bg-amber-400 shrink-0" />
+              <span className="font-display text-[11px] sm:text-sm md:text-base font-bold text-amber-100 leading-tight sm:leading-snug">
                 Find 8 books on both floors to unlock center door
               </span>
             </li>
 
-            <li className="flex items-center gap-2 sm:gap-3">
-              <span className="h-2 w-2 rounded-full bg-sky-400 shrink-0" />
-              <span className="font-display text-xs sm:text-base md:text-lg font-bold text-sky-100 leading-snug">
+            <li className="flex items-center gap-1.5 sm:gap-2.5">
+              <span className="h-1.5 w-1.5 sm:h-2 sm:w-2 rounded-full bg-sky-400 shrink-0" />
+              <span className="font-display text-[11px] sm:text-sm md:text-base font-bold text-sky-100 leading-tight sm:leading-snug">
                 Hold <span className="text-sky-300">Shift</span> / walk &lt;80% speed to stay silent
               </span>
             </li>
 
-            <li className="flex items-center gap-2 sm:gap-3">
-              <span className="h-2 w-2 rounded-full bg-cyan-400 shrink-0" />
-              <span className="font-display text-xs sm:text-base md:text-lg font-bold text-cyan-100 leading-snug">
+            <li className="flex items-center gap-1.5 sm:gap-2.5">
+              <span className="h-1.5 w-1.5 sm:h-2 sm:w-2 rounded-full bg-cyan-400 shrink-0" />
+              <span className="font-display text-[11px] sm:text-sm md:text-base font-bold text-cyan-100 leading-tight sm:leading-snug">
                 Shooting Figure slows him down for <span className="text-cyan-300">5s</span>
               </span>
             </li>
 
-            <li className="flex items-center gap-2 sm:gap-3">
-              <span className="h-2 w-2 rounded-full bg-orange-500 shrink-0" />
-              <span className="font-display text-xs sm:text-base md:text-lg font-bold text-orange-200 leading-snug">
+            <li className="flex items-center gap-1.5 sm:gap-2.5">
+              <span className="h-1.5 w-1.5 sm:h-2 sm:w-2 rounded-full bg-orange-500 shrink-0" />
+              <span className="font-display text-[11px] sm:text-sm md:text-base font-bold text-orange-200 leading-tight sm:leading-snug">
                 Nitro or TNT blasts stun Figure for <span className="text-amber-300">15s</span>
+              </span>
+            </li>
+
+            <li className="flex items-center gap-1.5 sm:gap-2.5">
+              <span className="h-1.5 w-1.5 sm:h-2 sm:w-2 rounded-full bg-rose-400 shrink-0" />
+              <span className="font-display text-[11px] sm:text-sm md:text-base font-bold text-rose-100 leading-tight sm:leading-snug">
+                Figure climbs stairs slowly (<span className="text-rose-300">3s</span>)
               </span>
             </li>
           </ul>
@@ -89,16 +96,16 @@ export function LibraryLoadingScreen({ introTimer }: LibraryLoadingScreenProps) 
         <div className="col-span-5 sm:col-span-6 flex items-center justify-center">
           <div className="relative flex items-center justify-center">
             <div
-              className="absolute inset-2 sm:inset-4 rounded-full blur-2xl sm:blur-3xl opacity-45"
+              className="absolute -inset-3 sm:-inset-6 rounded-full opacity-55 pointer-events-none"
               style={{
                 background:
-                  'radial-gradient(circle, rgba(249,115,22,0.55) 0%, rgba(124,45,18,0.22) 55%, rgba(0,0,0,0) 75%)',
+                  'radial-gradient(circle, rgba(249,115,22,0.42) 0%, rgba(124,45,18,0.16) 52%, rgba(0,0,0,0) 74%)',
               }}
             />
             <img
               src="/assets/aistudio/image_b23b52cc.png"
               alt="The Figure"
-              className="relative max-h-[42dvh] sm:max-h-[48dvh] md:max-h-[54dvh] w-auto object-contain drop-shadow-[0_0_24px_rgba(249,115,22,0.35)]"
+              className="relative max-h-[38dvh] sm:max-h-[46dvh] md:max-h-[52dvh] w-auto object-contain"
             />
           </div>
         </div>

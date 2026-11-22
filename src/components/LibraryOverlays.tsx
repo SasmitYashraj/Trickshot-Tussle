@@ -174,7 +174,7 @@ export function LibraryOverlays({
         style={{ left: 'max(0.65rem, env(safe-area-inset-left))' }}
         className="pointer-events-auto select-none absolute top-[4.55rem] sm:top-[5.15rem] lg:top-3 z-20 flex flex-col gap-1 max-w-[10.25rem] sm:max-w-[11.75rem]"
       >
-        <div className="rounded-xl border border-amber-400/20 bg-slate-950/30 backdrop-blur-[2px] px-2.5 py-1.5 text-[11px] text-slate-100 drop-shadow-[0_1px_4px_rgba(0,0,0,0.9)]">
+        <div className="rounded-xl border border-amber-400/20 bg-slate-950/65 px-2.5 py-1.5 text-[11px] text-slate-100 shadow-lg">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-1 font-display font-bold text-amber-200">
               <BookOpen className="w-3 h-3 text-amber-400 shrink-0" />
@@ -247,10 +247,10 @@ export function LibraryOverlays({
           <button
             type="button"
             onClick={onToggleStealth}
-            className={`inline-flex items-center justify-between gap-1.5 rounded-lg border px-2.5 py-1 text-[10px] font-bold backdrop-blur-[2px] transition-colors cursor-pointer whitespace-nowrap ${
+            className={`inline-flex items-center justify-between gap-1.5 rounded-lg border px-2.5 py-1 text-[10px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
               stealthEnabled
-                ? 'border-emerald-400/55 bg-emerald-950/50 text-emerald-200 hover:bg-emerald-900/60'
-                : 'border-amber-400/30 bg-slate-950/35 text-slate-200 hover:bg-slate-900/55'
+                ? 'border-emerald-400/55 bg-emerald-950/75 text-emerald-200 hover:bg-emerald-900/80'
+                : 'border-amber-400/30 bg-slate-950/70 text-slate-200 hover:bg-slate-900/80'
             }`}
           >
             <span className="inline-flex items-center gap-1">
@@ -264,7 +264,7 @@ export function LibraryOverlays({
 
       {/* Escaped / Eliminated Spectator Strip (client-side camera switching over existing state) */}
       {canSpectate && (
-        <div className="pointer-events-auto absolute bottom-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 rounded-xl border border-amber-400/35 bg-slate-950/65 backdrop-blur-sm px-3 py-2 text-xs text-slate-100 shadow-xl">
+        <div className="pointer-events-auto absolute bottom-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 rounded-xl border border-amber-400/35 bg-slate-950/85 px-3 py-2 text-xs text-slate-100 shadow-xl">
           <div className="flex items-center gap-1.5 pr-1">
             {prog?.unlocked ? (
               <Crown className="w-4 h-4 text-amber-300 shrink-0" />
@@ -321,7 +321,7 @@ export function LibraryOverlays({
             <button
               type="button"
               onClick={onCollectBook}
-              className="min-h-12 inline-flex items-center gap-2 rounded-xl border border-amber-300/70 bg-amber-500/85 hover:bg-amber-400 active:scale-[0.98] px-5 py-2.5 text-sm font-extrabold text-slate-950 shadow-xl backdrop-blur-sm transition-all cursor-pointer whitespace-nowrap"
+              className="min-h-12 inline-flex items-center gap-2 rounded-xl border border-amber-300/70 bg-amber-500/95 hover:bg-amber-400 active:scale-[0.98] px-5 py-2.5 text-sm font-extrabold text-slate-950 shadow-xl transition-all cursor-pointer whitespace-nowrap"
             >
               <BookOpen className="w-4 h-4 shrink-0" />
               <span>Collect Book [E]</span>
@@ -331,7 +331,7 @@ export function LibraryOverlays({
             <button
               type="button"
               onClick={onOpenLock}
-              className="min-h-12 inline-flex items-center gap-2 rounded-xl border border-emerald-300/70 bg-emerald-500/85 hover:bg-emerald-400 active:scale-[0.98] px-5 py-2.5 text-sm font-extrabold text-slate-950 shadow-xl backdrop-blur-sm transition-all cursor-pointer whitespace-nowrap"
+              className="min-h-12 inline-flex items-center gap-2 rounded-xl border border-emerald-300/70 bg-emerald-500/95 hover:bg-emerald-400 active:scale-[0.98] px-5 py-2.5 text-sm font-extrabold text-slate-950 shadow-xl transition-all cursor-pointer whitespace-nowrap"
             >
               <KeyRound className="w-4 h-4 shrink-0" />
               <span>Unlock Door [E]</span>
@@ -346,7 +346,7 @@ export function LibraryOverlays({
           <div
             className={`w-full max-w-md rounded-2xl border ${
               shakeError ? 'border-rose-400 animate-pulse' : 'border-amber-500/45'
-            } bg-slate-950/65 backdrop-blur-sm p-5 text-slate-100 shadow-2xl`}
+            } bg-slate-950/80 p-5 text-slate-100 shadow-2xl`}
           >
             <div className="flex items-center justify-between gap-3 pb-3 border-b border-amber-500/25">
               <div className="flex items-center gap-2">
