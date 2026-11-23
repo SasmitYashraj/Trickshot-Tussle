@@ -46,6 +46,9 @@ interface LibraryUiSnapshot {
   playerAlive: boolean;
   canCollectBook: boolean;
   canUnlockDoor: boolean;
+  p2Alive: boolean;
+  canCollectBookP2: boolean;
+  canUnlockDoorP2: boolean;
   spectateCandidates: Array<{ id: number; name: string }>;
 }
 
@@ -56,7 +59,10 @@ const DEFAULT_SOLO_CONFIG: MatchConfig = {
   difficulty: 'TACTICAL',
   targetKills: 8,
   immersive: false,
+  local2P: false,
+  local2PIncludeBots: true,
   playerColorId: 'cobalt',
+  player2ColorId: 'crimson',
   modifiers: { ...DEFAULT_MATCH_MODIFIERS },
 };
 
@@ -84,19 +90,20 @@ function playEngineEvents(
   events: EngineEvent[],
   listenerX?: number,
   listenerY?: number,
-  listenerId = 0,
-  onLocalKillStreak?: (streak: number, mode: MatchMode) => void,
-  onLocalSelfKill?: () => void,
+  listenerIds: number[] = [0],
+  onLocalKillStreak?: (streak: number, mode: MatchMode, playerId?: number) => void,
+  onLocalSelfKill?: (playerId?: number) => void,
   listenerFloor: FloorLevel = 0,
   onLocalLockError?: () => void,
   onLocalMonsterKill?: () => void
 ) {
+  const localSet = new Set(listenerIds);
   const hasLocalEliminationClimax = events.some(
     (e) =>
       e.type === 'killstreak' &&
       e.mode === 'ELIMINATION' &&
       e.playerId !== undefined &&
-      e.playerId === listenerId &&
+      localSet.has(e.playerId) &&
       (e.value ?? 0) >= 3
   );
 
@@ -119,9 +126,9 @@ function playEngineEvents(
         evt.type === 'monster_stun' ||
         evt.type === 'door_unlock';
 
-      // Reload sound: full punch for the local player, subtle nearby audio, skip faraway bot reloads
+      // Reload sound: full punch for the local player(s), subtle nearby audio, skip faraway bot reloads
       if (evt.type === 'pickup') {
-        const isSelf = evt.value === listenerId || d < 95;
+        const isSelf = (evt.value !== undefined && localSet.has(evt.value)) || d < 95;
         if (!isSelf && d > 560) continue;
         const floorAtten = sameFl ? 1 : 0.4;
         const vol = (isSelf ? 1 : Math.max(0.18, 0.72 * (1 - d / 560))) * floorAtten;
@@ -195,7 +202,7 @@ function playEngineEvents(
           sound.playKnockout(spatial);
           break;
         case 'monster_kill':
-          if (evt.playerId === listenerId) {
+          if (evt.playerId !== undefined && localSet.has(evt.playerId)) {
             sound.playMonsterJumpscare();
             onLocalMonsterKill?.();
           } else {
@@ -203,7 +210,7 @@ function playEngineEvents(
           }
           break;
         case 'book_collect':
-          if (evt.playerId === listenerId) {
+          if (evt.playerId !== undefined && localSet.has(evt.playerId)) {
             sound.playBookCollect(spatial);
           }
           break;
@@ -217,12 +224,12 @@ function playEngineEvents(
           sound.playMonsterStun(spatial);
           break;
         case 'lock_dial':
-          if (evt.playerId === listenerId) {
+          if (evt.playerId !== undefined && localSet.has(evt.playerId)) {
             sound.playLockDial();
           }
           break;
         case 'lock_error':
-          if (evt.playerId === listenerId) {
+          if (evt.playerId !== undefined && localSet.has(evt.playerId)) {
             sound.playLockError();
             onLocalLockError?.();
           }
@@ -231,19 +238,19 @@ function playEngineEvents(
           sound.playDoorUnlock(spatial);
           break;
         case 'killstreak': {
-          // Strictly private: audible and visible ONLY to the player who scored the kill
-          if (evt.playerId !== undefined && evt.playerId === listenerId) {
+          // Strictly private: audible and visible ONLY to local player(s) who scored the kill
+          if (evt.playerId !== undefined && localSet.has(evt.playerId)) {
             const count = evt.value ?? 1;
             const streakMode: MatchMode = evt.mode ?? 'BRAWL';
             sound.playKillStreak(count, streakMode);
-            onLocalKillStreak?.(count, streakMode);
+            onLocalKillStreak?.(count, streakMode, evt.playerId);
           }
           break;
         }
         case 'self_kill': {
-          if (evt.playerId !== undefined && evt.playerId === listenerId) {
+          if (evt.playerId !== undefined && localSet.has(evt.playerId)) {
             sound.playSelfKill();
-            onLocalSelfKill?.();
+            onLocalSelfKill?.(evt.playerId);
           }
           break;
         }
@@ -314,6 +321,7 @@ export default function App() {
 
   const [gameState, setGameState] = useState<GameState>('TITLE_MENU');
   const [menuStep, setMenuStep] = useState<'HUB' | 'MAP_SELECT' | 'COLOR_SELECT'>('HUB');
+  const [colorSelectSlot, setColorSelectSlot] = useState<1 | 2>(1);
   const [config, setConfig] = useState<MatchConfig>(DEFAULT_SOLO_CONFIG);
   const [muted, setMuted] = useState(false);
   const [hasUsedJoystick, setHasUsedJoystick] = useState(false);
@@ -337,13 +345,15 @@ export default function App() {
     expiresAt: number;
     mode: MatchMode;
     durationMs: number;
+    playerId?: number;
   } | null>(null);
-  const [selfKillPopup, setSelfKillPopup] = useState<{ expiresAt: number } | null>(null);
+  const [selfKillPopup, setSelfKillPopup] = useState<{ expiresAt: number; playerId?: number } | null>(null);
   const [streakNow, setStreakNow] = useState<number>(0);
 
   const [pcSpeedLimit, setPcSpeedLimit] = useState<number>(100);
   const [spectateTargetId, setSpectateTargetId] = useState<number | null>(null);
   const [libraryLockOpen, setLibraryLockOpen] = useState<boolean>(false);
+  const [libraryLockPlayerId, setLibraryLockPlayerId] = useState<number>(0);
   const [hostLobbyConfirmOpen, setHostLobbyConfirmOpen] = useState<boolean>(false);
   const [lockErrorSeq, setLockErrorSeq] = useState<number>(0);
   const [jumpscareFlash, setJumpscareFlash] = useState<boolean>(false);
@@ -377,6 +387,7 @@ export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const canvasSizeRef = useRef<{ width: number; height: number }>({ width: 1000, height: 700 });
+  const configRef = useRef<MatchConfig>(config);
   const gameStateRef = useRef<GameState>(gameState);
   const isOnlineRef = useRef<boolean>(isOnline);
   const roomStateRef = useRef<OnlineRoomState | null>(roomState);
@@ -384,6 +395,7 @@ export default function App() {
   const pcSpeedLimitRef = useRef<number>(pcSpeedLimit);
   const spectateTargetIdRef = useRef<number | null>(spectateTargetId);
   const libraryLockOpenRef = useRef<boolean>(libraryLockOpen);
+  const libraryLockPlayerIdRef = useRef<number>(libraryLockPlayerId);
   const hostLobbyConfirmOpenRef = useRef<boolean>(hostLobbyConfirmOpen);
   const libraryUiRef = useRef<LibraryUiSnapshot | null>(libraryUi);
   const renderedLibraryUiRef = useRef<LibraryUiSnapshot | null>(libraryUi);
@@ -404,8 +416,16 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    configRef.current = config;
+  }, [config]);
+
+  useEffect(() => {
     libraryLockOpenRef.current = libraryLockOpen;
   }, [libraryLockOpen]);
+
+  useEffect(() => {
+    libraryLockPlayerIdRef.current = libraryLockPlayerId;
+  }, [libraryLockPlayerId]);
 
   useEffect(() => {
     hostLobbyConfirmOpenRef.current = hostLobbyConfirmOpen;
@@ -472,9 +492,11 @@ export default function App() {
         if (room.phase === 'LOBBY') {
           onlineWorldRef.current = null;
           cameraRef.current.initialized = false;
+          cameraRef.current.scale = undefined;
           setKillStreak(null);
           setSelfKillPopup(null);
           setLibraryLockOpen(false);
+          setLibraryLockPlayerId(0);
           setHostLobbyConfirmOpen(false);
           setLockErrorSeq(0);
           setSpectateTargetId(null);
@@ -493,10 +515,12 @@ export default function App() {
             sound.preloadImmersiveTrack(roomMapDef.floorTheme);
           }
           cameraRef.current.initialized = false;
+          cameraRef.current.scale = undefined;
           setHasUsedJoystick(false);
           setKillStreak(null);
           setSelfKillPopup(null);
           setLibraryLockOpen(false);
+          setLibraryLockPlayerId(0);
           setHostLobbyConfirmOpen(false);
           setLockErrorSeq(0);
           setSpectateTargetId(null);
@@ -531,15 +555,15 @@ export default function App() {
             world.events,
             listenerP?.x,
             listenerP?.y,
-            mySlot,
-            (streak, streakMode) => {
+            [mySlot],
+            (streak, streakMode, playerId) => {
               const nowMs = performance.now();
               const durationMs = streakMode === 'ELIMINATION' ? 3400 : KILL_STREAK_WINDOW * 1000;
               setStreakNow(nowMs);
-              setKillStreak({ count: streak, expiresAt: nowMs + durationMs, mode: streakMode, durationMs });
+              setKillStreak({ count: streak, expiresAt: nowMs + durationMs, mode: streakMode, durationMs, playerId });
             },
-            () => {
-              setSelfKillPopup({ expiresAt: performance.now() + 2800 });
+            (playerId) => {
+              setSelfKillPopup({ expiresAt: performance.now() + 2800, playerId });
             },
             listenerP?.floor ?? 0,
             () => setLockErrorSeq((prev) => prev + 1),
@@ -589,12 +613,18 @@ export default function App() {
   const startSoloMatch = useCallback(
     (overrideConfig?: MatchConfig) => {
       const baseCfg = overrideConfig ?? config;
-      const mapDef = ARENA_MAPS[baseCfg.mapId];
+      const rawMapDef = ARENA_MAPS[baseCfg.mapId];
+      const effectiveMapId = baseCfg.local2P && rawMapDef.immersive ? 'crossroads' : baseCfg.mapId;
+      const mapDef = ARENA_MAPS[effectiveMapId];
       const nextCfg: MatchConfig = {
         ...baseCfg,
+        mapId: effectiveMapId,
         immersive: mapDef.immersive,
         extraDark: mapDef.immersive ? Boolean(baseCfg.extraDark) : false,
       };
+      if (effectiveMapId !== baseCfg.mapId) {
+        setConfig(nextCfg);
+      }
       sound.unlock();
       if (nextCfg.mapId === 'library') {
         sound.preloadLibraryAudio();
@@ -605,6 +635,7 @@ export default function App() {
       setRoomState(null);
       setMenuStep('HUB');
       cameraRef.current.initialized = false;
+      cameraRef.current.scale = undefined;
       engineRef.current.reset(nextCfg);
       engineRef.current.setControlScheme(controlSchemeRef.current);
       const initialSnap = engineRef.current.getSnapshot(0);
@@ -614,6 +645,7 @@ export default function App() {
       setKillStreak(null);
       setSelfKillPopup(null);
       setLibraryLockOpen(false);
+      setLibraryLockPlayerId(0);
       setLockErrorSeq(0);
       setSpectateTargetId(null);
       spectateTargetIdRef.current = null;
@@ -718,7 +750,9 @@ export default function App() {
     setGameState((prev) => {
       if (prev === 'PLAYING') {
         engineRef.current.releaseJoystick();
+        engineRef.current.releaseJoystick2();
         engineRef.current.setHumanCursorInput(false, 0, 0);
+        engineRef.current.setPlayer2CursorInput(false, 0, 0);
         setLibraryLockOpen(false);
         return 'PAUSED';
       }
@@ -774,9 +808,11 @@ export default function App() {
 
       if (gameStateRef.current !== 'PLAYING' || hostLobbyConfirmOpenRef.current) return;
 
+      const isLocal2PActive = !isOnlineRef.current && Boolean(configRef.current.local2P);
+
       if (e.code === 'KeyC' && !e.repeat && controlSchemeRef.current === 'CURSOR_SPACE') {
         const libUi = libraryUiRef.current;
-        if (libUi && libUi.state.introTimer <= 0 && libUi.playerAlive) {
+        if (libUi && libUi.state.introTimer <= 0 && (libUi.playerAlive || (isLocal2PActive && libUi.p2Alive))) {
           togglePcStealth();
           return;
         }
@@ -799,6 +835,7 @@ export default function App() {
             return;
           }
           if (libUi.canUnlockDoor) {
+            setLibraryLockPlayerId(0);
             setLibraryLockOpen(true);
             return;
           }
@@ -811,7 +848,7 @@ export default function App() {
         setHasUsedJoystick(true);
       }
 
-      if (e.code === 'Space') {
+      if (e.code === 'Space' || (isLocal2PActive && e.code === 'KeyF')) {
         e.preventDefault();
         if (e.repeat) return;
         sound.unlock();
@@ -821,6 +858,17 @@ export default function App() {
         } else {
           engineRef.current.firePlayerShot(0);
         }
+      }
+
+      if (
+        isLocal2PActive &&
+        (e.code === 'Enter' || e.code === 'Slash' || e.code === 'Numpad0')
+      ) {
+        e.preventDefault();
+        if (e.repeat) return;
+        sound.unlock();
+        setHasUsedJoystick(true);
+        engineRef.current.firePlayerShot(1);
       }
     };
 
@@ -954,30 +1002,57 @@ export default function App() {
         }
       } else {
         const engine = engineRef.current;
+        const isLocal2PTick = Boolean(engine.config.local2P);
         if (gameStateRef.current === 'PLAYING') {
           engine.update(dt);
           const evts = engine.drainEvents();
           if (evts.length > 0) {
             const specId = spectateTargetIdRef.current;
-            const listenerP =
-              (specId != null
-                ? engine.players.find((p) => p.id === specId && p.alive)
-                : undefined) ?? engine.players[0];
+            const p0Ent = engine.players.find((p) => p.id === 0);
+            const p1Ent = engine.players.find((p) => p.id === 1);
+            let listenerX = p0Ent?.x;
+            let listenerY = p0Ent?.y;
+            let listenerFl: FloorLevel = p0Ent?.floor ?? 0;
+            if (isLocal2PTick) {
+              const aliveH = [p0Ent, p1Ent].filter((p): p is NonNullable<typeof p> => Boolean(p && p.alive));
+              if (aliveH.length === 2) {
+                listenerX = (aliveH[0].x + aliveH[1].x) * 0.5;
+                listenerY = (aliveH[0].y + aliveH[1].y) * 0.5;
+                listenerFl = aliveH[0].floor ?? 0;
+              } else if (aliveH.length === 1) {
+                listenerX = aliveH[0].x;
+                listenerY = aliveH[0].y;
+                listenerFl = aliveH[0].floor ?? 0;
+              }
+            } else if (specId != null) {
+              const sp = engine.players.find((p) => p.id === specId && p.alive);
+              if (sp) {
+                listenerX = sp.x;
+                listenerY = sp.y;
+                listenerFl = sp.floor ?? 0;
+              }
+            }
             playEngineEvents(
               evts,
-              listenerP?.x,
-              listenerP?.y,
-              0,
-              (streak, streakMode) => {
+              listenerX,
+              listenerY,
+              isLocal2PTick ? [0, 1] : [0],
+              (streak, streakMode, playerId) => {
                 const nowMs = performance.now();
                 const durationMs = streakMode === 'ELIMINATION' ? 3400 : KILL_STREAK_WINDOW * 1000;
                 setStreakNow(nowMs);
-                setKillStreak({ count: streak, expiresAt: nowMs + durationMs, mode: streakMode, durationMs });
+                setKillStreak({
+                  count: streak,
+                  expiresAt: nowMs + durationMs,
+                  mode: streakMode,
+                  durationMs,
+                  playerId,
+                });
               },
-              () => {
-                setSelfKillPopup({ expiresAt: performance.now() + 2800 });
+              (playerId) => {
+                setSelfKillPopup({ expiresAt: performance.now() + 2800, playerId });
               },
-              listenerP?.floor ?? 0,
+              listenerFl,
               () => setLockErrorSeq((prev) => prev + 1),
               triggerJumpscareFlash
             );
@@ -1023,6 +1098,8 @@ export default function App() {
         };
       }
 
+      const isLocal2PNow = !isOnlineRef.current && Boolean(engineRef.current.config.local2P);
+
       // Sync Library HUD / proximity / universal immersive spectate targets
       if (worldToRender && worldToRender.mapId === 'library' && worldToRender.libraryState) {
         if (immersiveSpectateRef.current.length > 0) {
@@ -1032,11 +1109,15 @@ export default function App() {
         const libState = worldToRender.libraryState;
         const libWalls = ARENA_MAPS[worldToRender.mapId].walls;
         const localP = worldToRender.players.find((p) => p.id === localId);
+        const p2Ent = isLocal2PNow ? worldToRender.players.find((p) => p.id === 1) : undefined;
         const pFloor = (localP?.floor ?? 0) as FloorLevel;
         const pSpeed = localP ? Math.hypot(localP.vx ?? 0, localP.vy ?? 0) : 0;
         const pAlive = Boolean(localP?.alive);
+        const p2Alive = Boolean(p2Ent?.alive);
         const prog = libState.playerProgress.find((pp) => pp.playerId === localId);
         const door = libState.doors.find((d) => d.playerId === localId);
+        const progP2 = isLocal2PNow ? libState.playerProgress.find((pp) => pp.playerId === 1) : undefined;
+        const doorP2 = isLocal2PNow ? libState.doors.find((d) => d.playerId === 1) : undefined;
 
         const canCollectBook = Boolean(
           pAlive &&
@@ -1053,11 +1134,32 @@ export default function App() {
             Math.hypot(localP.x - door.x, localP.y - door.y) <= 155
         );
 
+        const canCollectBookP2 = Boolean(
+          isLocal2PNow &&
+            p2Alive &&
+            p2Ent &&
+            progP2 &&
+            progP2.books.some((b) => canCollectBookSpot(p2Ent, b, libWalls))
+        );
+        const canUnlockDoorP2 = Boolean(
+          isLocal2PNow &&
+            p2Alive &&
+            (p2Ent?.floor ?? 0) === 0 &&
+            p2Ent &&
+            doorP2 &&
+            !progP2?.unlocked &&
+            Math.hypot(p2Ent.x - doorP2.x, p2Ent.y - doorP2.y) <= 155
+        );
+
         const spectateCandidates = worldToRender.players
-          .filter((p) => p.id !== localId && p.alive)
+          .filter((p) => (isLocal2PNow ? p.id !== 0 && p.id !== 1 : p.id !== localId) && p.alive)
           .map((p) => ({ id: p.id, name: p.name }));
 
-        if (!pAlive && (prog?.unlocked || prog?.eliminated)) {
+        const allHumansDown = isLocal2PNow
+          ? !pAlive && !p2Alive && (Boolean(prog?.unlocked || prog?.eliminated) && Boolean(progP2?.unlocked || progP2?.eliminated))
+          : !pAlive && (Boolean(prog?.unlocked) || Boolean(prog?.eliminated));
+
+        if (allHumansDown) {
           const curTarget = spectateTargetIdRef.current;
           if (
             spectateCandidates.length > 0 &&
@@ -1071,7 +1173,9 @@ export default function App() {
           setSpectateTargetId(null);
         }
 
-        if (!pAlive && libraryLockOpenRef.current) {
+        const lockOwnerAlive =
+          libraryLockPlayerIdRef.current === 1 ? p2Alive : pAlive;
+        if (!lockOwnerAlive && libraryLockOpenRef.current) {
           setLibraryLockOpen(false);
         }
 
@@ -1082,6 +1186,9 @@ export default function App() {
           playerAlive: pAlive,
           canCollectBook,
           canUnlockDoor,
+          p2Alive,
+          canCollectBookP2,
+          canUnlockDoorP2,
           spectateCandidates,
         };
         libraryUiRef.current = nextLibUi;
@@ -1099,11 +1206,14 @@ export default function App() {
           !prevUi ||
           prevUi.canCollectBook !== canCollectBook ||
           prevUi.canUnlockDoor !== canUnlockDoor ||
+          prevUi.canCollectBookP2 !== canCollectBookP2 ||
+          prevUi.canUnlockDoorP2 !== canUnlockDoorP2 ||
           (prevUi.state.introTimer > 0 && libState.introTimer <= 0) ||
           prevUi.state.playerProgress.find((pp) => pp.playerId === localId)?.collectedCount !==
             prog?.collectedCount ||
           prevUi.playerFloor !== pFloor ||
           prevUi.playerAlive !== pAlive ||
+          prevUi.p2Alive !== p2Alive ||
           prevUi.spectateCandidates.length !== spectateCandidates.length;
 
         const speedPctChanged =
@@ -1134,18 +1244,22 @@ export default function App() {
           ? roomStateRef.current?.config ?? DEFAULT_ONLINE_CONFIG
           : engineRef.current.config;
         const localP = worldToRender?.players.find((p) => p.id === localId);
+        const p2Ent = isLocal2PNow ? worldToRender?.players.find((p) => p.id === 1) : undefined;
+        const anyLocalAlive = isLocal2PNow
+          ? Boolean(localP?.alive || p2Ent?.alive)
+          : Boolean(localP?.alive);
         const canNonLibSpectate = Boolean(
           worldToRender &&
             isImmersiveWorld &&
             gameStateRef.current === 'PLAYING' &&
             activeCfg.mode === 'ELIMINATION' &&
             localP &&
-            !localP.alive
+            !anyLocalAlive
         );
 
         if (canNonLibSpectate && worldToRender) {
           const candidates = worldToRender.players
-            .filter((p) => p.id !== localId && p.alive)
+            .filter((p) => (isLocal2PNow ? p.id !== 0 && p.id !== 1 : p.id !== localId) && p.alive)
             .map((p) => ({ id: p.id, name: p.name }));
           const curTarget = spectateTargetIdRef.current;
           if (candidates.length > 0 && !candidates.some((c) => c.id === curTarget)) {
@@ -1182,52 +1296,89 @@ export default function App() {
         controlSchemeRef.current === 'CURSOR_SPACE' &&
         worldToRender
       ) {
-        const localP = worldToRender.players.find((p) => p.id === localId);
-        if (localP && localP.alive) {
-          const keys = pressedKeysRef.current;
-          let kx = 0;
-          let ky = 0;
-          if (keys.has('KeyA') || keys.has('ArrowLeft')) kx -= 1;
-          if (keys.has('KeyD') || keys.has('ArrowRight')) kx += 1;
-          if (keys.has('KeyW') || keys.has('ArrowUp')) ky -= 1;
-          if (keys.has('KeyS') || keys.has('ArrowDown')) ky += 1;
+        const keys = pressedKeysRef.current;
+        const maxPct = worldToRender.mapId === 'library' ? pcSpeedLimitRef.current / 100 : 1.0;
 
-          const moving = kx !== 0 || ky !== 0;
-          const moveAngle = moving ? Math.atan2(ky, kx) : localP.angle;
-          const shiftHeld = keys.has('ShiftLeft') || keys.has('ShiftRight');
-          const maxPct = worldToRender.mapId === 'library' ? pcSpeedLimitRef.current / 100 : 1.0;
-          const magnitude = moving ? (shiftHeld ? Math.min(0.44, maxPct) : maxPct) : 0;
-
-          let aimAngle = localP.angle;
-          let hasAim = moving;
-          if (cursorScreenRef.current) {
-            const map = ARENA_MAPS[worldToRender.mapId];
-            const isImmersive = worldToRender.immersive || map.immersive;
-            const { scale, offsetX, offsetY } = getArenaViewTransform(
-              map,
-              isImmersive,
-              width,
-              height,
-              localP,
-              cameraRef.current,
-              false
-            );
-            const px = offsetX + localP.x * scale;
-            const py = offsetY + localP.y * scale;
-            const dx = cursorScreenRef.current.x - px;
-            const dy = cursorScreenRef.current.y - py;
-            if (Math.hypot(dx, dy) > 2) {
-              aimAngle = Math.atan2(dy, dx);
-              hasAim = true;
-            }
-          } else if (moving) {
-            aimAngle = moveAngle;
+        if (isLocal2PNow) {
+          const p1Ent = worldToRender.players.find((p) => p.id === 0);
+          if (p1Ent && p1Ent.alive) {
+            let kx1 = 0;
+            let ky1 = 0;
+            if (keys.has('KeyA')) kx1 -= 1;
+            if (keys.has('KeyD')) kx1 += 1;
+            if (keys.has('KeyW')) ky1 -= 1;
+            if (keys.has('KeyS')) ky1 += 1;
+            const moving1 = kx1 !== 0 || ky1 !== 0;
+            const moveAngle1 = moving1 ? Math.atan2(ky1, kx1) : p1Ent.angle;
+            const shift1 = keys.has('ShiftLeft');
+            const mag1 = moving1 ? (shift1 ? Math.min(0.44, maxPct) : maxPct) : 0;
+            engineRef.current.setHumanCursorInput(moving1, moveAngle1, mag1, moveAngle1, moving1);
+          } else {
+            engineRef.current.setHumanCursorInput(false, 0, 0);
           }
 
-          if (isOnlineRef.current) {
-            clientRef.current?.sendJoystickInput(moving, aimAngle, magnitude, moveAngle);
+          const p2Ent = worldToRender.players.find((p) => p.id === 1);
+          if (p2Ent && p2Ent.alive) {
+            let kx2 = 0;
+            let ky2 = 0;
+            if (keys.has('ArrowLeft')) kx2 -= 1;
+            if (keys.has('ArrowRight')) kx2 += 1;
+            if (keys.has('ArrowUp')) ky2 -= 1;
+            if (keys.has('ArrowDown')) ky2 += 1;
+            const moving2 = kx2 !== 0 || ky2 !== 0;
+            const moveAngle2 = moving2 ? Math.atan2(ky2, kx2) : p2Ent.angle;
+            const shift2 = keys.has('ShiftRight');
+            const mag2 = moving2 ? (shift2 ? Math.min(0.44, maxPct) : maxPct) : 0;
+            engineRef.current.setPlayer2CursorInput(moving2, moveAngle2, mag2, moveAngle2, moving2);
           } else {
-            engineRef.current.setHumanCursorInput(moving, aimAngle, magnitude, moveAngle, hasAim);
+            engineRef.current.setPlayer2CursorInput(false, 0, 0);
+          }
+        } else {
+          const localP = worldToRender.players.find((p) => p.id === localId);
+          if (localP && localP.alive) {
+            let kx = 0;
+            let ky = 0;
+            if (keys.has('KeyA') || keys.has('ArrowLeft')) kx -= 1;
+            if (keys.has('KeyD') || keys.has('ArrowRight')) kx += 1;
+            if (keys.has('KeyW') || keys.has('ArrowUp')) ky -= 1;
+            if (keys.has('KeyS') || keys.has('ArrowDown')) ky += 1;
+
+            const moving = kx !== 0 || ky !== 0;
+            const moveAngle = moving ? Math.atan2(ky, kx) : localP.angle;
+            const shiftHeld = keys.has('ShiftLeft') || keys.has('ShiftRight');
+            const magnitude = moving ? (shiftHeld ? Math.min(0.44, maxPct) : maxPct) : 0;
+
+            let aimAngle = localP.angle;
+            let hasAim = moving;
+            if (cursorScreenRef.current) {
+              const map = ARENA_MAPS[worldToRender.mapId];
+              const isImmersive = worldToRender.immersive || map.immersive;
+              const { scale, offsetX, offsetY } = getArenaViewTransform(
+                map,
+                isImmersive,
+                width,
+                height,
+                localP,
+                cameraRef.current,
+                false
+              );
+              const px = offsetX + localP.x * scale;
+              const py = offsetY + localP.y * scale;
+              const dx = cursorScreenRef.current.x - px;
+              const dy = cursorScreenRef.current.y - py;
+              if (Math.hypot(dx, dy) > 2) {
+                aimAngle = Math.atan2(dy, dx);
+                hasAim = true;
+              }
+            } else if (moving) {
+              aimAngle = moveAngle;
+            }
+
+            if (isOnlineRef.current) {
+              clientRef.current?.sendJoystickInput(moving, aimAngle, magnitude, moveAngle);
+            } else {
+              engineRef.current.setHumanCursorInput(moving, aimAngle, magnitude, moveAngle, hasAim);
+            }
           }
         }
       }
@@ -1350,7 +1501,11 @@ export default function App() {
         const listener =
           (specId != null
             ? worldToRender.players.find((p) => p.id === specId && p.alive)
-            : undefined) ?? worldToRender.players.find((p) => p.id === localId);
+            : undefined) ??
+          (isLocal2PNow
+            ? worldToRender.players.find((p) => (p.id === 0 || p.id === 1) && p.alive) ??
+              worldToRender.players.find((p) => p.id === 0)
+            : worldToRender.players.find((p) => p.id === localId));
         sound.updateImmersiveFootsteps(
           dt,
           listener,
@@ -1383,9 +1538,10 @@ export default function App() {
             cameraRef.current,
             {
               controlScheme: controlSchemeRef.current,
-              cursorScreen: cursorScreenRef.current,
+              cursorScreen: !isOnlineRef.current && engineRef.current.config.local2P ? null : cursorScreenRef.current,
               hideJoystick: controlSchemeRef.current === 'DRAG_STICK',
               spectateTargetId: spectateTargetIdRef.current,
+              localPlayerIds: !isOnlineRef.current && engineRef.current.config.local2P ? [0, 1] : undefined,
               dt,
             }
           );
@@ -1431,6 +1587,7 @@ export default function App() {
     }
 
     if (controlSchemeRef.current === 'CURSOR_SPACE') {
+      if (!isOnlineRef.current && configRef.current.local2P) return;
       const pt = getCanvasPoint(e);
       cursorScreenRef.current = pt;
       if (!hasUsedJoystick) setHasUsedJoystick(true);
@@ -1440,6 +1597,7 @@ export default function App() {
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (gameState !== 'PLAYING') return;
     if (controlSchemeRef.current === 'CURSOR_SPACE') {
+      if (!isOnlineRef.current && configRef.current.local2P) return;
       cursorScreenRef.current = getCanvasPoint(e);
       if (!hasUsedJoystick) setHasUsedJoystick(true);
     }
@@ -1467,10 +1625,17 @@ export default function App() {
     }
 
     if (menuStep === 'COLOR_SELECT') {
+      const isP2Color = Boolean(config.local2P && colorSelectSlot === 2);
       return (
         <ColorSelectScreen
           config={config}
-          onSelectColor={(playerColorId) => setConfig((prev) => ({ ...prev, playerColorId }))}
+          selectedColorId={isP2Color ? config.player2ColorId ?? 'crimson' : config.playerColorId ?? 'cobalt'}
+          playerSlotLabel={config.local2P ? (isP2Color ? 'P2 (Top-Right)' : 'P1 (Bottom-Left)') : undefined}
+          onSelectColor={(colorId) =>
+            setConfig((prev) =>
+              isP2Color ? { ...prev, player2ColorId: colorId } : { ...prev, playerColorId: colorId }
+            )
+          }
           onBack={() => setMenuStep('HUB')}
         />
       );
@@ -1484,7 +1649,10 @@ export default function App() {
         onlineConnecting={onlineConnecting}
         onChangeConfig={setConfig}
         onOpenMapSelect={() => setMenuStep('MAP_SELECT')}
-        onOpenColorSelect={() => setMenuStep('COLOR_SELECT')}
+        onOpenColorSelect={(slot) => {
+          setColorSelectSlot(slot === 2 ? 2 : 1);
+          setMenuStep('COLOR_SELECT');
+        }}
         onStartSolo={() => startSoloMatch(config)}
         onCreateOnlineRoom={handleCreateOnlineRoom}
         onJoinOnlineRoom={handleJoinOnlineRoom}
@@ -1507,17 +1675,23 @@ export default function App() {
   }
 
   const activeConfig = isOnline && roomState ? roomState.config : config;
-  const is2v2 = (activeConfig.teamMode ?? snapshot.teamMode ?? 'FFA') === '2V2';
+  const isLocal2P = !isOnline && Boolean(activeConfig.local2P);
+  const local2PBots = !isLocal2P || activeConfig.local2PIncludeBots !== false;
+  const is2v2 = ((activeConfig.teamMode ?? snapshot.teamMode ?? 'FFA') === '2V2') && local2PBots;
   const isHost = isOnline && roomState ? roomState.mySlot === roomState.hostSlot : true;
   const localSlot = isOnline && roomState ? roomState.mySlot : 0;
   const localSnap = snapshot.players.find((p) => p.id === localSlot);
+  const p2HumanSnap = isLocal2P ? snapshot.players.find((p) => p.id === 1) : undefined;
+  const slot0Snap = snapshot.players.find((p) => p.id === 0);
+  const slot2Snap = snapshot.players.find((p) => p.id === 2);
+  const slot3Snap = snapshot.players.find((p) => p.id === 3);
 
   const team0List = snapshot.players.filter((p) => p.team === 0);
   const team1List = snapshot.players.filter((p) => p.team === 1);
-  const p0 = is2v2 ? team0List[0] : snapshot.players.find((p) => p.id === 0);
-  const p2 = is2v2 ? team0List[1] : snapshot.players.find((p) => p.id === 2);
+  const p0 = is2v2 ? team0List[0] : slot0Snap;
+  const p2 = is2v2 ? team0List[1] : slot2Snap;
   const p1 = is2v2 ? team1List[0] : snapshot.players.find((p) => p.id === 1);
-  const p3 = is2v2 ? team1List[1] : snapshot.players.find((p) => p.id === 3);
+  const p3 = is2v2 ? team1List[1] : slot3Snap;
 
   const teamAKills = team0List.reduce((sum, p) => sum + p.kills, 0);
   const teamBKills = team1List.reduce((sum, p) => sum + p.kills, 0);
@@ -1575,7 +1749,7 @@ export default function App() {
                   : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              WASD + Aim
+              {isLocal2P ? '2P Keys' : 'WASD + Aim'}
             </button>
             <button
               type="button"
@@ -1586,7 +1760,7 @@ export default function App() {
                   : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              Drag Stick
+              {isLocal2P ? 'Diagonal Sticks' : 'Drag Stick'}
             </button>
           </div>
 
@@ -1653,49 +1827,80 @@ export default function App() {
           )}
           <div className="rounded-xl border border-slate-800/80 bg-[#0F172A]/80 p-3.5 text-xs text-slate-400 space-y-2">
             <div className="font-semibold text-slate-200">
-              {controlScheme === 'CURSOR_SPACE' ? 'WASD + Aim' : 'Touch Stick'}
+              {controlScheme === 'CURSOR_SPACE'
+                ? isLocal2P
+                  ? '2P Keyboard Controls'
+                  : 'WASD + Aim'
+                : isLocal2P
+                  ? 'Diagonal Touch Sticks'
+                  : 'Touch Stick'}
             </div>
             {controlScheme === 'CURSOR_SPACE' ? (
+              isLocal2P ? (
+                <>
+                  <p className="leading-relaxed">
+                    <span className="font-semibold text-sky-300">P1:</span>{' '}
+                    <span className="font-semibold text-slate-200">WASD</span> (Left Shift creep),{' '}
+                    <span className="font-semibold text-slate-200">Space</span> shoot.
+                  </p>
+                  <p className="leading-relaxed">
+                    <span className="font-semibold text-rose-300">P2:</span>{' '}
+                    <span className="font-semibold text-slate-200">Arrows</span> (Right Shift creep),{' '}
+                    <span className="font-semibold text-slate-200">Enter / /</span> shoot.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="leading-relaxed">
+                    Move with <span className="font-semibold text-slate-200">WASD</span> or Arrows (hold <span className="font-semibold text-slate-200">Shift</span> to creep).
+                  </p>
+                  <p className="leading-relaxed">
+                    Aim 360° with your cursor and press <span className="font-semibold text-slate-200">Spacebar</span> to shoot.
+                  </p>
+                  {activeConfig.mapId === 'library' && (
+                    <div className="pt-2 border-t border-slate-800/80 space-y-1.5">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="font-semibold text-amber-200">Walk Speed Cap</span>
+                        <span
+                          className={`font-mono-tabular font-bold ${
+                            pcSpeedLimit >= 100
+                              ? 'text-rose-300'
+                              : pcSpeedLimit >= 80
+                                ? 'text-amber-300'
+                                : 'text-emerald-300'
+                          }`}
+                        >
+                          {pcSpeedLimit}% {pcSpeedLimit < 80 ? 'Silent' : pcSpeedLimit < 100 ? 'Risk' : 'Loud'}
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={35}
+                        max={100}
+                        step={1}
+                        value={pcSpeedLimit}
+                        onChange={(e) => updatePcSpeedLimit(Number(e.target.value))}
+                        aria-label="PC Walk Speed Percentage"
+                        className="w-full accent-amber-400 cursor-pointer"
+                      />
+                      <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono-tabular">
+                        <span>35%</span>
+                        <span className="text-emerald-400/90 font-semibold">80% Safe</span>
+                        <span>100%</span>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )
+            ) : isLocal2P ? (
               <>
                 <p className="leading-relaxed">
-                  Move with <span className="font-semibold text-slate-200">WASD</span> or Arrows (hold <span className="font-semibold text-slate-200">Shift</span> to creep).
+                  <span className="font-semibold text-sky-300">P1</span> uses Bottom-Left stick;{' '}
+                  <span className="font-semibold text-rose-300">P2</span> uses Top-Right stick.
                 </p>
                 <p className="leading-relaxed">
-                  Aim 360° with your cursor and press <span className="font-semibold text-slate-200">Spacebar</span> to shoot.
+                  Drag to move &amp; aim, release to shoot.
                 </p>
-                {activeConfig.mapId === 'library' && (
-                  <div className="pt-2 border-t border-slate-800/80 space-y-1.5">
-                    <div className="flex items-center justify-between text-[11px]">
-                      <span className="font-semibold text-amber-200">Walk Speed Cap</span>
-                      <span
-                        className={`font-mono-tabular font-bold ${
-                          pcSpeedLimit >= 100
-                            ? 'text-rose-300'
-                            : pcSpeedLimit >= 80
-                              ? 'text-amber-300'
-                              : 'text-emerald-300'
-                        }`}
-                      >
-                        {pcSpeedLimit}% {pcSpeedLimit < 80 ? 'Silent' : pcSpeedLimit < 100 ? 'Risk' : 'Loud'}
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={35}
-                      max={100}
-                      step={1}
-                      value={pcSpeedLimit}
-                      onChange={(e) => updatePcSpeedLimit(Number(e.target.value))}
-                      aria-label="PC Walk Speed Percentage"
-                      className="w-full accent-amber-400 cursor-pointer"
-                    />
-                    <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono-tabular">
-                      <span>35%</span>
-                      <span className="text-emerald-400/90 font-semibold">80% Safe</span>
-                      <span>100%</span>
-                    </div>
-                  </div>
-                )}
               </>
             ) : (
               <>
@@ -1785,55 +1990,114 @@ export default function App() {
           </div>
 
           {/* Borderless Thin Overlay Health Bars at Screen Edges for Phone/Landscape */}
-          <div
-            style={{
-              top: 'max(0.375rem, env(safe-area-inset-top))',
-              left: 'max(0.75rem, env(safe-area-inset-left))',
-              right: 'max(0.75rem, env(safe-area-inset-right))',
-            }}
-            className="pointer-events-none absolute flex items-start justify-between gap-2 lg:hidden z-10"
-          >
-            <div className="flex flex-col gap-1.5 w-28 sm:w-36">
-              {p0 && (
-                <PlayerHealthBar
-                  player={p0}
-                  mode={activeConfig.mode}
-                  targetKills={activeConfig.targetKills}
-                  align="left"
-                  compact
-                />
-              )}
-              {p2 && (
-                <PlayerHealthBar
-                  player={p2}
-                  mode={activeConfig.mode}
-                  targetKills={activeConfig.targetKills}
-                  align="left"
-                  compact
-                />
-              )}
+          {isLocal2P ? (
+            <>
+              {/* P1 + optional Bot 3 Top-Left (keeps Bottom-Left clear for P1 Stick) */}
+              <div
+                style={{
+                  top: 'max(0.375rem, env(safe-area-inset-top))',
+                  left: 'max(0.75rem, env(safe-area-inset-left))',
+                }}
+                className="pointer-events-none absolute flex flex-col gap-1.5 w-28 sm:w-36 lg:hidden z-10"
+              >
+                {slot0Snap && (
+                  <PlayerHealthBar
+                    player={slot0Snap}
+                    mode={activeConfig.mode}
+                    targetKills={activeConfig.targetKills}
+                    align="left"
+                    compact
+                  />
+                )}
+                {slot2Snap && (
+                  <PlayerHealthBar
+                    player={slot2Snap}
+                    mode={activeConfig.mode}
+                    targetKills={activeConfig.targetKills}
+                    align="left"
+                    compact
+                  />
+                )}
+              </div>
+              {/* P2 + optional Bot 4 Bottom-Right (keeps Top-Right clear for P2 Stick) */}
+              <div
+                style={{
+                  bottom: 'max(0.5rem, env(safe-area-inset-bottom))',
+                  right: 'max(0.75rem, env(safe-area-inset-right))',
+                }}
+                className="pointer-events-none absolute flex flex-col-reverse gap-1.5 w-28 sm:w-36 lg:hidden z-10"
+              >
+                {p2HumanSnap && (
+                  <PlayerHealthBar
+                    player={p2HumanSnap}
+                    mode={activeConfig.mode}
+                    targetKills={activeConfig.targetKills}
+                    align="right"
+                    compact
+                  />
+                )}
+                {slot3Snap && (
+                  <PlayerHealthBar
+                    player={slot3Snap}
+                    mode={activeConfig.mode}
+                    targetKills={activeConfig.targetKills}
+                    align="right"
+                    compact
+                  />
+                )}
+              </div>
+            </>
+          ) : (
+            <div
+              style={{
+                top: 'max(0.375rem, env(safe-area-inset-top))',
+                left: 'max(0.75rem, env(safe-area-inset-left))',
+                right: 'max(0.75rem, env(safe-area-inset-right))',
+              }}
+              className="pointer-events-none absolute flex items-start justify-between gap-2 lg:hidden z-10"
+            >
+              <div className="flex flex-col gap-1.5 w-28 sm:w-36">
+                {p0 && (
+                  <PlayerHealthBar
+                    player={p0}
+                    mode={activeConfig.mode}
+                    targetKills={activeConfig.targetKills}
+                    align="left"
+                    compact
+                  />
+                )}
+                {p2 && (
+                  <PlayerHealthBar
+                    player={p2}
+                    mode={activeConfig.mode}
+                    targetKills={activeConfig.targetKills}
+                    align="left"
+                    compact
+                  />
+                )}
+              </div>
+              <div className="flex flex-col gap-1.5 w-28 sm:w-36">
+                {p1 && (
+                  <PlayerHealthBar
+                    player={p1}
+                    mode={activeConfig.mode}
+                    targetKills={activeConfig.targetKills}
+                    align="right"
+                    compact
+                  />
+                )}
+                {p3 && (
+                  <PlayerHealthBar
+                    player={p3}
+                    mode={activeConfig.mode}
+                    targetKills={activeConfig.targetKills}
+                    align="right"
+                    compact
+                  />
+                )}
+              </div>
             </div>
-            <div className="flex flex-col gap-1.5 w-28 sm:w-36">
-              {p1 && (
-                <PlayerHealthBar
-                  player={p1}
-                  mode={activeConfig.mode}
-                  targetKills={activeConfig.targetKills}
-                  align="right"
-                  compact
-                />
-              )}
-              {p3 && (
-                <PlayerHealthBar
-                  player={p3}
-                  mode={activeConfig.mode}
-                  targetKills={activeConfig.targetKills}
-                  align="right"
-                  compact
-                />
-              )}
-            </div>
-          </div>
+          )}
 
           {/* Transparent Side-Edge Kill Popup (Private to the player who scored the kill) */}
           {killStreak &&
@@ -1896,16 +2160,24 @@ export default function App() {
                       ? 'text-amber-300'
                       : 'text-yellow-200';
 
+              const actorPrefix =
+                isLocal2P && killStreak.playerId !== undefined
+                  ? `${killStreak.playerId === 1 ? 'P2' : 'P1'} · `
+                  : '';
+
               return (
                 <div
-                  style={{
-                    right: 'max(0.75rem, env(safe-area-inset-right))',
-                  }}
-                  className="pointer-events-none select-none absolute top-[4.65rem] sm:top-[5.15rem] lg:top-4 lg:right-4 z-40 flex flex-col items-end text-right"
+                  style={isLocal2P ? undefined : { right: 'max(0.75rem, env(safe-area-inset-right))' }}
+                  className={
+                    isLocal2P
+                      ? 'pointer-events-none select-none absolute top-11 left-1/2 -translate-x-1/2 lg:left-auto lg:translate-x-0 lg:right-4 lg:top-4 z-40 flex flex-col items-center text-center lg:items-end lg:text-right'
+                      : 'pointer-events-none select-none absolute top-[4.65rem] sm:top-[5.15rem] lg:top-4 lg:right-4 z-40 flex flex-col items-end text-right'
+                  }
                 >
                   <div className="flex items-baseline gap-1.5 drop-shadow-[0_2px_6px_rgba(0,0,0,0.95)]">
                     <span className="text-sm sm:text-base leading-none">{fires}</span>
                     <span className={`font-display text-xs sm:text-sm font-black tracking-wide uppercase ${tierColor}`}>
+                      {actorPrefix}
                       {headlineText}
                     </span>
                   </div>
@@ -1933,16 +2205,23 @@ export default function App() {
           {/* Transparent Funny Self-Kill Popup (own bullet bounce KO) */}
           {selfKillPopup && (gameState === 'PLAYING' || gameState === 'GAME_OVER') && (
             <div
-              style={{
-                right: 'max(0.75rem, env(safe-area-inset-right))',
-              }}
-              className={`pointer-events-none select-none absolute ${
-                killStreak ? 'top-[7.2rem] sm:top-[7.8rem] lg:top-16' : 'top-[4.65rem] sm:top-[5.15rem] lg:top-4'
-              } lg:right-4 z-40 flex flex-col items-end text-right animate-bounce`}
+              style={isLocal2P ? undefined : { right: 'max(0.75rem, env(safe-area-inset-right))' }}
+              className={
+                isLocal2P
+                  ? `pointer-events-none select-none absolute ${
+                      killStreak ? 'top-20 lg:top-16' : 'top-11 lg:top-4'
+                    } left-1/2 -translate-x-1/2 lg:left-auto lg:translate-x-0 lg:right-4 z-40 flex flex-col items-center text-center lg:items-end lg:text-right animate-bounce`
+                  : `pointer-events-none select-none absolute ${
+                      killStreak ? 'top-[7.2rem] sm:top-[7.8rem] lg:top-16' : 'top-[4.65rem] sm:top-[5.15rem] lg:top-4'
+                    } lg:right-4 z-40 flex flex-col items-end text-right animate-bounce`
+              }
             >
               <div className="flex items-baseline gap-1.5 drop-shadow-[0_2px_6px_rgba(0,0,0,0.95)]">
                 <span className="text-sm sm:text-base leading-none">🤡💀</span>
                 <span className="font-display text-xs sm:text-sm font-black tracking-wide uppercase text-pink-300">
+                  {isLocal2P && selfKillPopup.playerId !== undefined
+                    ? `${selfKillPopup.playerId === 1 ? 'P2' : 'P1'} · `
+                    : ''}
                   OOPS! SHOT YOURSELF!
                 </span>
               </div>
@@ -1952,44 +2231,72 @@ export default function App() {
             </div>
           )}
 
-          {/* Stationary Left-Side Joystick (Release to Shoot) */}
+          {/* Stationary Joystick(s): P1 Bottom-Left, plus P2 Top-Right in Offline 2P */}
           {controlScheme === 'DRAG_STICK' && gameState === 'PLAYING' && (
-            <TouchControls
-              ammo={localSnap?.ammo ?? 0}
-              stunned={(localSnap?.stunTimer ?? 0) > 0}
-              alive={localSnap?.alive ?? true}
-              playerColor={localSnap?.color}
-              playerAccentColor={localSnap?.accentColor}
-              playerFinish={localSnap?.finish}
-              onStickChange={(active, angle, magnitude) => {
-                sound.unlock();
-                if (!hasUsedJoystick) setHasUsedJoystick(true);
-                if (isOnlineRef.current) {
-                  onlineJoystickRef.current.active = active;
-                  onlineJoystickRef.current.angle = angle;
-                  onlineJoystickRef.current.magnitude = magnitude;
-                  clientRef.current?.sendJoystickInput(active, angle, magnitude);
-                } else {
-                  engineRef.current.setJoystickVector(active, angle, magnitude);
-                }
-              }}
-              onStickRelease={() => {
-                sound.unlock();
-                if (!hasUsedJoystick) setHasUsedJoystick(true);
-                if (isOnlineRef.current) {
-                  clientRef.current?.sendJoystickRelease();
-                } else {
-                  engineRef.current.firePlayerShot(0);
-                }
-              }}
-            />
+            <>
+              <TouchControls
+                position="bottom-left"
+                playerLabel={isLocal2P ? 'P1' : undefined}
+                ammo={localSnap?.ammo ?? 0}
+                stunned={(localSnap?.stunTimer ?? 0) > 0}
+                alive={localSnap?.alive ?? true}
+                playerColor={localSnap?.color}
+                playerAccentColor={localSnap?.accentColor}
+                playerFinish={localSnap?.finish}
+                onStickChange={(active, angle, magnitude) => {
+                  sound.unlock();
+                  if (!hasUsedJoystick) setHasUsedJoystick(true);
+                  if (isOnlineRef.current) {
+                    onlineJoystickRef.current.active = active;
+                    onlineJoystickRef.current.angle = angle;
+                    onlineJoystickRef.current.magnitude = magnitude;
+                    clientRef.current?.sendJoystickInput(active, angle, magnitude);
+                  } else {
+                    engineRef.current.setJoystickVector(active, angle, magnitude);
+                  }
+                }}
+                onStickRelease={() => {
+                  sound.unlock();
+                  if (!hasUsedJoystick) setHasUsedJoystick(true);
+                  if (isOnlineRef.current) {
+                    clientRef.current?.sendJoystickRelease();
+                  } else {
+                    engineRef.current.firePlayerShot(0);
+                  }
+                }}
+              />
+              {isLocal2P && p2HumanSnap && (
+                <TouchControls
+                  position="top-right"
+                  playerLabel="P2"
+                  ammo={p2HumanSnap.ammo}
+                  stunned={p2HumanSnap.stunTimer > 0}
+                  alive={p2HumanSnap.alive}
+                  playerColor={p2HumanSnap.color}
+                  playerAccentColor={p2HumanSnap.accentColor}
+                  playerFinish={p2HumanSnap.finish}
+                  onStickChange={(active, angle, magnitude) => {
+                    sound.unlock();
+                    if (!hasUsedJoystick) setHasUsedJoystick(true);
+                    engineRef.current.setJoystick2Vector(active, angle, magnitude);
+                  }}
+                  onStickRelease={() => {
+                    sound.unlock();
+                    if (!hasUsedJoystick) setHasUsedJoystick(true);
+                    engineRef.current.firePlayerShot(1);
+                  }}
+                />
+              )}
+            </>
           )}
 
           {!hasUsedJoystick && gameState === 'PLAYING' && controlScheme === 'CURSOR_SPACE' && (
             <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 rounded-lg border border-slate-700/80 bg-slate-950/85 px-4 py-2 text-xs font-medium text-slate-200 whitespace-nowrap shadow-lg">
-              {activeConfig.mapId === 'library'
-                ? 'WASD to move (Shift or <80% slider to sneak) · [E] Collect/Unlock · Spacebar to shoot'
-                : 'WASD to move (Shift to creep) · Cursor to aim · Spacebar to shoot'}
+              {isLocal2P
+                ? 'P1: WASD + Space · P2: Arrows + Enter (or /)'
+                : activeConfig.mapId === 'library'
+                  ? 'WASD to move (Shift or <80% slider to sneak) · [E] Collect/Unlock · Spacebar to shoot'
+                  : 'WASD to move (Shift to creep) · Cursor to aim · Spacebar to shoot'}
             </div>
           )}
 
@@ -2057,10 +2364,13 @@ export default function App() {
                   setSpectateTargetId(next.id);
                 }}
                 onFinishSoloMatch={() => {
-                  if (!isOnline && engineRef.current.finishSoloLibrary()) {
-                    setSnapshot(engineRef.current.getSnapshot(0));
-                    setLibraryLockOpen(false);
-                    setGameState('GAME_OVER');
+                  if (!isOnline) {
+                    engineRef.current.finishSoloLibrary();
+                    if (engineRef.current.winnerId !== null) {
+                      setSnapshot(engineRef.current.getSnapshot(0));
+                      setLibraryLockOpen(false);
+                      setGameState('GAME_OVER');
+                    }
                   }
                 }}
                 onCollectBook={() => {
@@ -2073,6 +2383,7 @@ export default function App() {
                 }}
                 onOpenLock={() => {
                   sound.unlock();
+                  setLibraryLockPlayerId(0);
                   setLibraryLockOpen(true);
                 }}
                 onCloseLock={() => setLibraryLockOpen(false)}
@@ -2099,7 +2410,7 @@ export default function App() {
           {activeConfig.mapId !== 'library' &&
             ARENA_MAPS[activeConfig.mapId].immersive &&
             gameState === 'PLAYING' &&
-            !localSnap?.alive &&
+            (isLocal2P ? !localSnap?.alive && !p2HumanSnap?.alive : !localSnap?.alive) &&
             immersiveSpectateList.length > 0 && (
               <div className="pointer-events-auto absolute bottom-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 rounded-xl border border-slate-700/70 bg-slate-950/85 px-3 py-2 text-xs text-slate-100 shadow-xl">
                 <div className="flex items-center gap-1.5 pr-1">

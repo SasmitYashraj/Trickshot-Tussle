@@ -10,6 +10,8 @@ import { PlayerAvatar } from './PlayerAvatar';
 
 interface ColorSelectScreenProps {
   config: MatchConfig;
+  selectedColorId?: string;
+  playerSlotLabel?: string;
   onSelectColor: (colorId: string) => void;
   onBack: () => void;
 }
@@ -60,12 +62,14 @@ function getCategoryBadge(opt: PlayerColorOption): string {
 
 export function ColorSelectScreen({
   config,
+  selectedColorId,
+  playerSlotLabel,
   onSelectColor,
   onBack,
 }: ColorSelectScreenProps) {
   const [filter, setFilter] = useState<ColorFilter>('ALL');
 
-  const activeColorId = config.playerColorId ?? 'cobalt';
+  const activeColorId = selectedColorId ?? config.playerColorId ?? 'cobalt';
   const activeOption =
     PLAYER_COLOR_PALETTE.find((c) => c.id === activeColorId) ?? PLAYER_COLOR_PALETTE[0];
 
@@ -100,7 +104,7 @@ export function ColorSelectScreen({
               <div className="min-w-0">
                 <h1 className="font-display text-base sm:text-lg font-extrabold text-slate-50 leading-tight truncate flex items-center gap-1.5">
                   <Palette className="w-4 h-4 text-sky-400 shrink-0" />
-                  Fighter Colours &amp; Finishes
+                  {playerSlotLabel ? `${playerSlotLabel} · Colours & Finishes` : 'Fighter Colours & Finishes'}
                 </h1>
                 <p className="text-[11px] text-slate-400 truncate">
                   Active: <span className="font-semibold text-sky-300">{activeOption.name}</span> ·{' '}

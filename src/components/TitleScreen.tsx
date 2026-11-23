@@ -1,6 +1,6 @@
-import { ChevronRight, Globe, Map as MapIcon, Palette, Play, Sliders, User, Users } from 'lucide-react';
+import { ChevronRight, Globe, Map as MapIcon, Palette, Play, Sliders, Swords, User, Users } from 'lucide-react';
 import { useState } from 'react';
-import { ARENA_MAPS, IMMERSIVE_DARK_PREVIEW_URLS, MAP_PREVIEW_URLS } from '../game/maps';
+import { ARENA_MAPS, IMMERSIVE_DARK_PREVIEW_URLS, MAP_PREVIEW_URLS, SOLO_MAP_LIST } from '../game/maps';
 import {
   type BotDifficulty,
   DEFAULT_MATCH_MODIFIERS,
@@ -21,7 +21,7 @@ interface TitleScreenProps {
   onlineConnecting?: boolean;
   onChangeConfig: (next: MatchConfig) => void;
   onOpenMapSelect: () => void;
-  onOpenColorSelect: () => void;
+  onOpenColorSelect: (slot?: 1 | 2) => void;
   onStartSolo: () => void;
   onCreateOnlineRoom: (name: string) => void;
   onJoinOnlineRoom: (code: string, name: string) => void;
@@ -39,26 +39,69 @@ export function TitleScreen({
   onCreateOnlineRoom,
   onJoinOnlineRoom,
 }: TitleScreenProps) {
-  const [tab, setTab] = useState<'SOLO' | 'ONLINE'>(initialRoomCode || onlineError ? 'ONLINE' : 'SOLO');
+  const [tab, setTab] = useState<'SOLO' | 'LOCAL_2P' | 'ONLINE'>(
+    initialRoomCode || onlineError ? 'ONLINE' : config.local2P ? 'LOCAL_2P' : 'SOLO'
+  );
+  const [editingColorSlot, setEditingColorSlot] = useState<1 | 2>(1);
   const [nickname, setNickname] = useState('Player');
   const [joinCode, setJoinCode] = useState(initialRoomCode);
   const [modifiersOpen, setModifiersOpen] = useState(false);
   const [imgFailed, setImgFailed] = useState<Record<string, boolean>>({});
   const [pointerPct, setPointerPct] = useState<{ x: number; y: number }>({ x: 50, y: 35 });
 
+  const selectTab = (nextTab: 'SOLO' | 'LOCAL_2P' | 'ONLINE') => {
+    setTab(nextTab);
+    if (nextTab === 'SOLO') {
+      onChangeConfig({ ...config, local2P: false });
+    } else if (nextTab === 'LOCAL_2P') {
+      const curMap = ARENA_MAPS[config.mapId];
+      onChangeConfig({
+        ...config,
+        local2P: true,
+        local2PIncludeBots: config.local2PIncludeBots ?? true,
+        player2ColorId: config.player2ColorId ?? 'crimson',
+        ...(curMap.immersive
+          ? { mapId: SOLO_MAP_LIST[0].id, immersive: false, extraDark: false }
+          : {}),
+      });
+    }
+  };
+
   const setMode = (mode: MatchMode) => onChangeConfig({ ...config, mode });
   const setTeamMode = (teamMode: TeamMode) => onChangeConfig({ ...config, teamMode });
-  const setColor = (playerColorId: string) => onChangeConfig({ ...config, playerColorId });
+  const setLocal2PBots = (includeBots: boolean) =>
+    onChangeConfig({
+      ...config,
+      local2P: true,
+      local2PIncludeBots: includeBots,
+      teamMode: includeBots ? config.teamMode ?? 'FFA' : 'FFA',
+    });
+  const setColor = (colorId: string) => {
+    if (tab === 'LOCAL_2P' && editingColorSlot === 2) {
+      onChangeConfig({ ...config, player2ColorId: colorId });
+    } else {
+      onChangeConfig({ ...config, playerColorId: colorId });
+    }
+  };
   const setDifficulty = (difficulty: BotDifficulty) => onChangeConfig({ ...config, difficulty });
   const setModifiers = (modifiers: MatchModifiers) => onChangeConfig({ ...config, modifiers });
 
-  const activeColorId = config.playerColorId ?? 'cobalt';
+  const p1ColorId = config.playerColorId ?? 'cobalt';
+  const p2ColorId = config.player2ColorId ?? 'crimson';
+  const p1ColorOpt =
+    PLAYER_COLOR_PALETTE.find((c) => c.id === p1ColorId) ?? PLAYER_COLOR_PALETTE[0];
+  const p2ColorOpt =
+    PLAYER_COLOR_PALETTE.find((c) => c.id === p2ColorId) ?? PLAYER_COLOR_PALETTE[1] ?? PLAYER_COLOR_PALETTE[0];
+  const activeColorId = tab === 'LOCAL_2P' && editingColorSlot === 2 ? p2ColorId : p1ColorId;
   const activeColorOpt =
     PLAYER_COLOR_PALETTE.find((c) => c.id === activeColorId) ?? PLAYER_COLOR_PALETTE[0];
-  const activeTeamMode: TeamMode = config.teamMode ?? 'FFA';
+  const local2PBots = config.local2PIncludeBots !== false;
+  const activeTeamMode: TeamMode =
+    tab === 'LOCAL_2P' && !local2PBots ? 'FFA' : config.teamMode ?? 'FFA';
   const activeModifiers = config.modifiers ?? DEFAULT_MATCH_MODIFIERS;
-  const activeMap = ARENA_MAPS[config.mapId];
-  const mapPreview = MAP_PREVIEW_URLS[config.mapId];
+  const rawMap = ARENA_MAPS[config.mapId];
+  const activeMap = tab === 'LOCAL_2P' && rawMap.immersive ? SOLO_MAP_LIST[0] : rawMap;
+  const mapPreview = MAP_PREVIEW_URLS[activeMap.id];
 
   const modifiedCount = (Object.keys(DEFAULT_MATCH_MODIFIERS) as Array<keyof MatchModifiers>).filter(
     (k) => (activeModifiers[k] ?? DEFAULT_MATCH_MODIFIERS[k]) !== DEFAULT_MATCH_MODIFIERS[k]
@@ -92,20 +135,50 @@ export function TitleScreen({
             <div className="flex-1 min-w-0">
               <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className="h-12 w-12 rounded-xl bg-slate-900/90 border border-slate-700/80 flex items-center justify-center shrink-0 shadow-inner">
-                    <PlayerAvatar
-                      color={activeColorOpt.color}
-                      accentColor={activeColorOpt.accentColor}
-                      finish={activeColorOpt.finish}
-                      size={36}
-                    />
-                  </div>
+                  {tab === 'LOCAL_2P' ? (
+                    <div className="flex items-center -space-x-2 shrink-0">
+                      <div className="h-11 w-11 rounded-xl bg-slate-900/95 border border-sky-400/60 flex items-center justify-center shadow-inner z-10">
+                        <PlayerAvatar
+                          color={p1ColorOpt.color}
+                          accentColor={p1ColorOpt.accentColor}
+                          finish={p1ColorOpt.finish}
+                          size={30}
+                        />
+                      </div>
+                      <div className="h-11 w-11 rounded-xl bg-slate-900/95 border border-rose-400/60 flex items-center justify-center shadow-inner">
+                        <PlayerAvatar
+                          color={p2ColorOpt.color}
+                          accentColor={p2ColorOpt.accentColor}
+                          finish={p2ColorOpt.finish}
+                          size={30}
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="h-12 w-12 rounded-xl bg-slate-900/90 border border-slate-700/80 flex items-center justify-center shrink-0 shadow-inner">
+                      <PlayerAvatar
+                        color={p1ColorOpt.color}
+                        accentColor={p1ColorOpt.accentColor}
+                        finish={p1ColorOpt.finish}
+                        size={36}
+                      />
+                    </div>
+                  )}
                   <div className="min-w-0">
                     <h1 className="font-display text-2xl sm:text-3xl md:text-4xl font-extrabold tracking-tight text-slate-50 truncate">
                       Trickshot Tussle
                     </h1>
-                    <div className="text-[11px] font-medium text-sky-300/90">
-                      Fighter Finish: <span className="font-bold text-slate-100">{activeColorOpt.name}</span>
+                    <div className="text-[11px] font-medium text-sky-300/90 truncate">
+                      {tab === 'LOCAL_2P' ? (
+                        <>
+                          P1: <span className="font-bold text-slate-100">{p1ColorOpt.name}</span> · P2:{' '}
+                          <span className="font-bold text-slate-100">{p2ColorOpt.name}</span>
+                        </>
+                      ) : (
+                        <>
+                          Fighter Finish: <span className="font-bold text-slate-100">{p1ColorOpt.name}</span>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -113,11 +186,48 @@ export function TitleScreen({
               </div>
 
               <p className="mt-3 text-xs sm:text-sm text-slate-300 leading-relaxed max-w-xl">
-                Move with <span className="font-semibold text-slate-100">WASD</span> (hold <span className="font-semibold text-slate-100">Shift</span> to creep), aim 360° with your cursor, and press <span className="font-semibold text-slate-100">Spacebar</span> to fire on PC—or drag &amp; release on touchscreens.
+                {tab === 'LOCAL_2P' ? (
+                  <>
+                    Offline 2-Player mode on one screen: drag diagonal touch joysticks (<span className="font-semibold text-sky-300">P1 Bottom-Left</span>, <span className="font-semibold text-rose-300">P2 Top-Right</span>) &amp; release to fire—or play on PC with <span className="font-semibold text-slate-100">WASD + Space</span> vs <span className="font-semibold text-slate-100">Arrows + Enter</span>.
+                  </>
+                ) : (
+                  <>
+                    Move with <span className="font-semibold text-slate-100">WASD</span> (hold <span className="font-semibold text-slate-100">Shift</span> to creep), aim 360° with your cursor, and press <span className="font-semibold text-slate-100">Spacebar</span> to fire on PC—or drag &amp; release on touchscreens.
+                  </>
+                )}
               </p>
 
               {/* Compact Fighter Colour Row + More Colours Button */}
               <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/65 p-3">
+                {tab === 'LOCAL_2P' && (
+                  <div className="mb-2.5 flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-semibold text-slate-400">Customizing Fighter</span>
+                    <div className="grid grid-cols-2 gap-1 p-0.5 rounded-lg bg-slate-950 border border-slate-800">
+                      <button
+                        type="button"
+                        onClick={() => setEditingColorSlot(1)}
+                        className={`px-2.5 py-1 text-[11px] font-bold rounded-md transition-colors cursor-pointer whitespace-nowrap ${
+                          editingColorSlot === 1
+                            ? 'bg-sky-500 text-slate-950'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        P1 (Bottom-Left)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingColorSlot(2)}
+                        className={`px-2.5 py-1 text-[11px] font-bold rounded-md transition-colors cursor-pointer whitespace-nowrap ${
+                          editingColorSlot === 2
+                            ? 'bg-rose-500 text-slate-950'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        P2 (Top-Right)
+                      </button>
+                    </div>
+                  </div>
+                )}
                 <div className="flex flex-wrap items-center justify-between gap-2.5">
                   <div className="flex items-center gap-1.5 min-w-0">
                     {(() => {
@@ -157,7 +267,7 @@ export function TitleScreen({
 
                   <button
                     type="button"
-                    onClick={onOpenColorSelect}
+                    onClick={() => onOpenColorSelect(tab === 'LOCAL_2P' ? editingColorSlot : 1)}
                     className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800/90 hover:bg-sky-500 hover:border-sky-400 hover:text-slate-950 px-3 py-2 text-xs font-bold text-slate-100 transition-colors cursor-pointer whitespace-nowrap shrink-0"
                   >
                     <Palette className="w-3.5 h-3.5" />
@@ -190,32 +300,42 @@ export function TitleScreen({
               </div>
             </div>
 
-            {/* Right column: Play Mode Tabs (Solo vs Online Multiplayer) */}
+            {/* Right column: Play Mode Tabs (Solo, Offline 2P, Online Multiplayer) */}
             <div className="w-full md:w-80 lg:w-84 shrink-0 flex flex-col gap-3.5 border-t md:border-t-0 md:border-l border-slate-800 pt-5 md:pt-0 md:pl-6">
-              <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-slate-900 border border-slate-800">
+              <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-slate-900 border border-slate-800">
                 <button
                   type="button"
-                  onClick={() => setTab('SOLO')}
-                  className={`inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap ${
+                  onClick={() => selectTab('SOLO')}
+                  className={`inline-flex items-center justify-center gap-1 px-2 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap ${
                     tab === 'SOLO' ? 'bg-sky-500 text-slate-950' : 'text-slate-300 hover:text-white'
                   }`}
                 >
-                  <User className="w-3.5 h-3.5" />
-                  Solo vs Bots
+                  <User className="w-3.5 h-3.5 shrink-0" />
+                  Solo
                 </button>
                 <button
                   type="button"
-                  onClick={() => setTab('ONLINE')}
-                  className={`inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap ${
+                  onClick={() => selectTab('LOCAL_2P')}
+                  className={`inline-flex items-center justify-center gap-1 px-2 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap ${
+                    tab === 'LOCAL_2P' ? 'bg-sky-500 text-slate-950' : 'text-slate-300 hover:text-white'
+                  }`}
+                >
+                  <Swords className="w-3.5 h-3.5 shrink-0" />
+                  2P Local
+                </button>
+                <button
+                  type="button"
+                  onClick={() => selectTab('ONLINE')}
+                  className={`inline-flex items-center justify-center gap-1 px-2 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap ${
                     tab === 'ONLINE' ? 'bg-sky-500 text-slate-950' : 'text-slate-300 hover:text-white'
                   }`}
                 >
-                  <Globe className="w-3.5 h-3.5" />
-                  Online Lobby
+                  <Globe className="w-3.5 h-3.5 shrink-0" />
+                  Online
                 </button>
               </div>
 
-              {tab === 'SOLO' ? (
+              {tab === 'SOLO' || tab === 'LOCAL_2P' ? (
                 <>
                   {/* Selected Arena Feathered Card -> Opens Dedicated Map Selection Screen */}
                   <button
@@ -283,34 +403,66 @@ export function TitleScreen({
                     </div>
                   </button>
 
-                  <div className="grid grid-cols-2 gap-2">
+                  {tab === 'LOCAL_2P' && (
                     <div>
-                      <div className="text-xs font-semibold text-slate-400 mb-1.5">Format</div>
-                      <div className="grid grid-cols-2 gap-1 p-1 rounded-lg bg-slate-900 border border-slate-800">
+                      <div className="text-xs font-semibold text-slate-400 mb-1.5">Rivals (Optional Bots)</div>
+                      <div className="grid grid-cols-2 gap-1.5 p-1 rounded-lg bg-slate-900 border border-slate-800">
                         <button
                           type="button"
-                          onClick={() => setTeamMode('FFA')}
-                          className={`px-2 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-                            activeTeamMode === 'FFA'
-                              ? 'bg-slate-700 text-white'
-                              : 'text-slate-400 hover:text-slate-200'
-                          }`}
-                        >
-                          FFA
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setTeamMode('2V2')}
-                          className={`px-2 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-                            activeTeamMode === '2V2'
+                          onClick={() => setLocal2PBots(false)}
+                          className={`px-2 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                            !local2PBots
                               ? 'bg-sky-500 text-slate-950'
                               : 'text-slate-400 hover:text-slate-200'
                           }`}
                         >
-                          2v2
+                          1v1 · No Bots
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setLocal2PBots(true)}
+                          className={`px-2 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                            local2PBots
+                              ? 'bg-slate-700 text-white'
+                              : 'text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          + 2 Bots
                         </button>
                       </div>
                     </div>
+                  )}
+
+                  <div className={`grid ${tab === 'LOCAL_2P' && !local2PBots ? 'grid-cols-1' : 'grid-cols-2'} gap-2`}>
+                    {(tab === 'SOLO' || local2PBots) && (
+                      <div>
+                        <div className="text-xs font-semibold text-slate-400 mb-1.5">Format</div>
+                        <div className="grid grid-cols-2 gap-1 p-1 rounded-lg bg-slate-900 border border-slate-800">
+                          <button
+                            type="button"
+                            onClick={() => setTeamMode('FFA')}
+                            className={`px-2 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                              activeTeamMode === 'FFA'
+                                ? 'bg-slate-700 text-white'
+                                : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                          >
+                            FFA
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setTeamMode('2V2')}
+                            className={`px-2 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                              activeTeamMode === '2V2'
+                                ? 'bg-sky-500 text-slate-950'
+                                : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                          >
+                            {tab === 'LOCAL_2P' ? 'Co-op 2v2' : '2v2'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                     <div>
                       <div className="text-xs font-semibold text-slate-400 mb-1.5">Match Rule</div>
                       <div className="grid grid-cols-2 gap-1 p-1 rounded-lg bg-slate-900 border border-slate-800">
@@ -340,25 +492,27 @@ export function TitleScreen({
                     </div>
                   </div>
 
-                  <div>
-                    <div className="text-xs font-semibold text-slate-400 mb-1.5">Rival Skill</div>
-                    <div className="grid grid-cols-3 gap-1.5 p-1 rounded-lg bg-slate-900 border border-slate-800">
-                      {(['CHILL', 'TACTICAL', 'RUTHLESS'] as BotDifficulty[]).map((level) => (
-                        <button
-                          key={level}
-                          type="button"
-                          onClick={() => setDifficulty(level)}
-                          className={`px-2 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
-                            config.difficulty === level
-                              ? 'bg-slate-700 text-white'
-                              : 'text-slate-400 hover:text-slate-200'
-                          }`}
-                        >
-                          {level === 'CHILL' ? 'Chill' : level === 'TACTICAL' ? 'Tactical' : 'Ruthless'}
-                        </button>
-                      ))}
+                  {(tab === 'SOLO' || local2PBots) && (
+                    <div>
+                      <div className="text-xs font-semibold text-slate-400 mb-1.5">Rival Skill</div>
+                      <div className="grid grid-cols-3 gap-1.5 p-1 rounded-lg bg-slate-900 border border-slate-800">
+                        {(['CHILL', 'TACTICAL', 'RUTHLESS'] as BotDifficulty[]).map((level) => (
+                          <button
+                            key={level}
+                            type="button"
+                            onClick={() => setDifficulty(level)}
+                            className={`px-2 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                              config.difficulty === level
+                                ? 'bg-slate-700 text-white'
+                                : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                          >
+                            {level === 'CHILL' ? 'Chill' : level === 'TACTICAL' ? 'Tactical' : 'Ruthless'}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                  </div>
+                  )}
 
                   <div className="flex items-center gap-2">
                     <button
@@ -376,7 +530,15 @@ export function TitleScreen({
                       className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl bg-sky-400 hover:bg-sky-300 active:scale-[0.99] px-4 py-3 text-sm font-extrabold text-slate-950 transition-all cursor-pointer whitespace-nowrap shadow-lg shadow-sky-500/20"
                     >
                       <Play className="w-4 h-4 fill-current" />
-                      {activeTeamMode === '2V2' ? 'Start 2v2' : 'Start Match'}
+                      {tab === 'LOCAL_2P'
+                        ? !local2PBots
+                          ? 'Start 1v1'
+                          : activeTeamMode === '2V2'
+                            ? 'Start Co-op 2v2'
+                            : 'Start 2P Match'
+                        : activeTeamMode === '2V2'
+                          ? 'Start 2v2'
+                          : 'Start Match'}
                     </button>
                   </div>
                 </>

@@ -9,6 +9,8 @@ interface TouchControlsProps {
   playerColor?: string;
   playerAccentColor?: string;
   playerFinish?: PlayerSkinFinish;
+  position?: 'bottom-left' | 'top-right';
+  playerLabel?: string;
   onStickChange: (active: boolean, angle: number, magnitude: number) => void;
   onStickRelease: () => void;
 }
@@ -32,6 +34,8 @@ export function TouchControls({
   playerColor = '#0EA5E9',
   playerAccentColor = '#7DD3FC',
   playerFinish = 'solid',
+  position = 'bottom-left',
+  playerLabel,
   onStickChange,
   onStickRelease,
 }: TouchControlsProps) {
@@ -73,7 +77,11 @@ export function TouchControls({
   const handlePadPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    e.currentTarget.setPointerCapture(e.pointerId);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // Ignore synthetic pointer capture failure
+    }
     pointerIdRef.current = e.pointerId;
     updateFromClientPos(e.clientX, e.clientY);
   };
@@ -89,8 +97,12 @@ export function TouchControls({
     if (pointerIdRef.current !== e.pointerId) return;
     e.preventDefault();
     e.stopPropagation();
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {
+      // Ignore synthetic pointer release failure
     }
     pointerIdRef.current = null;
     setKnobOffset({ x: 0, y: 0, active: false });
@@ -107,19 +119,28 @@ export function TouchControls({
   const guideColor = hexToRgba(playerAccentColor, 0.24);
   const deadzoneColor = armed ? 'rgba(250, 204, 21, 0.5)' : hexToRgba(playerAccentColor, 0.35);
 
+  const posStyle: React.CSSProperties =
+    position === 'top-right'
+      ? {
+          touchAction: 'none',
+          right: 'max(0.75rem, env(safe-area-inset-right))',
+          top: 'max(0.75rem, env(safe-area-inset-top))',
+        }
+      : {
+          touchAction: 'none',
+          left: 'max(0.75rem, env(safe-area-inset-left))',
+          bottom: 'max(0.75rem, env(safe-area-inset-bottom))',
+        };
+
   return (
     <div
       onPointerDown={handlePadPointerDown}
       onPointerMove={handlePadPointerMove}
       onPointerUp={(e) => finishPointer(e, true)}
       onPointerCancel={(e) => finishPointer(e, false)}
-      style={{
-        touchAction: 'none',
-        left: 'max(0.75rem, env(safe-area-inset-left))',
-        bottom: 'max(0.75rem, env(safe-area-inset-bottom))',
-      }}
+      style={posStyle}
       className="absolute z-20 p-1.5 cursor-pointer select-none"
-      aria-label="Movement Joystick"
+      aria-label={playerLabel ? `${playerLabel} Movement Joystick` : 'Movement Joystick'}
     >
       <div
         ref={baseRef}
@@ -147,6 +168,16 @@ export function TouchControls({
           style={{ borderColor: deadzoneColor }}
           className="h-5 w-5 rounded-full border border-dashed pointer-events-none"
         />
+
+        {playerLabel && (
+          <span
+            className={`pointer-events-none absolute font-mono-tabular text-[10px] font-black tracking-wider px-1.5 py-0.5 rounded bg-slate-950/75 text-slate-100 border border-white/15 ${
+              position === 'top-right' ? 'bottom-1.5 left-1.5' : 'top-1.5 right-1.5'
+            }`}
+          >
+            {playerLabel}
+          </span>
+        )}
 
         {/* Movable Tactile Thumb Knob matching player color & finish texture */}
         <div

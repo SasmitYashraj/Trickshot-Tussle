@@ -395,7 +395,29 @@ export class ArenaEngine {
     magnitude: 0,
   };
 
+  public cursorInput2 = {
+    active: false,
+    moveAngle: 0,
+    aimAngle: 0,
+    hasAim: false,
+    magnitude: 0,
+  };
+
   public joystick: JoystickState = {
+    active: false,
+    pointerId: null,
+    originX: 0,
+    originY: 0,
+    currentX: 0,
+    currentY: 0,
+    maxRadius: 68,
+    dx: 0,
+    dy: 0,
+    magnitude: 0,
+    angle: 0,
+  };
+
+  public joystick2: JoystickState = {
     active: false,
     pointerId: null,
     originX: 0,
@@ -511,8 +533,13 @@ export class ArenaEngine {
   }
 
   public reset(config: MatchConfig, slots?: SlotSetup[]) {
-    this.config = config;
-    this.map = ARENA_MAPS[config.mapId];
+    const requestedMap = ARENA_MAPS[config.mapId];
+    const sanitizedConfig: MatchConfig =
+      !slots && config.local2P && requestedMap?.immersive
+        ? { ...config, mapId: 'crossroads', immersive: false, extraDark: false }
+        : config;
+    this.config = sanitizedConfig;
+    this.map = ARENA_MAPS[sanitizedConfig.mapId];
     this.bullets = [];
     this.pickups = [];
     this.boxes = [];
@@ -580,20 +607,54 @@ export class ArenaEngine {
     this.joystick.dx = 0;
     this.joystick.dy = 0;
 
+    this.joystick2.active = false;
+    this.joystick2.pointerId = null;
+    this.joystick2.magnitude = 0;
+    this.joystick2.dx = 0;
+    this.joystick2.dy = 0;
+
     this.cursorInput.active = false;
     this.cursorInput.hasAim = false;
     this.cursorInput.magnitude = 0;
 
+    this.cursorInput2.active = false;
+    this.cursorInput2.hasAim = false;
+    this.cursorInput2.magnitude = 0;
+
+    const isLocal2P = !slots && Boolean(config.local2P);
+    const includeBots = isLocal2P ? config.local2PIncludeBots !== false : true;
+    if (isLocal2P && !includeBots && this.config.teamMode === '2V2') {
+      this.config = { ...this.config, teamMode: 'FFA' };
+    }
+
     const effectiveSlots: SlotSetup[] =
       slots ??
-      PLAYER_PRESETS.map((p, idx) => ({
-        slot: idx,
-        name: idx === 0 ? 'You' : p.defaultName,
-        isHuman: idx === 0,
-        enabled: true,
-        colorId: idx === 0 ? config.playerColorId : undefined,
-        team: idx === 0 || idx === 2 ? 0 : 1,
-      }));
+      (isLocal2P
+        ? PLAYER_PRESETS.map((p, idx) => {
+            const is2v2 = this.config.teamMode === '2V2';
+            const team = is2v2 ? (idx <= 1 ? 0 : 1) : idx === 0 || idx === 2 ? 0 : 1;
+            return {
+              slot: idx,
+              name: idx === 0 ? 'P1' : idx === 1 ? 'P2' : p.defaultName,
+              isHuman: idx <= 1,
+              enabled: idx <= 1 || includeBots,
+              colorId:
+                idx === 0
+                  ? config.playerColorId
+                  : idx === 1
+                    ? config.player2ColorId ?? 'crimson'
+                    : undefined,
+              team,
+            };
+          })
+        : PLAYER_PRESETS.map((p, idx) => ({
+            slot: idx,
+            name: idx === 0 ? 'You' : p.defaultName,
+            isHuman: idx === 0,
+            enabled: true,
+            colorId: idx === 0 ? config.playerColorId : undefined,
+            team: idx === 0 || idx === 2 ? 0 : 1,
+          })));
 
     // Assign strictly unique colors (humans pick first, then bots fill remaining non-similar colors)
     const activeSlots = effectiveSlots.filter((s) => s.enabled);
@@ -725,6 +786,17 @@ export class ArenaEngine {
     this.joystick.dy = active ? Math.sin(safeAngle) * mag : 0;
   }
 
+  public setJoystick2Vector(active: boolean, angle: number, magnitude: number, pointerId: number | null = null) {
+    this.joystick2.active = active;
+    this.joystick2.pointerId = active ? pointerId : null;
+    const mag = clamp(Number.isFinite(magnitude) ? magnitude : 0, 0, 1);
+    const safeAngle = Number.isFinite(angle) ? angle : this.joystick2.angle;
+    this.joystick2.angle = safeAngle;
+    this.joystick2.magnitude = active ? mag : 0;
+    this.joystick2.dx = active ? Math.cos(safeAngle) * mag : 0;
+    this.joystick2.dy = active ? Math.sin(safeAngle) * mag : 0;
+  }
+
   public setControlScheme(scheme: ControlScheme) {
     this.controlScheme = scheme;
     this.joystick.active = false;
@@ -732,9 +804,17 @@ export class ArenaEngine {
     this.joystick.magnitude = 0;
     this.joystick.dx = 0;
     this.joystick.dy = 0;
+    this.joystick2.active = false;
+    this.joystick2.pointerId = null;
+    this.joystick2.magnitude = 0;
+    this.joystick2.dx = 0;
+    this.joystick2.dy = 0;
     this.cursorInput.active = false;
     this.cursorInput.hasAim = false;
     this.cursorInput.magnitude = 0;
+    this.cursorInput2.active = false;
+    this.cursorInput2.hasAim = false;
+    this.cursorInput2.magnitude = 0;
   }
 
   public setHumanCursorInput(
@@ -750,6 +830,21 @@ export class ArenaEngine {
     const nextMoveAngle = moveAngle !== undefined ? moveAngle : aimAngle;
     if (Number.isFinite(nextMoveAngle)) this.cursorInput.moveAngle = nextMoveAngle;
     this.cursorInput.magnitude = clamp(Number.isFinite(magnitude) ? magnitude : 0, 0, 1);
+  }
+
+  public setPlayer2CursorInput(
+    active: boolean,
+    aimAngle: number,
+    magnitude: number,
+    moveAngle?: number,
+    hasAim = true
+  ) {
+    this.cursorInput2.active = active;
+    this.cursorInput2.hasAim = hasAim;
+    if (Number.isFinite(aimAngle)) this.cursorInput2.aimAngle = aimAngle;
+    const nextMoveAngle = moveAngle !== undefined ? moveAngle : aimAngle;
+    if (Number.isFinite(nextMoveAngle)) this.cursorInput2.moveAngle = nextMoveAngle;
+    this.cursorInput2.magnitude = clamp(Number.isFinite(magnitude) ? magnitude : 0, 0, 1);
   }
 
   public firePlayerShot(slot: number) {
@@ -770,6 +865,19 @@ export class ArenaEngine {
     this.joystick.magnitude = 0;
 
     this.firePlayerShot(0);
+  }
+
+  public releaseJoystick2(pointerId?: number) {
+    if (!this.joystick2.active) return;
+    if (pointerId !== undefined && this.joystick2.pointerId !== pointerId) return;
+
+    this.joystick2.active = false;
+    this.joystick2.pointerId = null;
+    this.joystick2.dx = 0;
+    this.joystick2.dy = 0;
+    this.joystick2.magnitude = 0;
+
+    this.firePlayerShot(1);
   }
 
   public setRemoteInput(
@@ -1390,6 +1498,26 @@ export class ArenaEngine {
               player.remoteMoveAngle,
               Boolean(player.remoteAimActive)
             );
+          } else if (player.id === 1) {
+            if (this.controlScheme === 'CURSOR_SPACE') {
+              this.applyAnalogInput(
+                player,
+                this.cursorInput2.active,
+                this.cursorInput2.aimAngle,
+                this.cursorInput2.magnitude,
+                dt,
+                this.cursorInput2.moveAngle,
+                this.cursorInput2.hasAim
+              );
+            } else {
+              this.applyAnalogInput(
+                player,
+                this.joystick2.active,
+                this.joystick2.angle,
+                this.joystick2.magnitude,
+                dt
+              );
+            }
           } else if (this.controlScheme === 'CURSOR_SPACE') {
             this.applyAnalogInput(
               player,
@@ -6018,7 +6146,7 @@ export class ArenaEngine {
           id: p.id,
           name: p.name,
           team: p.team,
-          isHuman: p.id === localPlayerId,
+          isHuman: this.config.local2P ? p.isHuman : p.id === localPlayerId,
           color: p.color,
           accentColor: p.accentColor,
           finish: p.finish ?? 'solid',

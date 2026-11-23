@@ -30,20 +30,27 @@ export function MapSelectScreen({
   const [filter, setFilter] = useState<'ALL' | 'NORMAL' | 'IMMERSIVE'>('ALL');
   const [failedImages, setFailedImages] = useState<Record<string, boolean>>({});
 
-  const visibleMaps =
-    filter === 'ALL'
+  const isLocal2P = Boolean(config.local2P);
+  const local2PBots = config.local2PIncludeBots !== false;
+  const is2v2 = (config.teamMode ?? 'FFA') === '2V2' && (!isLocal2P || local2PBots);
+
+  const visibleMaps = isLocal2P
+    ? SOLO_MAP_LIST
+    : filter === 'ALL'
       ? ALL_MAPS
       : filter === 'NORMAL'
         ? SOLO_MAP_LIST
         : IMMERSIVE_MAP_LIST;
 
-  const selectedMap = ALL_MAPS.find((m) => m.id === config.mapId) ?? ALL_MAPS[0];
-  const is2v2 = (config.teamMode ?? 'FFA') === '2V2';
-  const showLightingBar = filter !== 'NORMAL';
+  const selectedMap =
+    (isLocal2P
+      ? SOLO_MAP_LIST.find((m) => m.id === config.mapId) ?? SOLO_MAP_LIST[0]
+      : ALL_MAPS.find((m) => m.id === config.mapId) ?? ALL_MAPS[0]);
+  const showLightingBar = !isLocal2P && filter !== 'NORMAL';
 
   const pickMap = (mapId: MapId) => {
     const mapDef = ALL_MAPS.find((m) => m.id === mapId);
-    if (!mapDef) return;
+    if (!mapDef || (isLocal2P && mapDef.immersive)) return;
     onSelectMap({
       ...config,
       mapId,
@@ -83,7 +90,13 @@ export function MapSelectScreen({
                 </h1>
                 <p className="text-[11px] text-slate-400 truncate">
                   {modeLabel ??
-                    `${is2v2 ? '2v2 Teams' : 'Free-for-All'} · ${
+                    `${
+                      isLocal2P
+                        ? `2P Local · ${local2PBots ? (is2v2 ? 'Co-op 2v2' : 'FFA + 2 Bots') : '1v1'}`
+                        : is2v2
+                          ? '2v2 Teams'
+                          : 'Free-for-All'
+                    } · ${
                       config.mode === 'BRAWL' ? `Brawl (${config.targetKills} KOs)` : 'Last Standing'
                     }`}
                 </p>
@@ -124,28 +137,34 @@ export function MapSelectScreen({
                 </div>
               )}
 
-              <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-900 border border-slate-800">
-                {(
-                  [
-                    { id: 'ALL', label: 'All' },
-                    { id: 'NORMAL', label: 'Normal 2D' },
-                    { id: 'IMMERSIVE', label: 'Immersive' },
-                  ] as const
-                ).map((tab) => (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setFilter(tab.id)}
-                    className={`px-2.5 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                      filter === tab.id
-                        ? 'bg-sky-500 text-slate-950'
-                        : 'text-slate-300 hover:text-white'
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
+              {isLocal2P ? (
+                <span className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-1.5 text-[11px] font-semibold text-slate-300 whitespace-nowrap">
+                  Normal 2D Only · Offline 2P
+                </span>
+              ) : (
+                <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-900 border border-slate-800">
+                  {(
+                    [
+                      { id: 'ALL', label: 'All' },
+                      { id: 'NORMAL', label: 'Normal 2D' },
+                      { id: 'IMMERSIVE', label: 'Immersive' },
+                    ] as const
+                  ).map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setFilter(tab.id)}
+                      className={`px-2.5 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                        filter === tab.id
+                          ? 'bg-sky-500 text-slate-950'
+                          : 'text-slate-300 hover:text-white'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 

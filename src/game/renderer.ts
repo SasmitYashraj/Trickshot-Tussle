@@ -89,6 +89,7 @@ export interface CameraState {
   x: number;
   y: number;
   initialized: boolean;
+  scale?: number;
 }
 
 export interface CursorOverlayState {
@@ -96,6 +97,7 @@ export interface CursorOverlayState {
   cursorScreen?: { x: number; y: number } | null;
   hideJoystick?: boolean;
   spectateTargetId?: number | null;
+  localPlayerIds?: number[];
   dt?: number;
 }
 
@@ -107,24 +109,56 @@ export function getArenaViewTransform(
   localPlayer: RenderPlayer | undefined,
   camera: CameraState,
   updateCamera = false,
-  dt = 1 / 60
+  dt = 1 / 60,
+  sharedPlayers?: RenderPlayer[]
 ): { scale: number; offsetX: number; offsetY: number } {
   if (isImmersive && localPlayer) {
-    const targetCamX = localPlayer.alive
+    const landW = Math.max(canvasWidth, canvasHeight);
+    const landH = Math.min(canvasWidth, canvasHeight);
+    const baseScale = Math.min(
+      Math.max(landW / IMMERSIVE_VIEW_WIDTH, landH / IMMERSIVE_VIEW_HEIGHT) * 0.92,
+      Math.min(landW / 760, landH / 540)
+    );
+
+    let targetCamX = localPlayer.alive
       ? localPlayer.x
       : map.spawns[localPlayer.id]?.x ?? localPlayer.x;
-    const targetCamY = localPlayer.alive
+    let targetCamY = localPlayer.alive
       ? localPlayer.y
       : map.spawns[localPlayer.id]?.y ?? localPlayer.y;
+    let targetScale = baseScale;
+
+    if (sharedPlayers && sharedPlayers.length > 1) {
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      for (const sp of sharedPlayers) {
+        if (sp.x < minX) minX = sp.x;
+        if (sp.x > maxX) maxX = sp.x;
+        if (sp.y < minY) minY = sp.y;
+        if (sp.y > maxY) maxY = sp.y;
+      }
+      targetCamX = (minX + maxX) * 0.5;
+      targetCamY = (minY + maxY) * 0.5;
+      const spanW = Math.max(1, maxX - minX + 520);
+      const spanH = Math.max(1, maxY - minY + 380);
+      const fitBothScale = Math.min(canvasWidth / spanW, canvasHeight / spanH);
+      const minMapScale = Math.min(canvasWidth / map.width, canvasHeight / map.height);
+      targetScale = Math.max(minMapScale, Math.min(baseScale, fitBothScale));
+    }
 
     let camX = camera.x;
     let camY = camera.y;
+    let scale = camera.scale ?? targetScale;
     if (!camera.initialized) {
       camX = targetCamX;
       camY = targetCamY;
+      scale = targetScale;
       if (updateCamera) {
         camera.x = camX;
         camera.y = camY;
+        camera.scale = scale;
         camera.initialized = true;
       }
     } else if (updateCamera) {
@@ -132,16 +166,12 @@ export function getArenaViewTransform(
       const lerpAlpha = 1 - Math.exp(-10.5 * safeDt);
       camera.x += (targetCamX - camera.x) * lerpAlpha;
       camera.y += (targetCamY - camera.y) * lerpAlpha;
+      const curScale = camera.scale ?? targetScale;
+      camera.scale = curScale + (targetScale - curScale) * (1 - Math.exp(-7.0 * safeDt));
       camX = camera.x;
       camY = camera.y;
+      scale = camera.scale;
     }
-
-    const landW = Math.max(canvasWidth, canvasHeight);
-    const landH = Math.min(canvasWidth, canvasHeight);
-    const scale = Math.min(
-      Math.max(landW / IMMERSIVE_VIEW_WIDTH, landH / IMMERSIVE_VIEW_HEIGHT) * 0.92,
-      Math.min(landW / 760, landH / 540)
-    );
 
     const visHalfW = Math.min(map.width * 0.5, (canvasWidth * 0.5) / scale);
     const visHalfH = Math.min(map.height * 0.5, (canvasHeight * 0.5) / scale);
@@ -4519,9 +4549,18 @@ export function renderArena(
   const isImmersive = world.immersive || map.immersive;
   const isExtraDark = isImmersive && Boolean(world.extraDark);
   const isLibrary = map.id === 'library' && Boolean(world.libraryState);
-  const localPlayer = world.players.find((p) => p.id === localPlayerId) ?? world.players[0];
+  const localIds =
+    cursorOverlay?.localPlayerIds && cursorOverlay.localPlayerIds.length > 0
+      ? cursorOverlay.localPlayerIds
+      : [localPlayerId];
+  const localIdSet = new Set(localIds);
+  const aliveLocalPlayers = world.players.filter((p) => localIdSet.has(p.id) && p.alive);
+  const localPlayer =
+    aliveLocalPlayers[0] ??
+    world.players.find((p) => p.id === localPlayerId) ??
+    world.players[0];
   const spectatePlayer =
-    isImmersive && cursorOverlay?.spectateTargetId != null && !localPlayer?.alive
+    isImmersive && cursorOverlay?.spectateTargetId != null && aliveLocalPlayers.length === 0
       ? world.players.find((p) => p.id === cursorOverlay.spectateTargetId && p.alive)
       : undefined;
   const cameraPlayer = spectatePlayer ?? localPlayer;
@@ -4561,7 +4600,8 @@ export function renderArena(
     cameraPlayer,
     camera,
     true,
-    cursorOverlay?.dt
+    cursorOverlay?.dt,
+    aliveLocalPlayers.length > 1 ? aliveLocalPlayers : undefined
   );
 
   let shakeX = 0;
@@ -5746,7 +5786,7 @@ export function renderArena(
     for (const p of world.players) {
       if (!p.alive) continue;
       if (isLibrary && (p.floor ?? 0) !== localFloor && !isPlayerMidStair(p)) continue;
-      const isLocal = p.id === activeViewId;
+      const isLocal = localIdSet.has(p.id);
       const range = isLocal ? 490 : 360;
       if (!inViewCircle(p.x, p.y, range)) continue;
 
@@ -6128,14 +6168,21 @@ export function renderArena(
       lctx.scale(scale, scale);
       lctx.globalCompositeOperation = 'destination-out';
 
-      if (cameraPlayer && cameraPlayer.alive) {
+      const auraPlayers =
+        aliveLocalPlayers.length > 0
+          ? aliveLocalPlayers
+          : cameraPlayer && cameraPlayer.alive
+            ? [cameraPlayer]
+            : [];
+      for (const ap of auraPlayers) {
+        if (isLibrary && (ap.floor ?? 0) !== localFloor && !isPlayerMidStair(ap)) continue;
         const auraR = 215;
         const aura = lctx.createRadialGradient(
-          cameraPlayer.x,
-          cameraPlayer.y,
+          ap.x,
+          ap.y,
           24,
-          cameraPlayer.x,
-          cameraPlayer.y,
+          ap.x,
+          ap.y,
           auraR
         );
         aura.addColorStop(0, 'rgba(0, 0, 0, 0.98)');
@@ -6144,7 +6191,7 @@ export function renderArena(
         aura.addColorStop(1, 'rgba(0, 0, 0, 0)');
         lctx.fillStyle = aura;
         lctx.beginPath();
-        lctx.arc(cameraPlayer.x, cameraPlayer.y, auraR, 0, Math.PI * 2);
+        lctx.arc(ap.x, ap.y, auraR, 0, Math.PI * 2);
         lctx.fill();
       }
 
@@ -6275,7 +6322,7 @@ export function renderArena(
     ctx.scale(scale, scale);
 
     for (const player of world.players) {
-      if (!player.alive || player.id === activeViewId) continue;
+      if (!player.alive || localIdSet.has(player.id) || player.id === activeViewId) continue;
       if (isLibrary && (player.floor ?? 0) !== localFloor && !isPlayerMidStair(player)) continue;
       ctx.save();
       ctx.translate(player.x, player.y);
@@ -6494,7 +6541,12 @@ export function renderArena(
   ctx.restore();
 
   // 13. Virtual Joystick Overlay OR PC Cursor Steer Reticle
-  if (cursorOverlay?.controlScheme === 'CURSOR_SPACE' && cursorOverlay.cursorScreen && localPlayer?.alive) {
+  if (
+    cursorOverlay?.controlScheme === 'CURSOR_SPACE' &&
+    cursorOverlay.cursorScreen &&
+    localPlayer?.alive &&
+    (!cursorOverlay.localPlayerIds || cursorOverlay.localPlayerIds.length <= 1)
+  ) {
     const px = worldTx + localPlayer.x * scale;
     const py = worldTy + localPlayer.y * scale;
     const cxPt = cursorOverlay.cursorScreen.x;

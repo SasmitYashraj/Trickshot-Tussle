@@ -592,7 +592,10 @@ export interface MatchConfig {
   immersive: boolean;
   extraDark?: boolean;
   fillBots?: boolean;
+  local2P?: boolean;
+  local2PIncludeBots?: boolean;
   playerColorId?: string;
+  player2ColorId?: string;
   modifiers?: MatchModifiers;
 }
 

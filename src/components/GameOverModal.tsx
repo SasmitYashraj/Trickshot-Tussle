@@ -30,15 +30,18 @@ export function GameOverModal({
 
   const winner = snapshot.players.find((p) => p.id === snapshot.winnerId) ?? ranked[0];
   const is2v2 = snapshot.teamMode === '2V2' && snapshot.winnerTeam !== null && snapshot.winnerTeam !== undefined;
-  const localPlayer = snapshot.players.find((p) => p.isHuman);
+  const localHumans = snapshot.players.filter((p) => p.isHuman);
+  const localPlayer = localHumans[0];
   const humanWon = is2v2 ? localPlayer?.team === snapshot.winnerTeam : winner?.isHuman;
   const headline = is2v2
     ? humanWon
       ? `Team ${snapshot.winnerTeam === 0 ? 'Alpha' : 'Bravo'} Victory`
       : `Team ${snapshot.winnerTeam === 0 ? 'Alpha' : 'Bravo'} Wins`
-    : humanWon
-      ? 'Victory'
-      : `${winner?.name ?? 'Rival'} Wins`;
+    : localHumans.length > 1
+      ? `${winner?.name ?? 'Player'} Wins`
+      : humanWon
+        ? 'Victory'
+        : `${winner?.name ?? 'Rival'} Wins`;
 
   return (
     <div className="fixed inset-0 z-30 overflow-y-auto overscroll-contain bg-slate-950/75 backdrop-blur-sm">
