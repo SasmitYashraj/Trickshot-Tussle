@@ -136,9 +136,11 @@ export function getArenaViewTransform(
       camY = camera.y;
     }
 
+    const landW = Math.max(canvasWidth, canvasHeight);
+    const landH = Math.min(canvasWidth, canvasHeight);
     const scale = Math.min(
-      Math.max(canvasWidth / IMMERSIVE_VIEW_WIDTH, canvasHeight / IMMERSIVE_VIEW_HEIGHT) * 0.92,
-      Math.min(canvasWidth / 760, canvasHeight / 540)
+      Math.max(landW / IMMERSIVE_VIEW_WIDTH, landH / IMMERSIVE_VIEW_HEIGHT) * 0.92,
+      Math.min(landW / 760, landH / 540)
     );
 
     const visHalfW = Math.min(map.width * 0.5, (canvasWidth * 0.5) / scale);

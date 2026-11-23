@@ -1837,6 +1837,36 @@ export class ArenaEngine {
     return mem;
   }
 
+  private isImmersiveMode(): boolean {
+    return this.map.immersive || Boolean(this.config.immersive);
+  }
+
+  private isPointWithinImmersiveBounds(
+    bot: Player,
+    tx: number,
+    ty: number,
+    isGlowingObject = false,
+    checkDarkCone = true
+  ): boolean {
+    if (!this.isImmersiveMode()) return true;
+    const dx = Math.abs(tx - bot.x);
+    const dy = Math.abs(ty - bot.y);
+    const maxHoriz = this.config.extraDark ? (isGlowingObject ? 430 : 410) : 500;
+    const maxVert = this.config.extraDark ? (isGlowingObject ? 300 : 285) : 318;
+    if (dx > maxHoriz || dy > maxVert) return false;
+    const d = Math.hypot(dx, dy);
+    const maxRange = this.config.extraDark ? (isGlowingObject ? 440 : 415) : 505;
+    if (d > maxRange) return false;
+    if (checkDarkCone && this.config.extraDark) {
+      const ambientAura = isGlowingObject ? 225 : 155;
+      if (d > ambientAura) {
+        const angDiff = Math.abs(normalizeAngle(Math.atan2(ty - bot.y, tx - bot.x) - bot.angle));
+        if (angDiff > 0.58) return false;
+      }
+    }
+    return true;
+  }
+
   private canBotSeePoint(
     bot: Player,
     tx: number,
@@ -1846,18 +1876,7 @@ export class ArenaEngine {
   ): boolean {
     const bFloor = bot.floor ?? 0;
     if (!sameFloor(bFloor, targetFloor)) return false;
-    const d = dist(bot.x, bot.y, tx, ty);
-    if (this.map.immersive) {
-      const maxRange = this.config.extraDark ? (isGlowingObject ? 450 : 420) : 520;
-      if (d > maxRange) return false;
-      if (this.config.extraDark) {
-        const ambientAura = isGlowingObject ? 245 : 175;
-        if (d > ambientAura) {
-          const angDiff = Math.abs(normalizeAngle(Math.atan2(ty - bot.y, tx - bot.x) - bot.angle));
-          if (angDiff > 0.64) return false;
-        }
-      }
-    }
+    if (!this.isPointWithinImmersiveBounds(bot, tx, ty, isGlowingObject, true)) return false;
     return this.hasLineOfSight(bot.x, bot.y, tx, ty, bFloor);
   }
 
@@ -1945,7 +1964,7 @@ export class ArenaEngine {
   private pickArenaPatrolPoint(bot: Player): Vec2 {
     const mem = this.getBotMemory(bot);
     const pad = ARENA_WALL_THICKNESS + PLAYER_RADIUS + 54;
-    const minDist = this.map.immersive ? Math.max(680, this.map.width * 0.36) : 340;
+    const minDist = this.isImmersiveMode() ? Math.max(680, this.map.width * 0.36) : 340;
     const botSector = this.getMapSector(bot.x, bot.y);
     const bFloor = bot.floor ?? 0;
 
@@ -2004,7 +2023,11 @@ export class ArenaEngine {
     maxBounces = 2
   ): number | null {
     const floor = shooter.floor ?? 0;
+    if (this.isImmersiveMode() && !this.isPointWithinImmersiveBounds(shooter, tx, ty, false, true)) {
+      return null;
+    }
     const bSpeed = this.getBulletSpeed();
+    const maxStepLimit = this.isImmersiveMode() ? Math.min(64, Math.ceil(540 / (bSpeed * 0.022))) : 64;
     const floorWalls = this.wallsByFloor[floor];
     const candidates: number[] = [];
     const seenBuckets = new Set<number>();
@@ -2048,7 +2071,7 @@ export class ArenaEngine {
       let bounces = 0;
       let hitHazard = false;
 
-      for (let step = 0; step < 64; step++) {
+      for (let step = 0; step < maxStepLimit; step++) {
         const subDt = 0.022;
         x += vx * subDt;
         y += vy * subDt;
@@ -2093,6 +2116,277 @@ export class ArenaEngine {
       }
     }
     return bestAngle;
+  }
+
+  private isDirectShotBlockedByTeammate(
+    shooter: Player,
+    tx: number,
+    ty: number,
+    floor: FloorLevel
+  ): boolean {
+    const dx = tx - shooter.x;
+    const dy = ty - shooter.y;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq < 16) return false;
+    const blockR = PLAYER_RADIUS + BULLET_RADIUS + 4;
+    for (const tm of this.players) {
+      if (tm.id === shooter.id || !tm.alive || !this.isTeammate(shooter.id, tm.id) || !sameFloor(tm.floor, floor)) {
+        continue;
+      }
+      const t = ((tm.x - shooter.x) * dx + (tm.y - shooter.y) * dy) / lenSq;
+      if (t <= 0.04 || t >= 0.96) continue;
+      const px = shooter.x + dx * t;
+      const py = shooter.y + dy * t;
+      if (dist(px, py, tm.x, tm.y) < blockR) return true;
+    }
+    return false;
+  }
+
+  private getAimThreatDodge(
+    bot: Player,
+    visibleEnemies: Player[],
+    floor: FloorLevel
+  ): { x: number; y: number } {
+    let evadeX = 0;
+    let evadeY = 0;
+    const clearR = PLAYER_RADIUS + 4;
+    for (const e of visibleEnemies) {
+      if (e.ammo <= 0 || e.stunTimer > 0) continue;
+      const d = dist(bot.x, bot.y, e.x, e.y);
+      if (d >= 490 || !this.hasLineOfSight(e.x, e.y, bot.x, bot.y, floor)) continue;
+      const angToBot = Math.atan2(bot.y - e.y, bot.x - e.x);
+      const aimErr = normalizeAngle(angToBot - e.angle);
+      if (Math.abs(aimErr) >= 0.34) continue;
+
+      const leftA = normalizeAngle(angToBot + Math.PI * 0.5);
+      const rightA = normalizeAngle(angToBot - Math.PI * 0.5);
+      const prefSide = Math.abs(aimErr) > 0.05 ? Math.sign(aimErr) : bot.aiStrafeDir;
+
+      const scoreSide = (ang: number, sign: number): number => {
+        const px = bot.x + Math.cos(ang) * 92;
+        const py = bot.y + Math.sin(ang) * 92;
+        if (!this.isPointWalkableOnFloor(px, py, clearR, floor)) return -999;
+        if (!this.isSegmentClearOnFloor(bot.x, bot.y, px, py, clearR - 2, floor)) return -500;
+        if (this.segmentHitsHazardOnFloor(bot.x, bot.y, px, py, floor)) return -800;
+        let sc = sign === prefSide ? 25 : 0;
+        if (!this.hasLineOfSight(e.x, e.y, px, py, floor)) sc += 180;
+        const pxFar = bot.x + Math.cos(ang) * 145;
+        const pyFar = bot.y + Math.sin(ang) * 145;
+        if (this.isPointWalkableOnFloor(pxFar, pyFar, clearR, floor)) sc += 30;
+        return sc;
+      };
+
+      const leftScore = scoreSide(leftA, 1);
+      const rightScore = scoreSide(rightA, -1);
+      const bestAng = leftScore >= rightScore ? leftA : rightA;
+      const urgency =
+        ((490 - d) / 490) *
+        (1 - Math.abs(aimErr) / 0.36) *
+        (bot.hp <= 40 || (bot.postStunGraceTimer ?? 0) > 0 ? 1.85 : 1.3);
+      evadeX += Math.cos(bestAng) * urgency;
+      evadeY += Math.sin(bestAng) * urgency;
+    }
+    return { x: evadeX, y: evadeY };
+  }
+
+  private evaluatePickupForRuthless(
+    bot: Player,
+    p: Pickup,
+    visibleEnemies: Player[],
+    floor: FloorLevel
+  ): { safe: boolean; score: number } {
+    const botDist = dist(bot.x, bot.y, p.x, p.y);
+    const botBoost = (bot.postStunGraceTimer ?? 0) > 0 || bot.spawnInvulnTimer > 0;
+    const botDirect = this.hasLineOfSight(bot.x, bot.y, p.x, p.y, floor);
+    const botEff = (botBoost ? botDist * 0.72 : botDist) + (botDirect ? 0 : 135);
+
+    let beaten = false;
+    let exposedRisk = 0;
+
+    for (const e of visibleEnemies) {
+      const eDist = dist(e.x, e.y, p.x, p.y);
+      const eDirect = this.hasLineOfSight(e.x, e.y, p.x, p.y, floor);
+      const eBoost = (e.postStunGraceTimer ?? 0) > 0 || e.spawnInvulnTimer > 0;
+      const eTowardVel = ((p.x - e.x) * e.vx + (p.y - e.y) * e.vy) / Math.max(1, eDist);
+      const eEff =
+        (eBoost ? eDist * 0.72 : eDist) +
+        (eDirect ? 0 : 135) -
+        clamp(eTowardVel * 0.24, -30, 65);
+
+      const enemyWantsIt =
+        p.kind === 'bullet' ? e.ammo < e.maxAmmo || eDist < 120 : e.hp < e.maxHp || eDist < 110;
+      if (enemyWantsIt && eEff + 32 < botEff) {
+        beaten = true;
+      }
+
+      if (e.ammo > 0 && e.stunTimer <= 0 && eDist < 390 && eDirect) {
+        const aimAtPickup = Math.abs(normalizeAngle(Math.atan2(p.y - e.y, p.x - e.x) - e.angle));
+        exposedRisk += ((390 - eDist) / 390) * (aimAtPickup < 0.55 ? 230 : 115);
+        if (!this.hasLineOfSight(e.x, e.y, bot.x, bot.y, floor) && botDist > 90) {
+          exposedRisk += 95;
+        }
+      }
+    }
+
+    const riskyWhileWeak =
+      exposedRisk > 195 && (bot.hp <= 42 || (bot.ammo === 0 && !botBoost && botDist > 110));
+    const safe = !beaten && !riskyWhileWeak;
+    const score = (beaten ? -1200 : riskyWhileWeak ? -480 : 500) - botEff - exposedRisk * 0.65;
+    return { safe, score };
+  }
+
+  private pickSafeEscapePoint(
+    bot: Player,
+    threats: Player[],
+    floor: FloorLevel,
+    safeMedkit: Pickup | null,
+    safeBullet: Pickup | null
+  ): Vec2 {
+    const clearR = PLAYER_RADIUS + 4;
+    const pad = ARENA_WALL_THICKNESS + PLAYER_RADIUS + 34;
+    const candidates: Vec2[] = [];
+
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2;
+      for (const r of [210, 350]) {
+        candidates.push({ x: bot.x + Math.cos(a) * r, y: bot.y + Math.sin(a) * r });
+      }
+    }
+    let navAdded = 0;
+    for (const node of this.botNavNodes) {
+      if (!sameFloor(node.floor, floor)) continue;
+      const dn = dist(bot.x, bot.y, node.x, node.y);
+      if (dn >= 150 && dn <= 560) {
+        candidates.push({ x: node.x, y: node.y });
+        if (++navAdded >= 14) break;
+      }
+    }
+    if (safeMedkit) candidates.push({ x: safeMedkit.x, y: safeMedkit.y });
+    if (safeBullet) candidates.push({ x: safeBullet.x, y: safeBullet.y });
+
+    let bestPt: Vec2 | null = null;
+    let bestScore = -Infinity;
+
+    for (const pt of candidates) {
+      if (
+        pt.x < pad ||
+        pt.x > this.map.width - pad ||
+        pt.y < pad ||
+        pt.y > this.map.height - pad
+      ) {
+        continue;
+      }
+      if (!this.isPointWalkableOnFloor(pt.x, pt.y, clearR, floor)) continue;
+      const directClear = this.isSegmentClearOnFloor(bot.x, bot.y, pt.x, pt.y, clearR - 2, floor);
+      if (directClear && this.segmentHitsHazardOnFloor(bot.x, bot.y, pt.x, pt.y, floor)) continue;
+
+      let score = directClear ? 95 : 0;
+      let minThreatDist = Infinity;
+
+      for (const t of threats) {
+        const dt = dist(pt.x, pt.y, t.x, t.y);
+        minThreatDist = Math.min(minThreatDist, dt);
+        const hasLos = this.hasLineOfSight(t.x, t.y, pt.x, pt.y, floor);
+        if (!hasLos) {
+          score += t.ammo > 0 ? 340 : 210;
+        } else if (t.ammo > 0 && dt < 360) {
+          const aimOff = Math.abs(normalizeAngle(Math.atan2(pt.y - t.y, pt.x - t.x) - t.angle));
+          if (aimOff < 0.38) score -= 220;
+        }
+      }
+
+      if (Number.isFinite(minThreatDist)) {
+        score += Math.min(500, minThreatDist) * 0.85;
+      }
+
+      if (safeMedkit && bot.hp < bot.maxHp) {
+        const dm = dist(pt.x, pt.y, safeMedkit.x, safeMedkit.y);
+        if (dm < 260) score += (260 - dm) * 1.1;
+      }
+      if (safeBullet && bot.ammo === 0) {
+        const db = dist(pt.x, pt.y, safeBullet.x, safeBullet.y);
+        if (db < 220) score += (220 - db) * 0.9;
+      }
+
+      // Softly avoid trapping self in tight outer corners
+      const edgeClear = Math.min(
+        pt.x - ARENA_WALL_THICKNESS,
+        this.map.width - ARENA_WALL_THICKNESS - pt.x,
+        pt.y - ARENA_WALL_THICKNESS,
+        this.map.height - ARENA_WALL_THICKNESS - pt.y
+      );
+      if (edgeClear < 90) score -= (90 - edgeClear) * 1.6;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestPt = pt;
+      }
+    }
+
+    if (bestPt) return bestPt;
+    const meanX = threats.reduce((s, t) => s + t.x, 0) / Math.max(1, threats.length);
+    const meanY = threats.reduce((s, t) => s + t.y, 0) / Math.max(1, threats.length);
+    const awayA = Math.atan2(bot.y - meanY, bot.x - meanX);
+    const escA = this.pickClearMoveAngle(bot, awayA, 140, bot.aiStrafeDir);
+    return {
+      x: clamp(bot.x + Math.cos(escA) * 200, pad, this.map.width - pad),
+      y: clamp(bot.y + Math.sin(escA) * 200, pad, this.map.height - pad),
+    };
+  }
+
+  private pickCoverStrafePoint(
+    bot: Player,
+    target: Player,
+    visibleEnemies: Player[],
+    floor: FloorLevel,
+    keepDistance: number
+  ): Vec2 | null {
+    const clearR = PLAYER_RADIUS + 4;
+    const targetProtected =
+      target.spawnInvulnTimer > 0 || target.stunTimer > 0 || (target.postStunGraceTimer ?? 0) > 0;
+    const wantCoverFromTarget = bot.aiHoldShotTimer > 0.1 || targetProtected;
+    let bestPt: Vec2 | null = null;
+    let bestScore = -Infinity;
+
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI * 2;
+      for (const rad of [145, 225]) {
+        const px = bot.x + Math.cos(a) * rad;
+        const py = bot.y + Math.sin(a) * rad;
+        if (!this.isPointWalkableOnFloor(px, py, clearR, floor)) continue;
+        if (!this.isSegmentClearOnFloor(bot.x, bot.y, px, py, clearR - 2, floor)) continue;
+        if (this.segmentHitsHazardOnFloor(bot.x, bot.y, px, py, floor)) continue;
+
+        const dT = dist(px, py, target.x, target.y);
+        let score = -Math.abs(dT - keepDistance) * 0.65;
+        const hasLosToTarget = this.hasLineOfSight(px, py, target.x, target.y, floor);
+        if (wantCoverFromTarget) {
+          if (!hasLosToTarget) score += 210;
+        } else if (hasLosToTarget) {
+          score += 110;
+        }
+
+        for (const e of visibleEnemies) {
+          if (e.id !== target.id && e.ammo > 0 && e.stunTimer <= 0) {
+            if (!this.hasLineOfSight(e.x, e.y, px, py, floor)) {
+              score += 290;
+            }
+          }
+          if (e.ammo > 0 && e.stunTimer <= 0) {
+            const aimOff = Math.abs(normalizeAngle(Math.atan2(py - e.y, px - e.x) - e.angle));
+            if (aimOff < 0.34 && this.hasLineOfSight(e.x, e.y, px, py, floor)) {
+              score -= 170;
+            }
+          }
+        }
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestPt = { x: px, y: py };
+        }
+      }
+    }
+    return bestPt;
   }
 
   private applyBotControls(bot: Player, dt: number) {
@@ -2208,12 +2502,13 @@ export class ArenaEngine {
       }
     }
 
+    const isImmersive = this.isImmersiveMode();
     // 4. Bot-to-bot separation & unarmed disengaging (prevents clumping & 0-ammo hugging!)
     for (const other of this.players) {
       if (other.id === bot.id || !other.alive || !sameFloor(other.floor, bFloor)) continue;
       const dO = dist(bot.x, bot.y, other.x, other.y);
       const isEnemy = !this.isTeammate(bot.id, other.id);
-      if (bot.ammo === 0 && isEnemy && other.ammo > 0 && dO < 420 && (!this.map.immersive || this.canBotSeePoint(bot, other.x, other.y, other.floor ?? 0))) {
+      if (bot.ammo === 0 && isEnemy && other.ammo > 0 && dO < 420 && (!isImmersive || this.canBotSeePoint(bot, other.x, other.y, other.floor ?? 0))) {
         const away = Math.atan2(bot.y - other.y, bot.x - other.x);
         const push = ((420 - dO) / 420) * 2.4;
         evadeX += Math.cos(away) * push;
@@ -2231,6 +2526,12 @@ export class ArenaEngine {
       (p) => p.id !== bot.id && p.alive && !this.isTeammate(bot.id, p.id) && sameFloor(p.floor, bFloor)
     );
     const visibleEnemies = allEnemies.filter((e) => this.canBotSeePoint(bot, e.x, e.y, e.floor ?? 0));
+
+    // Ruthless 4b: proactive aim-line evasion kept separate so bot still aims & fires back while dodging crosshairs!
+    const aimDodge =
+      diff === 'RUTHLESS' && visibleEnemies.length > 0
+        ? this.getAimThreatDodge(bot, visibleEnemies, bFloor)
+        : { x: 0, y: 0 };
 
     // Score visible target: Ruthless targets high-threat/human leaders AND finishers rather than ignoring leaders!
     const scoreEnemy = (e: Player): number => {
@@ -2263,8 +2564,8 @@ export class ArenaEngine {
 
     let activeAimAngle: number | null = mem.pendingShotAngle;
 
-    const evading = Math.hypot(evadeX, evadeY) > 0.35;
-    if (evading) {
+    const hardEvading = Math.hypot(evadeX, evadeY) > 0.35;
+    if (hardEvading) {
       const rawEvade = Math.atan2(evadeY, evadeX);
       bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawEvade, 74, bot.aiStrafeDir);
       bot.aiMoveRatio = 1.0;
@@ -2292,13 +2593,13 @@ export class ArenaEngine {
         (p) =>
           p.kind === 'medkit' &&
           sameFloor(p.floor, bFloor) &&
-          (!this.map.immersive || this.canBotSeePoint(bot, p.x, p.y, bFloor, true))
+          (!isImmersive || this.canBotSeePoint(bot, p.x, p.y, bFloor, true))
       );
       const visibleBullets = this.pickups.filter(
         (p) =>
           p.kind === 'bullet' &&
           sameFloor(p.floor, bFloor) &&
-          (!this.map.immersive || this.canBotSeePoint(bot, p.x, p.y, bFloor, true))
+          (!isImmersive || this.canBotSeePoint(bot, p.x, p.y, bFloor, true))
       );
 
       let target: Player | null = null;
@@ -2323,7 +2624,7 @@ export class ArenaEngine {
         for (const n of this.pickups) {
           if (!sameFloor(n.floor, bFloor)) continue;
           if (n.kind !== 'nitro' && !(n.kind === 'tnt' && !n.armed)) continue;
-          if (this.map.immersive && !this.canBotSeePoint(bot, n.x, n.y, bFloor, true)) continue;
+          if (isImmersive && !this.canBotSeePoint(bot, n.x, n.y, bFloor, true)) continue;
 
           const blastR = n.kind === 'tnt' ? TNT_BLAST_RADIUS : NITRO_BLAST_RADIUS;
           const selfDist = dist(n.x, n.y, bot.x, bot.y);
@@ -2368,15 +2669,41 @@ export class ArenaEngine {
         }
       }
 
-      const nearestBullet = visibleBullets.reduce<{ p: Pickup; d: number } | null>((best, p) => {
-        const d = dist(bot.x, bot.y, p.x, p.y);
-        return !best || d < best.d ? { p, d } : best;
-      }, null);
+      // Smart pickup selection: Ruthless avoids contested pickups an enemy will grab first or ambush!
+      let nearestBullet: { p: Pickup; d: number } | null = null;
+      if (diff === 'RUTHLESS') {
+        let bestBulletScore = -Infinity;
+        for (const p of visibleBullets) {
+          const evalRes = this.evaluatePickupForRuthless(bot, p, visibleEnemies, bFloor);
+          if (evalRes.safe && evalRes.score > bestBulletScore) {
+            bestBulletScore = evalRes.score;
+            nearestBullet = { p, d: dist(bot.x, bot.y, p.x, p.y) };
+          }
+        }
+      } else {
+        nearestBullet = visibleBullets.reduce<{ p: Pickup; d: number } | null>((best, p) => {
+          const d = dist(bot.x, bot.y, p.x, p.y);
+          return !best || d < best.d ? { p, d } : best;
+        }, null);
+      }
 
-      const nearestMedkit = visibleMedkits.reduce<{ p: Pickup; d: number } | null>((best, p) => {
-        const d = dist(bot.x, bot.y, p.x, p.y);
-        return !best || d < best.d ? { p, d } : best;
-      }, null);
+      let nearestMedkit: { p: Pickup; d: number } | null = null;
+      if (diff === 'RUTHLESS') {
+        let bestMedScore = -Infinity;
+        for (const p of visibleMedkits) {
+          const evalRes = this.evaluatePickupForRuthless(bot, p, visibleEnemies, bFloor);
+          const fallbackUrgent = bot.hp <= 34 && dist(bot.x, bot.y, p.x, p.y) < 110;
+          if ((evalRes.safe || fallbackUrgent) && evalRes.score > bestMedScore) {
+            bestMedScore = evalRes.score;
+            nearestMedkit = { p, d: dist(bot.x, bot.y, p.x, p.y) };
+          }
+        }
+      } else {
+        nearestMedkit = visibleMedkits.reduce<{ p: Pickup; d: number } | null>((best, p) => {
+          const d = dist(bot.x, bot.y, p.x, p.y);
+          return !best || d < best.d ? { p, d } : best;
+        }, null);
+      }
 
       const immediateDanger = Boolean(
         target &&
@@ -2385,7 +2712,12 @@ export class ArenaEngine {
               Math.abs(normalizeAngle(Math.atan2(bot.y - target.y, bot.x - target.x) - target.angle)) < 0.42 &&
               targetDist < 420))
       );
-      const guaranteedFinish = Boolean(target && (target.hp <= BULLET_DAMAGE || target.stunTimer > 0));
+      const guaranteedFinish = Boolean(
+        target &&
+          (target.hp <= BULLET_DAMAGE || target.stunTimer > 0) &&
+          target.spawnInvulnTimer <= 0 &&
+          (target.postStunGraceTimer ?? 0) <= 0
+      );
       const closeCluster = visibleEnemies.filter((e) => dist(bot.x, bot.y, e.x, e.y) < 380).length >= 2;
       const stockpileAmmoGoal = allEnemies.length <= 1 ? 1 : Math.min(bot.maxAmmo, 3);
       const shouldStockpileRuthless =
@@ -2410,113 +2742,193 @@ export class ArenaEngine {
             ? (bot.hp <= 66 && (!guaranteedFinish || bot.hp <= 36)) || (bot.hp < 86 && medkitDist < 250)
             : bot.hp <= 45);
 
-      let isSeekingPickup = false;
+      const postStunEscape =
+        diff === 'RUTHLESS' &&
+        (bot.postStunGraceTimer ?? 0) > 0 &&
+        visibleEnemies.some(
+          (e) =>
+            dist(bot.x, bot.y, e.x, e.y) < 380 &&
+            (e.ammo > 0 || bot.hp <= 67 || bot.ammo === 0)
+        );
+      const lowHpEscape =
+        diff === 'RUTHLESS' &&
+        bot.hp <= 35 &&
+        !shouldSeekMedkit &&
+        visibleEnemies.some((e) => e.stunTimer <= 0 && (e.ammo > 0 || dist(bot.x, bot.y, e.x, e.y) < 250)) &&
+        !(
+          bot.ammo > 0 &&
+          visibleEnemies.length === 1 &&
+          guaranteedFinish &&
+          visibleEnemies[0].ammo === 0
+        );
+      const shouldTacticalEscape = postStunEscape || lowHpEscape;
 
-      if (shouldSeekMedkit && nearestMedkit) {
-        goalX = nearestMedkit.p.x;
-        goalY = nearestMedkit.p.y;
-        moveRatio = 1.0;
-        isSeekingPickup = true;
+      const planCombatShot = (tgt: Player) => {
+        const tgtShootable =
+          tgt.spawnInvulnTimer <= 0 &&
+          tgt.stunTimer <= 0 &&
+          (tgt.postStunGraceTimer ?? 0) <= 0;
+        if (bot.ammo <= 0 || bot.aiHoldShotTimer > 0) return;
 
-        // Still fire opportunistically while routing through the medkit!
-        if (bot.ammo > 0 && target && target.spawnInvulnTimer <= 0 && target.stunTimer <= 0 && (target.postStunGraceTimer ?? 0) <= 0 && bot.aiHoldShotTimer <= 0) {
-          if (explosiveShotAngle !== null) {
-            const aimA = explosiveShotAngle + (Math.random() - 0.5) * aimSpread * 0.45;
-            mem.pendingShotAngle = aimA;
-            mem.pendingShotExpire = 0.42;
-            mem.pendingShotTargetId = null;
-            mem.pendingShotIsTrick = true;
-            activeAimAngle = aimA;
-          } else if (this.hasLineOfSight(bot.x, bot.y, target.x, target.y, bFloor)) {
-            const bSpeed = this.getBulletSpeed();
-            let predX = target.x;
-            let predY = target.y;
-            const leadScale = diff === 'RUTHLESS' ? 0.96 : diff === 'TACTICAL' ? 0.74 : 0.1;
-            for (let it = 0; it < 2; it++) {
-              const tHit = dist(bot.x, bot.y, predX, predY) / bSpeed;
-              const nx = target.x + target.vx * tHit * leadScale;
-              const ny = target.y + target.vy * tHit * leadScale;
-              if (this.isPointWalkableOnFloor(nx, ny, PLAYER_RADIUS, bFloor)) {
-                predX = nx;
-                predY = ny;
-              }
-            }
-            const shootA = Math.atan2(predY - bot.y, predX - bot.x) + (Math.random() - 0.5) * aimSpread;
-            mem.pendingShotAngle = shootA;
-            mem.pendingShotExpire = 0.4;
-            mem.pendingShotTargetId = diff === 'CHILL' ? null : target.id;
-            mem.pendingShotIsTrick = false;
-            activeAimAngle = shootA;
-          }
-        }
-      } else if (bot.ammo === 0 || shouldStockpileRuthless) {
-        // NEVER chase enemy when ammo === 0! Seek bullets or explore fresh arena sectors
-        if (nearestBullet) {
-          goalX = nearestBullet.p.x;
-          goalY = nearestBullet.p.y;
-          moveRatio = 0.96;
-          isSeekingPickup = true;
-        } else {
-          // Sweep patrol toward open quadrants to find floor ammo
-          goalX = mem.patrolX;
-          goalY = mem.patrolY;
-          moveRatio = 0.92;
-        }
-      } else if (target) {
-        const targetShootable = target.spawnInvulnTimer <= 0 && target.stunTimer <= 0 && (target.postStunGraceTimer ?? 0) <= 0;
-        if (explosiveShotAngle !== null && bot.aiHoldShotTimer <= 0) {
+        if (explosiveShotAngle !== null) {
           const aimA = explosiveShotAngle + (Math.random() - 0.5) * aimSpread * 0.45;
           mem.pendingShotAngle = aimA;
-          mem.pendingShotExpire = 0.45;
+          mem.pendingShotExpire = 0.42;
           mem.pendingShotTargetId = null;
           mem.pendingShotIsTrick = true;
           activeAimAngle = aimA;
-        } else if (targetShootable && bot.aiHoldShotTimer <= 0 && this.hasLineOfSight(bot.x, bot.y, target.x, target.y, bFloor)) {
-          // 2-step iterative lead prediction for moving targets
+          return;
+        }
+        if (!tgtShootable) return;
+
+        if (this.hasLineOfSight(bot.x, bot.y, tgt.x, tgt.y, bFloor)) {
           const bSpeed = this.getBulletSpeed();
-          let predX = target.x;
-          let predY = target.y;
+          let predX = tgt.x;
+          let predY = tgt.y;
           const leadScale = diff === 'RUTHLESS' ? 0.96 : diff === 'TACTICAL' ? 0.74 : 0.1;
           for (let it = 0; it < 2; it++) {
             const tHit = dist(bot.x, bot.y, predX, predY) / bSpeed;
-            const nx = target.x + target.vx * tHit * leadScale;
-            const ny = target.y + target.vy * tHit * leadScale;
+            const nx = tgt.x + tgt.vx * tHit * leadScale;
+            const ny = tgt.y + tgt.vy * tHit * leadScale;
             if (this.isPointWalkableOnFloor(nx, ny, PLAYER_RADIUS, bFloor)) {
               predX = nx;
               predY = ny;
             }
           }
+          // Ruthless muzzle clearance & teammate safety check!
+          let finalAimX = predX;
+          let finalAimY = predY;
+          if (diff === 'RUTHLESS') {
+            const predClear =
+              this.isSegmentClearOnFloor(bot.x, bot.y, predX, predY, BULLET_RADIUS - 1, bFloor) &&
+              !this.isDirectShotBlockedByTeammate(bot, predX, predY, bFloor);
+            if (!predClear) {
+              const directClear =
+                this.isSegmentClearOnFloor(bot.x, bot.y, tgt.x, tgt.y, BULLET_RADIUS - 1, bFloor) &&
+                !this.isDirectShotBlockedByTeammate(bot, tgt.x, tgt.y, bFloor);
+              if (directClear) {
+                finalAimX = tgt.x;
+                finalAimY = tgt.y;
+              } else {
+                const cornerTrick = this.findTrickshotAngle(bot, tgt, true);
+                if (cornerTrick !== null) {
+                  const aimA = cornerTrick + (Math.random() - 0.5) * aimSpread * 0.25;
+                  mem.pendingShotAngle = aimA;
+                  mem.pendingShotExpire = 0.45;
+                  mem.pendingShotTargetId = tgt.id;
+                  mem.pendingShotIsTrick = true;
+                  activeAimAngle = aimA;
+                }
+                return;
+              }
+            }
+          }
           const shootA =
             diff === 'CHILL' && Math.random() < 0.65
               ? Math.random() * Math.PI * 2 - Math.PI
-              : Math.atan2(predY - bot.y, predX - bot.x) + (Math.random() - 0.5) * aimSpread;
+              : Math.atan2(finalAimY - bot.y, finalAimX - bot.x) + (Math.random() - 0.5) * aimSpread;
           mem.pendingShotAngle = shootA;
           mem.pendingShotExpire = 0.42;
-          mem.pendingShotTargetId = diff === 'CHILL' ? null : target.id;
+          mem.pendingShotTargetId = diff === 'CHILL' ? null : tgt.id;
           mem.pendingShotIsTrick = false;
           activeAimAngle = shootA;
         } else {
-          // Optimal combat range kiting / angled wall-bounce trickshot setup
+          const trickChance = diff === 'RUTHLESS' ? 0.72 : diff === 'TACTICAL' ? 0.26 : 0;
+          if (trickChance > 0 && Math.random() < trickChance) {
+            const bounceAngle = this.findTrickshotAngle(bot, tgt, diff === 'RUTHLESS');
+            if (bounceAngle !== null) {
+              const aimA = bounceAngle + (Math.random() - 0.5) * aimSpread * 0.25;
+              mem.pendingShotAngle = aimA;
+              mem.pendingShotExpire = 0.48;
+              mem.pendingShotTargetId = tgt.id;
+              mem.pendingShotIsTrick = true;
+              activeAimAngle = aimA;
+            }
+          }
+        }
+      };
+
+      let isSeekingPickup = false;
+
+      if (shouldTacticalEscape && visibleEnemies.length > 0) {
+        // Ruthless uses post-stun speed boost / low-HP urgency to escape behind cover and break targeting!
+        const escPt = this.pickSafeEscapePoint(
+          bot,
+          visibleEnemies,
+          bFloor,
+          bot.hp < bot.maxHp ? nearestMedkit?.p ?? null : null,
+          bot.ammo === 0 ? nearestBullet?.p ?? null : null
+        );
+        goalX = escPt.x;
+        goalY = escPt.y;
+        moveRatio = 1.0;
+        if (target && !postStunEscape) {
+          planCombatShot(target);
+        } else if (target && bot.ammo > 0 && targetDist < 340) {
+          planCombatShot(target);
+        }
+      } else if (shouldSeekMedkit && nearestMedkit) {
+        goalX = nearestMedkit.p.x;
+        goalY = nearestMedkit.p.y;
+        moveRatio = 1.0;
+        isSeekingPickup = true;
+
+        if (target) {
+          planCombatShot(target);
+        }
+      } else if (bot.ammo === 0 || shouldStockpileRuthless) {
+        // NEVER chase enemy when ammo === 0! Seek safe bullets or explore fresh arena sectors
+        if (nearestBullet) {
+          goalX = nearestBullet.p.x;
+          goalY = nearestBullet.p.y;
+          moveRatio = 0.98;
+          isSeekingPickup = true;
+        } else if (diff === 'RUTHLESS' && visibleEnemies.length > 0 && bot.ammo === 0) {
+          const escPt = this.pickSafeEscapePoint(bot, visibleEnemies, bFloor, null, null);
+          goalX = escPt.x;
+          goalY = escPt.y;
+          moveRatio = 1.0;
+        } else {
+          goalX = mem.patrolX;
+          goalY = mem.patrolY;
+          moveRatio = 0.92;
+        }
+      } else if (target) {
+        planCombatShot(target);
+        const needCoverOrAntiCrossfire =
+          diff === 'RUTHLESS' &&
+          (visibleEnemies.filter((e) => e.id !== target!.id && e.ammo > 0 && e.stunTimer <= 0).length > 0 ||
+            bot.aiHoldShotTimer > 0.1 ||
+            target.spawnInvulnTimer > 0 ||
+            (target.postStunGraceTimer ?? 0) > 0 ||
+            Math.hypot(aimDodge.x, aimDodge.y) > 0.35);
+
+        if (needCoverOrAntiCrossfire) {
+          const idealRange =
+            target.spawnInvulnTimer > 0 || (target.postStunGraceTimer ?? 0) > 0
+              ? 380
+              : bot.hp <= 55
+                ? 360
+                : 295;
+          const coverPt = this.pickCoverStrafePoint(bot, target, visibleEnemies, bFloor, idealRange);
+          if (coverPt) {
+            goalX = coverPt.x;
+            goalY = coverPt.y;
+          } else {
+            const toTarget = Math.atan2(target.y - bot.y, target.x - bot.x);
+            const moveOff = targetDist < 240 ? Math.PI + bot.aiStrafeDir * 0.72 : bot.aiStrafeDir * 0.85;
+            goalX = bot.x + Math.cos(toTarget + moveOff) * 210;
+            goalY = bot.y + Math.sin(toTarget + moveOff) * 210;
+          }
+          moveRatio = 1.0;
+        } else {
           const toTarget = Math.atan2(target.y - bot.y, target.x - bot.x);
           const strafeSign = targetDist < 220 ? -0.95 : 0.65;
           const moveOff = targetDist < 220 ? Math.PI + bot.aiStrafeDir * 0.7 : bot.aiStrafeDir * strafeSign;
           goalX = bot.x + Math.cos(toTarget + moveOff) * 210;
           goalY = bot.y + Math.sin(toTarget + moveOff) * 210;
           moveRatio = diff === 'RUTHLESS' ? 0.98 : 0.84;
-          activeAimAngle = toTarget;
-
-          const trickChance = diff === 'RUTHLESS' ? 0.72 : diff === 'TACTICAL' ? 0.26 : 0;
-          if (targetShootable && trickChance > 0 && bot.aiHoldShotTimer <= 0 && Math.random() < trickChance) {
-            const bounceAngle = this.findTrickshotAngle(bot, target, diff === 'RUTHLESS');
-            if (bounceAngle !== null) {
-              const aimA = bounceAngle + (Math.random() - 0.5) * aimSpread * 0.25;
-              mem.pendingShotAngle = aimA;
-              mem.pendingShotExpire = 0.48;
-              mem.pendingShotTargetId = target.id;
-              mem.pendingShotIsTrick = true;
-              activeAimAngle = aimA;
-            }
-          }
+          if (activeAimAngle === null) activeAimAngle = toTarget;
         }
       } else {
         // No visible enemies!
@@ -2528,7 +2940,6 @@ export class ArenaEngine {
           mem.pendingShotIsTrick = false;
           activeAimAngle = stray;
         } else if (mem.lastSeenTimer > 0 && bot.ammo > 0) {
-          // Ruthless: predict probable trajectory behind cover & bank trickshot!
           const elapsed = (diff === 'RUTHLESS' ? 1.55 : 0.95) - mem.lastSeenTimer;
           const estX = clamp(mem.lastSeenX + mem.lastSeenVx * elapsed * 0.65, ARENA_WALL_THICKNESS + 45, this.map.width - ARENA_WALL_THICKNESS - 45);
           const estY = clamp(mem.lastSeenY + mem.lastSeenVy * elapsed * 0.65, ARENA_WALL_THICKNESS + 45, this.map.height - ARENA_WALL_THICKNESS - 45);
@@ -2539,11 +2950,14 @@ export class ArenaEngine {
           moveRatio = 0.92;
           activeAimAngle = Math.atan2(useY - bot.y, useX - bot.x);
 
-          if (diff === 'RUTHLESS' && bot.aiHoldShotTimer <= 0 && mem.lastSeenTimer > 0.35 && Math.random() < 0.62) {
-            const predTrick = this.findTrickshotToPoint(bot, useX, useY, PLAYER_RADIUS + 20, 40, 4);
+          // Fair bank shots only when predicted target remains within immersive sight & short disappearance window
+          const fairLastSeen =
+            !isImmersive || (mem.lastSeenTimer > 0.75 && this.isPointWithinImmersiveBounds(bot, useX, useY, false, true));
+          if (diff === 'RUTHLESS' && fairLastSeen && bot.aiHoldShotTimer <= 0 && mem.lastSeenTimer > 0.35 && Math.random() < 0.55) {
+            const predTrick = this.findTrickshotToPoint(bot, useX, useY, PLAYER_RADIUS + 20, 40, 3);
             if (predTrick !== null) {
               mem.pendingShotAngle = predTrick;
-              mem.pendingShotExpire = 0.48;
+              mem.pendingShotExpire = 0.45;
               mem.pendingShotTargetId = null;
               mem.pendingShotIsTrick = true;
               activeAimAngle = predTrick;
@@ -2555,7 +2969,6 @@ export class ArenaEngine {
           moveRatio = 0.94;
           isSeekingPickup = true;
         } else if (diff !== 'CHILL' && this.recentSoundCues.length > 0) {
-          // Investigate recent gunshots / blasts across the map so remaining bots find fights cleanly
           let bestCue: { x: number; y: number; d: number } | null = null;
           for (const cue of this.recentSoundCues) {
             if (!sameFloor(cue.floor, bFloor)) continue;
@@ -2617,7 +3030,13 @@ export class ArenaEngine {
         this.botPaths.delete(bot.id);
       }
 
-      const rawMoveAngle = Math.atan2(wpY - bot.y, wpX - bot.x);
+      let rawMoveAngle = Math.atan2(wpY - bot.y, wpX - bot.x);
+      if (diff === 'RUTHLESS' && Math.hypot(aimDodge.x, aimDodge.y) > 0.35 && !isSeekingPickup) {
+        const bx = Math.cos(rawMoveAngle) * 0.72 + aimDodge.x * 0.65;
+        const by = Math.sin(rawMoveAngle) * 0.72 + aimDodge.y * 0.65;
+        rawMoveAngle = Math.atan2(by, bx);
+        moveRatio = 1.0;
+      }
       const wpDist = dist(bot.x, bot.y, wpX, wpY);
       const probeDist = isSeekingPickup && wpDist < 130 ? Math.max(24, wpDist - 8) : 68;
       bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawMoveAngle, probeDist, bot.aiStrafeDir);
@@ -2628,7 +3047,7 @@ export class ArenaEngine {
     let desiredFacing = bot.aiTargetAngle;
     if (activeAimAngle !== null) {
       desiredFacing = activeAimAngle;
-    } else if (this.map.immersive && visibleEnemies.length === 0 && !evading) {
+    } else if (isImmersive && visibleEnemies.length === 0 && !hardEvading) {
       if (mem.lastSeenTimer > 0 && bot.ammo > 0) {
         desiredFacing = Math.atan2(mem.lastSeenY - bot.y, mem.lastSeenX - bot.x);
       } else {
@@ -2648,10 +3067,16 @@ export class ArenaEngine {
       Math.abs(normalizeAngle(mem.pendingShotAngle - bot.angle)) <= 0.14
     ) {
       let canFireNow = true;
-      if (mem.pendingShotTargetId !== null && !mem.pendingShotIsTrick) {
+      if (mem.pendingShotTargetId !== null) {
         const tgt = this.players.find((pl) => pl.id === mem.pendingShotTargetId && pl.alive);
-        if (!tgt || !this.canBotSeePoint(bot, tgt.x, tgt.y, tgt.floor ?? 0)) {
-          canFireNow = false;
+        if (!mem.pendingShotIsTrick) {
+          if (!tgt || !this.canBotSeePoint(bot, tgt.x, tgt.y, tgt.floor ?? 0)) {
+            canFireNow = false;
+          }
+        } else if (isImmersive) {
+          if (!tgt || !this.isPointWithinImmersiveBounds(bot, tgt.x, tgt.y, false, false)) {
+            canFireNow = false;
+          }
         }
       }
       mem.pendingShotAngle = null;
@@ -4763,14 +5188,43 @@ export class ArenaEngine {
       }
     }
 
+    const visibleRivals = this.players.filter(
+      (e) =>
+        e.id !== bot.id &&
+        e.alive &&
+        !this.isTeammate(bot.id, e.id) &&
+        this.canBotSeePoint(bot, e.x, e.y, e.floor ?? 0)
+    );
+
+    if (diff === 'RUTHLESS' && visibleRivals.length > 0 && !monsterBeingTargeted) {
+      const aimDodge = this.getAimThreatDodge(bot, visibleRivals, bFloor);
+      evadeX += aimDodge.x * 0.85;
+      evadeY += aimDodge.y * 0.85;
+      if (
+        ((bot.postStunGraceTimer ?? 0) > 0 || bot.hp <= 36) &&
+        visibleRivals.some((e) => e.ammo > 0 && dist(bot.x, bot.y, e.x, e.y) < 350)
+      ) {
+        const escPt = this.pickSafeEscapePoint(bot, visibleRivals, bFloor, null, null);
+        const escA = Math.atan2(escPt.y - bot.y, escPt.x - bot.x);
+        evadeX += Math.cos(escA) * 1.9;
+        evadeY += Math.sin(escA) * 1.9;
+      }
+    }
+
     bot.aiThinkTimer -= dt;
     bot.aiHoldShotTimer -= dt;
 
     // 4. Smart Explosive & Fair Combat Planning (turn-speed capped! zero instant snaps!)
     let activeAimAngle: number | null = mem.pendingShotAngle;
     if (bot.ammo > 0 && bot.aiHoldShotTimer <= 0 && !mem.pendingShotAngle) {
-      // Priority A: Shoot Nitro/TNT to STUN Figure for 15s when Figure is chasing/close (requires sight!)
-      if (diff !== 'CHILL' && m.stunTimer <= 0 && sameFloorMonster && monsterDist < 540) {
+      // Priority A: Shoot Nitro/TNT to STUN Figure when Figure itself is actually visible!
+      if (
+        diff !== 'CHILL' &&
+        m.stunTimer <= 0 &&
+        sameFloorMonster &&
+        monsterDist < 500 &&
+        this.canBotSeePoint(bot, m.x, m.y, bFloor, false)
+      ) {
         for (const n of this.pickups) {
           if (!sameFloor(n.floor, bFloor)) continue;
           if (n.kind !== 'nitro' && !(n.kind === 'tnt' && !n.armed)) continue;
@@ -4811,13 +5265,6 @@ export class ArenaEngine {
       }
 
       // Priority B & C: Visible rivals only (strict Immersive darkness & sight parity!)
-      const visibleRivals = this.players.filter(
-        (e) =>
-          e.id !== bot.id &&
-          e.alive &&
-          !this.isTeammate(bot.id, e.id) &&
-          this.canBotSeePoint(bot, e.x, e.y, e.floor ?? 0)
-      );
       if (!mem.pendingShotAngle && diff === 'RUTHLESS' && visibleRivals.length > 0) {
         for (const n of this.pickups) {
           if (!sameFloor(n.floor, bFloor)) continue;
@@ -4845,7 +5292,21 @@ export class ArenaEngine {
           bot.ammo >= 2 ||
           visibleRivals.some((e) => dist(bot.x, bot.y, e.x, e.y) < 260 || e.hp <= BULLET_DAMAGE))
       ) {
-        const target = visibleRivals[0];
+        let target = visibleRivals[0];
+        if (visibleRivals.length > 1) {
+          let bestS = -Infinity;
+          for (const e of visibleRivals) {
+            const s =
+              -dist(bot.x, bot.y, e.x, e.y) * 0.4 +
+              (e.hp <= BULLET_DAMAGE ? 140 : 0) +
+              (100 - e.hp) * 0.8 +
+              (e.spawnInvulnTimer > 0 || (e.postStunGraceTimer ?? 0) > 0 ? -120 : 0);
+            if (s > bestS) {
+              bestS = s;
+              target = e;
+            }
+          }
+        }
         if (target.spawnInvulnTimer <= 0 && target.stunTimer <= 0 && (target.postStunGraceTimer ?? 0) <= 0) {
           const aimSpread = diff === 'RUTHLESS' ? 0.025 : diff === 'TACTICAL' ? 0.11 : 0.45;
           const dT = dist(bot.x, bot.y, target.x, target.y);
@@ -4853,7 +5314,12 @@ export class ArenaEngine {
           const lead = diff === 'RUTHLESS' ? 0.92 : diff === 'TACTICAL' ? 0.72 : 0.15;
           const predX = target.x + target.vx * travelT * lead;
           const predY = target.y + target.vy * travelT * lead;
-          const shotA = Math.atan2(predY - bot.y, predX - bot.x) + (Math.random() - 0.5) * aimSpread;
+          const usePred =
+            diff !== 'RUTHLESS' ||
+            this.isSegmentClearOnFloor(bot.x, bot.y, predX, predY, BULLET_RADIUS - 1, bFloor);
+          const shotA =
+            Math.atan2((usePred ? predY : target.y) - bot.y, (usePred ? predX : target.x) - bot.x) +
+            (Math.random() - 0.5) * aimSpread;
           mem.pendingShotAngle = shotA;
           mem.pendingShotExpire = 0.45;
           mem.pendingShotTargetId = target.id;
@@ -4863,7 +5329,7 @@ export class ArenaEngine {
       }
       if (!activeAimAngle && mem.defendPillarTimer > 0 && bot.lastHitBy !== null) {
         const attacker = this.players.find((pl) => pl.id === bot.lastHitBy && pl.alive && sameFloor(pl.floor, bFloor));
-        if (attacker && dist(bot.x, bot.y, attacker.x, attacker.y) < 620) {
+        if (attacker && dist(bot.x, bot.y, attacker.x, attacker.y) < 480) {
           activeAimAngle = Math.atan2(attacker.y - bot.y, attacker.x - bot.x);
         }
       }
@@ -4975,7 +5441,10 @@ export class ArenaEngine {
                       p.kind === 'medkit' &&
                       sameFloor(p.floor, bFloor) &&
                       dist(bot.x, bot.y, p.x, p.y) <= medkitMaxDist &&
-                      this.canBotSeePoint(bot, p.x, p.y, bFloor, true)
+                      this.canBotSeePoint(bot, p.x, p.y, bFloor, true) &&
+                      (diff !== 'RUTHLESS' ||
+                        this.evaluatePickupForRuthless(bot, p, visibleRivals, bFloor).safe ||
+                        (bot.hp <= 34 && dist(bot.x, bot.y, p.x, p.y) < 110))
                   )
                   .sort((a, b) => dist(bot.x, bot.y, a.x, a.y) - dist(bot.x, bot.y, b.x, b.y))[0]
               : undefined;
@@ -4987,7 +5456,9 @@ export class ArenaEngine {
                     (p) =>
                       p.kind === 'bullet' &&
                       sameFloor(p.floor, bFloor) &&
-                      this.canBotSeePoint(bot, p.x, p.y, bFloor, true)
+                      this.canBotSeePoint(bot, p.x, p.y, bFloor, true) &&
+                      (diff !== 'RUTHLESS' ||
+                        this.evaluatePickupForRuthless(bot, p, visibleRivals, bFloor).safe)
                   )
                   .sort((a, b) => dist(bot.x, bot.y, a.x, a.y) - dist(bot.x, bot.y, b.x, b.y))[0]
               : undefined;
@@ -5191,7 +5662,7 @@ export class ArenaEngine {
     const events = this.drainEvents();
     return {
       mapId: this.map.id,
-      immersive: this.map.immersive,
+      immersive: this.isImmersiveMode(),
       extraDark: Boolean(this.config.extraDark),
       teamMode: this.config.teamMode ?? 'FFA',
       modifiers: this.getModifiers(),
