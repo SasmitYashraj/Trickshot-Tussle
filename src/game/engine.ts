@@ -47,6 +47,7 @@ import {
   MONSTER_STUN_DURATION,
   type MatchConfig,
   type MatchModifiers,
+  type BulletSpawnLevel,
   type ModifierLevel,
   NITRO_BLAST_RADIUS,
   NITRO_DAMAGE,
@@ -117,6 +118,13 @@ const SPAWN_RATE_MULTS: Record<ModifierLevel, number> = {
   LOW: 0.6,
   MEDIUM: 1.0,
   HIGH: 1.55,
+};
+
+const BULLET_SPAWN_RATE_MULTS: Record<BulletSpawnLevel, number> = {
+  DREAD: 0.6,
+  LOW: 1.0,
+  MEDIUM: 1.55,
+  HIGH: 2.25,
 };
 
 const TURN_SPEED_MULTS: Record<ModifierLevel, number> = {
@@ -549,7 +557,9 @@ export class ArenaEngine {
     const mods = this.getModifiers();
     const isImmersive = this.map.immersive;
     const isLibrary = this.map.id === 'library';
-    this.bulletSpawnTimer = (isLibrary ? 1.8 : isImmersive ? 1.5 : 2.0) / SPAWN_RATE_MULTS[mods.bulletSpawn];
+    this.bulletSpawnTimer =
+      (isLibrary ? 1.8 : isImmersive ? 1.5 : 2.0) /
+      (BULLET_SPAWN_RATE_MULTS[mods.bulletSpawn] ?? BULLET_SPAWN_RATE_MULTS.MEDIUM);
     this.nitroSpawnTimer = (isLibrary ? 12.0 : isImmersive ? 11.5 : 6.0) / SPAWN_RATE_MULTS[mods.nitroSpawn];
     this.tntSpawnTimer = (isLibrary ? 9.0 : isImmersive ? 7.5 : 9.0) / SPAWN_RATE_MULTS[mods.tntSpawn];
     this.medkitSpawnTimer = (isLibrary ? 10.5 : isImmersive ? 9.0 : 11.0) / SPAWN_RATE_MULTS[mods.medkitSpawn];
@@ -836,7 +846,7 @@ export class ArenaEngine {
 
   private updateSpawners(dt: number) {
     const mods = this.getModifiers();
-    const bMult = SPAWN_RATE_MULTS[mods.bulletSpawn];
+    const bMult = BULLET_SPAWN_RATE_MULTS[mods.bulletSpawn] ?? BULLET_SPAWN_RATE_MULTS.MEDIUM;
     const nMult = SPAWN_RATE_MULTS[mods.nitroSpawn];
     const tMult = SPAWN_RATE_MULTS[mods.tntSpawn];
     const mMult = SPAWN_RATE_MULTS[mods.medkitSpawn];

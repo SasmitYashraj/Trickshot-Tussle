@@ -3,6 +3,7 @@ import {
   DEFAULT_MATCH_MODIFIERS,
   FIGURE_DIFFICULTY_ORDER,
   FIGURE_DIFFICULTY_PROFILES,
+  type BulletSpawnLevel,
   type FigureDifficulty,
   type MatchModifiers,
   type ModifierLevel,
@@ -17,7 +18,7 @@ interface ModifiersScreenProps {
 
 type LevelModifierKey = keyof Omit<
   MatchModifiers,
-  'keepBulletsOnStun' | 'figureDifficulty'
+  'keepBulletsOnStun' | 'figureDifficulty' | 'bulletSpawn'
 >;
 
 interface LevelRowDef {
@@ -28,7 +29,6 @@ interface LevelRowDef {
 }
 
 const LEVEL_ROWS: LevelRowDef[] = [
-  { key: 'bulletSpawn', label: 'Bullet Spawns', hint: 'Floor ammo drop frequency' },
   { key: 'nitroSpawn', label: 'Nitro Spawns', hint: 'Instant-detonation crates' },
   { key: 'tntSpawn', label: 'TNT Spawns', hint: 'Pushable 3s fuse crates' },
   { key: 'medkitSpawn', label: 'Medkit Spawns', hint: '+35 HP healing kits' },
@@ -61,6 +61,7 @@ const LEVEL_ROWS: LevelRowDef[] = [
 ];
 
 const LEVELS: ModifierLevel[] = ['LOW', 'MEDIUM', 'HIGH'];
+const BULLET_SPAWN_LEVELS: BulletSpawnLevel[] = ['DREAD', 'LOW', 'MEDIUM', 'HIGH'];
 
 export function ModifiersScreen({
   modifiers,
@@ -71,6 +72,11 @@ export function ModifiersScreen({
   const setLevel = (key: LevelModifierKey, level: ModifierLevel) => {
     if (readOnly) return;
     onChange({ ...modifiers, [key]: level });
+  };
+
+  const setBulletSpawn = (bulletSpawn: BulletSpawnLevel) => {
+    if (readOnly) return;
+    onChange({ ...modifiers, bulletSpawn });
   };
 
   const setFigureDifficulty = (figureDifficulty: FigureDifficulty) => {
@@ -135,6 +141,47 @@ export function ModifiersScreen({
           </div>
 
           <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="rounded-xl border border-slate-800 bg-slate-900/65 p-3">
+              <div className="flex items-baseline justify-between gap-2 mb-2">
+                <span className="text-xs font-bold text-slate-100">Bullet Spawns</span>
+                <span className="text-[11px] text-slate-400">Floor ammo drop frequency</span>
+              </div>
+              <div className="grid grid-cols-4 gap-1 p-1 rounded-lg bg-slate-950/90 border border-slate-800">
+                {BULLET_SPAWN_LEVELS.map((lvl) => {
+                  const active = (modifiers.bulletSpawn ?? DEFAULT_MATCH_MODIFIERS.bulletSpawn) === lvl;
+                  const label =
+                    lvl === 'DREAD'
+                      ? 'Dread'
+                      : lvl === 'LOW'
+                        ? 'Low'
+                        : lvl === 'MEDIUM'
+                          ? 'Medium'
+                          : 'High';
+                  return (
+                    <button
+                      key={lvl}
+                      type="button"
+                      disabled={readOnly}
+                      onClick={() => setBulletSpawn(lvl)}
+                      className={`px-1.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                        active
+                          ? lvl === 'DREAD'
+                            ? 'bg-rose-500 text-white'
+                            : lvl === 'MEDIUM'
+                              ? 'bg-sky-500 text-slate-950'
+                              : lvl === 'HIGH'
+                                ? 'bg-amber-400 text-slate-950'
+                                : 'bg-slate-600 text-white'
+                          : 'text-slate-400 hover:text-slate-200'
+                      } ${readOnly ? 'cursor-default' : 'cursor-pointer'}`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             {LEVEL_ROWS.map((row) => {
               const current = modifiers[row.key] ?? DEFAULT_MATCH_MODIFIERS[row.key];
               return (

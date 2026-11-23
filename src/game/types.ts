@@ -99,6 +99,7 @@ export interface LibraryClue {
 }
 
 export type ModifierLevel = 'LOW' | 'MEDIUM' | 'HIGH';
+export type BulletSpawnLevel = 'DREAD' | ModifierLevel;
 
 export type FigureDifficulty = 'DOCILE' | 'STANDARD' | 'HUNTER' | 'FERAL' | 'NIGHTMARE';
 
@@ -187,7 +188,7 @@ export const FIGURE_DIFFICULTY_PROFILES: Record<FigureDifficulty, FigureDifficul
 };
 
 export interface MatchModifiers {
-  bulletSpawn: ModifierLevel;
+  bulletSpawn: BulletSpawnLevel;
   nitroSpawn: ModifierLevel;
   tntSpawn: ModifierLevel;
   medkitSpawn: ModifierLevel;

@@ -5,6 +5,7 @@ import {
   DEFAULT_MATCH_MODIFIERS,
   type MatchConfig,
   type MatchModifiers,
+  type BulletSpawnLevel,
   type ModifierLevel,
   type OnlineLobbySlot,
   type OnlineRoomState,
@@ -57,6 +58,12 @@ function sanitizeModifierLevel(raw: unknown, fallback: ModifierLevel): ModifierL
   return raw === 'LOW' || raw === 'MEDIUM' || raw === 'HIGH' ? raw : fallback;
 }
 
+function sanitizeBulletSpawnLevel(raw: unknown, fallback: BulletSpawnLevel): BulletSpawnLevel {
+  return raw === 'DREAD' || raw === 'LOW' || raw === 'MEDIUM' || raw === 'HIGH'
+    ? raw
+    : fallback;
+}
+
 function sanitizeFigureDifficulty(
   raw: unknown,
   fallback: MatchModifiers['figureDifficulty']
@@ -73,7 +80,7 @@ function sanitizeFigureDifficulty(
 function sanitizeModifiers(raw: Partial<MatchModifiers> | undefined): MatchModifiers {
   if (!raw || typeof raw !== 'object') return { ...DEFAULT_MATCH_MODIFIERS };
   return {
-    bulletSpawn: sanitizeModifierLevel(raw.bulletSpawn, DEFAULT_MATCH_MODIFIERS.bulletSpawn),
+    bulletSpawn: sanitizeBulletSpawnLevel(raw.bulletSpawn, DEFAULT_MATCH_MODIFIERS.bulletSpawn),
     nitroSpawn: sanitizeModifierLevel(raw.nitroSpawn, DEFAULT_MATCH_MODIFIERS.nitroSpawn),
     tntSpawn: sanitizeModifierLevel(raw.tntSpawn, DEFAULT_MATCH_MODIFIERS.tntSpawn),
     medkitSpawn: sanitizeModifierLevel(raw.medkitSpawn, DEFAULT_MATCH_MODIFIERS.medkitSpawn),
