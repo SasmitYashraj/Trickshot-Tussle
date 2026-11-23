@@ -34,6 +34,7 @@ import {
   type MatchMode,
   OnlineRoomState,
   PLAYER_MAX_SPEED,
+  PLAYER_SPEED_MULTS,
   WorldSyncState,
 } from './game/types';
 import { MultiplayerClient } from './net/multiplayerClient';
@@ -385,6 +386,7 @@ export default function App() {
   const libraryLockOpenRef = useRef<boolean>(libraryLockOpen);
   const hostLobbyConfirmOpenRef = useRef<boolean>(hostLobbyConfirmOpen);
   const libraryUiRef = useRef<LibraryUiSnapshot | null>(libraryUi);
+  const renderedLibraryUiRef = useRef<LibraryUiSnapshot | null>(libraryUi);
   const lastHudSigRef = useRef<string>('');
   const immersiveSpectateRef = useRef<Array<{ id: number; name: string }>>([]);
   const jumpscareTimerRef = useRef<number | null>(null);
@@ -481,6 +483,7 @@ export default function App() {
           setImmersiveSpectateList([]);
           setLibraryUi(null);
           libraryUiRef.current = null;
+          renderedLibraryUiRef.current = null;
           setGameState('ONLINE_LOBBY');
         } else if (room.phase === 'PLAYING') {
           const roomMapDef = ARENA_MAPS[room.config.mapId];
@@ -502,6 +505,7 @@ export default function App() {
           setImmersiveSpectateList([]);
           setLibraryUi(null);
           libraryUiRef.current = null;
+          renderedLibraryUiRef.current = null;
           lastHudSigRef.current = '';
           setGameState('PLAYING');
         } else if (room.phase === 'GAME_OVER') {
@@ -618,6 +622,7 @@ export default function App() {
       setJumpscareFlash(false);
       setLibraryUi(null);
       libraryUiRef.current = null;
+      renderedLibraryUiRef.current = null;
       setGameState('PLAYING');
     },
     [config]
@@ -1079,8 +1084,15 @@ export default function App() {
           canUnlockDoor,
           spectateCandidates,
         };
-        const prevUi = libraryUiRef.current;
         libraryUiRef.current = nextLibUi;
+        const prevUi = renderedLibraryUiRef.current;
+
+        const activeCfgForSpeed = isOnlineRef.current
+          ? roomStateRef.current?.config
+          : engineRef.current.config;
+        const spdMult =
+          PLAYER_SPEED_MULTS[activeCfgForSpeed?.modifiers?.playerSpeed ?? 'MEDIUM'] ?? 1;
+        const effMaxSpeed = Math.max(1, PLAYER_MAX_SPEED * spdMult);
 
         libHudAccumulator += dt;
         const stateFlipped =
@@ -1096,8 +1108,8 @@ export default function App() {
 
         const speedPctChanged =
           !prevUi ||
-          Math.round((prevUi.playerSpeed / PLAYER_MAX_SPEED) * 100) !==
-            Math.round((pSpeed / PLAYER_MAX_SPEED) * 100);
+          Math.min(100, Math.round((prevUi.playerSpeed / effMaxSpeed) * 100)) !==
+            Math.min(100, Math.round((pSpeed / effMaxSpeed) * 100));
         const stunSecChanged =
           !prevUi ||
           Math.ceil(prevUi.state.monster.stunTimer) !== Math.ceil(libState.monster.stunTimer);
@@ -1106,11 +1118,13 @@ export default function App() {
         const hudInterval = introActive ? 0.1 : 0.08;
         if (stateFlipped || (libHudAccumulator >= hudInterval && (introActive || speedPctChanged || stunSecChanged))) {
           libHudAccumulator = 0;
+          renderedLibraryUiRef.current = nextLibUi;
           setLibraryUi(nextLibUi);
         }
       } else {
-        if (libraryUiRef.current !== null) {
+        if (libraryUiRef.current !== null || renderedLibraryUiRef.current !== null) {
           libraryUiRef.current = null;
+          renderedLibraryUiRef.current = null;
           setLibraryUi(null);
         }
         const isImmersiveWorld = Boolean(
@@ -2018,6 +2032,11 @@ export default function App() {
                 stealthEnabled={pcSpeedLimit < 80}
                 playerFloor={libraryUi.playerFloor}
                 playerSpeed={libraryUi.playerSpeed}
+                playerMaxSpeed={
+                  PLAYER_MAX_SPEED *
+                  (PLAYER_SPEED_MULTS[activeConfig.modifiers?.playerSpeed ?? 'MEDIUM'] ?? 1)
+                }
+                figureDifficulty={activeConfig.modifiers?.figureDifficulty}
                 playerAlive={libraryUi.playerAlive}
                 canCollectBook={libraryUi.canCollectBook}
                 canUnlockDoor={libraryUi.canUnlockDoor}

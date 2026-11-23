@@ -94,10 +94,14 @@ function sanitizeModifiers(raw: Partial<MatchModifiers> | undefined): MatchModif
       typeof raw.keepBulletsOnStun === 'boolean'
         ? raw.keepBulletsOnStun
         : DEFAULT_MATCH_MODIFIERS.keepBulletsOnStun,
-    postStunGrace:
+    postStunGrace: sanitizeModifierLevel(
       typeof raw.postStunGrace === 'boolean'
         ? raw.postStunGrace
-        : DEFAULT_MATCH_MODIFIERS.postStunGrace,
+          ? 'MEDIUM'
+          : 'LOW'
+        : raw.postStunGrace,
+      DEFAULT_MATCH_MODIFIERS.postStunGrace
+    ),
   };
 }
 

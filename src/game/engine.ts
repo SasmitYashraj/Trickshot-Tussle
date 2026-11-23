@@ -57,6 +57,7 @@ import {
   PLAYER_MAX_HP,
   PLAYER_MAX_SPEED,
   PLAYER_RADIUS,
+  PLAYER_SPEED_MULTS,
   PLAYER_TURN_SPEED,
   PLAYER_COLOR_PALETTE,
   POST_STUN_GRACE_DURATION,
@@ -118,12 +119,6 @@ const SPAWN_RATE_MULTS: Record<ModifierLevel, number> = {
   HIGH: 1.55,
 };
 
-const PLAYER_SPEED_MULTS: Record<ModifierLevel, number> = {
-  LOW: 0.78,
-  MEDIUM: 1.0,
-  HIGH: 1.26,
-};
-
 const TURN_SPEED_MULTS: Record<ModifierLevel, number> = {
   LOW: 0.72,
   MEDIUM: 1.0,
@@ -158,6 +153,18 @@ const SPAWN_PROTECTION_BOOST: Record<ModifierLevel, number> = {
   LOW: 0.25,
   MEDIUM: 0.55,
   HIGH: 0.85,
+};
+
+const POST_STUN_GRACE_DURATIONS: Record<ModifierLevel, number> = {
+  LOW: 0.5,
+  MEDIUM: POST_STUN_GRACE_DURATION,
+  HIGH: 1.5,
+};
+
+const POST_STUN_GRACE_BOOST: Record<ModifierLevel, number> = {
+  LOW: 0.25,
+  MEDIUM: 0.5,
+  HIGH: 0.75,
 };
 
 export function canCollectBookSpot(
@@ -461,6 +468,18 @@ export class ArenaEngine {
     return SPAWN_PROTECTION_BOOST[this.getModifiers().spawnProtection] ?? 0.55;
   }
 
+  private getPostStunGraceDuration(): number {
+    const lvl = this.getModifiers().postStunGrace;
+    if (typeof lvl === 'boolean') return lvl ? POST_STUN_GRACE_DURATION : 0;
+    return POST_STUN_GRACE_DURATIONS[lvl] ?? POST_STUN_GRACE_DURATION;
+  }
+
+  private getPostStunBoostBonus(): number {
+    const lvl = this.getModifiers().postStunGrace;
+    if (typeof lvl === 'boolean') return lvl ? 0.5 : 0;
+    return POST_STUN_GRACE_BOOST[lvl] ?? 0.5;
+  }
+
   private getFigureProfile(): FigureDifficultyProfile {
     return (
       FIGURE_DIFFICULTY_PROFILES[this.getModifiers().figureDifficulty] ??
@@ -602,7 +621,7 @@ export class ArenaEngine {
         stunTimer: 0,
         hurtFlashTimer: 0,
         respawnTimer: 0,
-        spawnInvulnTimer: this.getSpawnProtectionDuration(),
+        spawnInvulnTimer: 0,
         alive: true,
         kills: 0,
         deaths: 0,
@@ -1332,7 +1351,7 @@ export class ArenaEngine {
       if (player.stunTimer > 0) {
         player.stunTimer = Math.max(0, player.stunTimer - dt);
         if (player.stunTimer <= 0) {
-          player.postStunGraceTimer = this.getModifiers().postStunGrace ? POST_STUN_GRACE_DURATION : 0;
+          player.postStunGraceTimer = this.getPostStunGraceDuration();
         }
         const friction = Math.exp(-6.5 * dt);
         player.vx *= friction;
@@ -1698,15 +1717,28 @@ export class ArenaEngine {
     return true;
   }
 
-  private getSpawnBoostMultiplier(player: Player): number {
-    const duration = this.getSpawnProtectionDuration();
-    if (player.spawnInvulnTimer <= 0 || duration <= 0) return 1;
-    const t = clamp(1 - player.spawnInvulnTimer / duration, 0, 1);
+  private calcSmoothBoost(remaining: number, duration: number, maxBonus: number): number {
+    if (remaining <= 0 || duration <= 0 || maxBonus <= 0) return 1;
+    const t = clamp(1 - remaining / duration, 0, 1);
     const u = clamp(t / 0.16, 0, 1);
     const rise = u * u * (3 - 2 * u);
     const d = clamp((1 - t) / 0.38, 0, 1);
     const fall = d * d * (3 - 2 * d);
-    return 1 + this.getSpawnProtectionBoostBonus() * rise * fall;
+    return 1 + maxBonus * rise * fall;
+  }
+
+  private getSpawnBoostMultiplier(player: Player): number {
+    const spawnBoost = this.calcSmoothBoost(
+      player.spawnInvulnTimer,
+      this.getSpawnProtectionDuration(),
+      this.getSpawnProtectionBoostBonus()
+    );
+    const postStunBoost = this.calcSmoothBoost(
+      player.postStunGraceTimer ?? 0,
+      this.getPostStunGraceDuration(),
+      this.getPostStunBoostBonus()
+    );
+    return Math.max(spawnBoost, postStunBoost);
   }
 
   private applyAnalogInput(
@@ -3144,7 +3176,14 @@ export class ArenaEngine {
     knockVy: number,
     byBullet = false
   ) {
-    if (!player.alive || player.spawnInvulnTimer > 0 || player.stunTimer > 0) return;
+    if (
+      !player.alive ||
+      player.spawnInvulnTimer > 0 ||
+      player.stunTimer > 0 ||
+      (player.postStunGraceTimer ?? 0) > 0
+    ) {
+      return;
+    }
     if (attackerId !== null && attackerId !== player.id && this.isTeammate(attackerId, player.id)) {
       return;
     }

@@ -15,12 +15,18 @@ import {
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type {
+  FigureDifficulty,
   FloorLevel,
   LibraryMatchState,
   LibraryShape,
   MatchMode,
 } from '../game/types';
-import { LIBRARY_BOOKS_PER_PLAYER, LIBRARY_BRAWL_MAX_HEARTS, PLAYER_MAX_SPEED } from '../game/types';
+import {
+  FIGURE_DIFFICULTY_PROFILES,
+  LIBRARY_BOOKS_PER_PLAYER,
+  LIBRARY_BRAWL_MAX_HEARTS,
+  PLAYER_MAX_SPEED,
+} from '../game/types';
 
 export function LibraryShapeIcon({
   shape,
@@ -90,6 +96,8 @@ interface LibraryOverlaysProps {
   stealthEnabled: boolean;
   playerFloor: FloorLevel;
   playerSpeed: number;
+  playerMaxSpeed?: number;
+  figureDifficulty?: FigureDifficulty;
   playerAlive: boolean;
   canCollectBook: boolean;
   canUnlockDoor: boolean;
@@ -116,6 +124,8 @@ export function LibraryOverlays({
   stealthEnabled,
   playerFloor,
   playerSpeed,
+  playerMaxSpeed = PLAYER_MAX_SPEED,
+  figureDifficulty = 'STANDARD',
   playerAlive,
   canCollectBook,
   canUnlockDoor,
@@ -149,8 +159,12 @@ export function LibraryOverlays({
     return () => window.clearTimeout(id);
   }, [lockErrorSeq]);
 
-  const speedPct = Math.min(100, Math.round((playerSpeed / PLAYER_MAX_SPEED) * 100));
-  const noiseLevel = speedPct >= 99 ? 'LOUD' : speedPct >= 80 ? 'RISKY' : 'SILENT';
+  const profile =
+    FIGURE_DIFFICULTY_PROFILES[figureDifficulty] ?? FIGURE_DIFFICULTY_PROFILES.STANDARD;
+  const silentPct = Math.round(profile.stealthThreshold * 100);
+  const loudPct = Math.min(97, silentPct + 16);
+  const speedPct = Math.min(100, Math.round((playerSpeed / Math.max(1, playerMaxSpeed)) * 100));
+  const noiseLevel = speedPct >= loudPct ? 'LOUD' : speedPct >= silentPct ? 'RISKY' : 'SILENT';
 
   const monster = libraryState.monster;
   const monsterStunned = monster.stunTimer > 0;

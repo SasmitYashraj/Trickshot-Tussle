@@ -17,7 +17,7 @@ interface ModifiersScreenProps {
 
 type LevelModifierKey = keyof Omit<
   MatchModifiers,
-  'keepBulletsOnStun' | 'postStunGrace' | 'figureDifficulty'
+  'keepBulletsOnStun' | 'figureDifficulty'
 >;
 
 interface LevelRowDef {
@@ -83,11 +83,6 @@ export function ModifiersScreen({
     onChange({ ...modifiers, keepBulletsOnStun: !modifiers.keepBulletsOnStun });
   };
 
-  const togglePostStunGrace = () => {
-    if (readOnly) return;
-    onChange({ ...modifiers, postStunGrace: !modifiers.postStunGrace });
-  };
-
   const resetDefaults = () => {
     if (readOnly) return;
     onChange({ ...DEFAULT_MATCH_MODIFIERS });
@@ -97,6 +92,12 @@ export function ModifiersScreen({
     modifiers.figureDifficulty ?? DEFAULT_MATCH_MODIFIERS.figureDifficulty;
   const activeFigureProfile =
     FIGURE_DIFFICULTY_PROFILES[activeFigureDiff] ?? FIGURE_DIFFICULTY_PROFILES.STANDARD;
+  const activePostStunLevel: ModifierLevel =
+    modifiers.postStunGrace === 'LOW' ||
+    modifiers.postStunGrace === 'MEDIUM' ||
+    modifiers.postStunGrace === 'HIGH'
+      ? modifiers.postStunGrace
+      : DEFAULT_MATCH_MODIFIERS.postStunGrace;
 
   const isDefault = (Object.keys(DEFAULT_MATCH_MODIFIERS) as Array<keyof MatchModifiers>).every(
     (k) => (modifiers[k] ?? DEFAULT_MATCH_MODIFIERS[k]) === DEFAULT_MATCH_MODIFIERS[k]
@@ -204,25 +205,37 @@ export function ModifiersScreen({
               </button>
             </div>
 
-            <div className="rounded-xl border border-slate-800 bg-slate-900/65 px-3.5 py-2.5 flex items-center justify-between gap-3">
-              <div>
-                <div className="text-xs font-bold text-slate-100">Post-Stun Bullet Grace</div>
-                <div className="text-[11px] text-slate-400 mt-0.5">
-                  Bullets pass through for 0.5s after stun ends
-                </div>
+            <div className="rounded-xl border border-slate-800 bg-slate-900/65 p-3">
+              <div className="flex items-baseline justify-between gap-2 mb-2">
+                <span className="text-xs font-bold text-slate-100">Post-Stun Protection</span>
+                <span className="text-[11px] text-slate-400">Grace shield &amp; speed after stun</span>
               </div>
-              <button
-                type="button"
-                disabled={readOnly}
-                onClick={togglePostStunGrace}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap shrink-0 border ${
-                  modifiers.postStunGrace
-                    ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
-                    : 'bg-slate-800 text-slate-300 border-slate-700'
-                } ${readOnly ? 'opacity-80 cursor-default' : 'cursor-pointer'}`}
-              >
-                {modifiers.postStunGrace ? '0.5s Grace' : 'No Grace'}
-              </button>
+              <div className="grid grid-cols-3 gap-1 p-1 rounded-lg bg-slate-950/90 border border-slate-800">
+                {LEVELS.map((lvl) => {
+                  const active = activePostStunLevel === lvl;
+                  const label =
+                    lvl === 'LOW' ? '0.5s +25%' : lvl === 'MEDIUM' ? '1.0s +50%' : '1.5s +75%';
+                  return (
+                    <button
+                      key={lvl}
+                      type="button"
+                      disabled={readOnly}
+                      onClick={() => setLevel('postStunGrace', lvl)}
+                      className={`px-2 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                        active
+                          ? lvl === 'MEDIUM'
+                            ? 'bg-sky-500 text-slate-950'
+                            : lvl === 'HIGH'
+                              ? 'bg-amber-400 text-slate-950'
+                              : 'bg-slate-600 text-white'
+                          : 'text-slate-400 hover:text-slate-200'
+                      } ${readOnly ? 'cursor-default' : 'cursor-pointer'}`}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
 
