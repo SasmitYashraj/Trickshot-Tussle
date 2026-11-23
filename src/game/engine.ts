@@ -245,6 +245,15 @@ interface BotAiMemory {
   stuckAvoidY: number;
   stuckAvoidTimer: number;
   lastSector: number;
+  tntEscAngle: number;
+  tntEscTimer: number;
+  escapeGoalX: number;
+  escapeGoalY: number;
+  escapeGoalTimer: number;
+  libMonsterEscAngle: number;
+  libMonsterEscTimer: number;
+  libRivalEscAngle: number;
+  libRivalEscTimer: number;
 }
 
 const TNT_HALF_SIZE = 29;
@@ -1841,6 +1850,15 @@ export class ArenaEngine {
         stuckAvoidY: bot.y,
         stuckAvoidTimer: 0,
         lastSector: -1,
+        tntEscAngle: bot.angle,
+        tntEscTimer: 0,
+        escapeGoalX: bot.x,
+        escapeGoalY: bot.y,
+        escapeGoalTimer: 0,
+        libMonsterEscAngle: bot.angle,
+        libMonsterEscTimer: 0,
+        libRivalEscAngle: bot.angle,
+        libRivalEscTimer: 0,
       };
       this.botAiMemory.set(bot.id, mem);
     }
@@ -1890,43 +1908,81 @@ export class ArenaEngine {
     return this.hasLineOfSight(bot.x, bot.y, tx, ty, bFloor);
   }
 
+  private segmentHitsBoxOnFloor(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    radius: number,
+    floor: FloorLevel
+  ): boolean {
+    for (const box of this.boxes) {
+      if (box.state !== 'active' && box.state !== 'spawning') continue;
+      if (!sameFloor(box.floor, floor)) continue;
+      const expanded: WallRect = {
+        x: box.x - box.w * 0.5 - radius,
+        y: box.y - box.h * 0.5 - radius,
+        w: box.w + radius * 2,
+        h: box.h + radius * 2,
+      };
+      if (segmentIntersectsRect(x1, y1, x2, y2, expanded)) return true;
+    }
+    return false;
+  }
+
   private pickClearMoveAngle(
     bot: Player,
     desiredAngle: number,
     probeDist = 72,
-    strafeBias = 1
+    strafeBias = 1,
+    avoidHazards = false,
+    avoidBoxes = false
   ): number {
     const bFloor = bot.floor ?? 0;
     const clearR = PLAYER_RADIUS + 4;
-    if (
-      this.isSegmentClearOnFloor(
-        bot.x,
-        bot.y,
-        bot.x + Math.cos(desiredAngle) * probeDist,
-        bot.y + Math.sin(desiredAngle) * probeDist,
-        clearR,
-        bFloor
-      )
-    ) {
+    const directX = bot.x + Math.cos(desiredAngle) * probeDist;
+    const directY = bot.y + Math.sin(desiredAngle) * probeDist;
+    const isDirectOk =
+      this.isSegmentClearOnFloor(bot.x, bot.y, directX, directY, clearR, bFloor) &&
+      (!avoidHazards || !this.segmentHitsHazardOnFloor(bot.x, bot.y, directX, directY, bFloor)) &&
+      (!avoidBoxes || !this.segmentHitsBoxOnFloor(bot.x, bot.y, directX, directY, PLAYER_RADIUS * 0.65, bFloor));
+    if (isDirectOk) {
       return desiredAngle;
     }
 
     const offsets = [0.45, -0.45, 0.9, -0.9, 1.35, -1.35, 1.85, -1.85, 2.45, -2.45, Math.PI];
-    let bestAngle = desiredAngle + strafeBias * 1.15;
-    let bestScore = -Infinity;
-    for (const off of offsets) {
-      const cand = normalizeAngle(desiredAngle + off * strafeBias);
-      const px = bot.x + Math.cos(cand) * probeDist;
-      const py = bot.y + Math.sin(cand) * probeDist;
-      if (!this.isPointWalkableOnFloor(px, py, clearR, bFloor)) continue;
-      if (!this.isSegmentClearOnFloor(bot.x, bot.y, px, py, clearR - 2, bFloor)) continue;
-      const align = Math.cos(normalizeAngle(cand - desiredAngle));
-      if (align > bestScore) {
-        bestScore = align;
-        bestAngle = cand;
+    let bestSafeAngle: number | null = null;
+    let bestSafeScore = -Infinity;
+    let bestWallAngle: number | null = null;
+    let bestWallScore = -Infinity;
+
+    const tryProbeDist = (distCheck: number) => {
+      for (const off of offsets) {
+        const cand = normalizeAngle(desiredAngle + off * strafeBias);
+        const px = bot.x + Math.cos(cand) * distCheck;
+        const py = bot.y + Math.sin(cand) * distCheck;
+        if (!this.isPointWalkableOnFloor(px, py, clearR, bFloor)) continue;
+        if (!this.isSegmentClearOnFloor(bot.x, bot.y, px, py, clearR - 2, bFloor)) continue;
+        const align = Math.cos(normalizeAngle(cand - desiredAngle));
+        if (align > bestWallScore) {
+          bestWallScore = align;
+          bestWallAngle = cand;
+        }
+        if (avoidHazards && this.segmentHitsHazardOnFloor(bot.x, bot.y, px, py, bFloor)) continue;
+        if (avoidBoxes && this.segmentHitsBoxOnFloor(bot.x, bot.y, px, py, PLAYER_RADIUS * 0.65, bFloor)) continue;
+        if (align > bestSafeScore) {
+          bestSafeScore = align;
+          bestSafeAngle = cand;
+        }
       }
+    };
+
+    tryProbeDist(probeDist);
+    // Tight corridor/crate fallback: probe shorter distance so bots never hit opposite walls and fall back blindly
+    if (bestSafeAngle === null && probeDist > 42) {
+      tryProbeDist(Math.max(30, probeDist * 0.52));
     }
-    return bestAngle;
+    return bestSafeAngle ?? bestWallAngle ?? normalizeAngle(desiredAngle + strafeBias * 1.15);
   }
 
   private segmentHitsHazardOnFloor(
@@ -1965,6 +2021,89 @@ export class ArenaEngine {
     return false;
   }
 
+  private countOpenExits(x: number, y: number, floor: FloorLevel = 0): number {
+    let exits = 0;
+    const checkR = PLAYER_RADIUS + 2;
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      const px = x + Math.cos(a) * 145;
+      const py = y + Math.sin(a) * 145;
+      if (this.isSegmentClearOnFloor(x, y, px, py, checkR, floor)) {
+        exits++;
+      }
+    }
+    return exits;
+  }
+
+  private pickTntSafeEscapeAngle(
+    bot: Player,
+    floor: FloorLevel,
+    prevAngle: number | null = null
+  ): number | null {
+    const armedTnts = this.pickups.filter(
+      (p) =>
+        p.kind === 'tnt' &&
+        p.armed &&
+        sameFloor(p.floor, floor) &&
+        dist(bot.x, bot.y, p.x, p.y) < TNT_BLAST_RADIUS + 95
+    );
+    if (armedTnts.length === 0) return null;
+
+    const clearR = PLAYER_RADIUS + 4;
+    let bestAngle = Math.atan2(bot.y - armedTnts[0].y, bot.x - armedTnts[0].x);
+    let bestScore = -Infinity;
+
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2;
+      for (const probeDist of [125, 200]) {
+        const px = bot.x + Math.cos(a) * probeDist;
+        const py = bot.y + Math.sin(a) * probeDist;
+        if (!this.isPointWalkableOnFloor(px, py, clearR, floor)) continue;
+        if (!this.isSegmentClearOnFloor(bot.x, bot.y, px, py, clearR - 2, floor)) continue;
+
+        let minTntDist = Infinity;
+        for (const t of armedTnts) {
+          const predTx = t.x + (t.vx ?? 0) * 0.42;
+          const predTy = t.y + (t.vy ?? 0) * 0.42;
+          const dCur = dist(px, py, t.x, t.y);
+          const dPred = dist(px, py, predTx, predTy);
+          minTntDist = Math.min(minTntDist, dCur, dPred);
+        }
+
+        let score =
+          minTntDist >= TNT_BLAST_RADIUS + 54
+            ? 750 + Math.min(220, minTntDist - TNT_BLAST_RADIUS)
+            : minTntDist * 3.8;
+
+        const exits = this.countOpenExits(px, py, floor);
+        score += exits >= 4 ? exits * 62 : -280 + exits * 45;
+        if (prevAngle !== null) {
+          score += Math.cos(normalizeAngle(a - prevAngle)) * 95;
+        }
+
+        for (const p of this.pickups) {
+          if (!sameFloor(p.floor, floor)) continue;
+          if (p.kind === 'nitro' && dist(px, py, p.x, p.y) < NITRO_RADIUS + PLAYER_RADIUS + 42) {
+            score -= 800;
+          }
+        }
+        for (const pit of this.icePits) {
+          if (pit.broken && isPointInIcePit(px, py, pit, PLAYER_RADIUS + 26)) {
+            score -= 850;
+          }
+        }
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestAngle = a;
+        }
+        // Only check longer 200px reach if 125px stayed inside the blast margin
+        if (probeDist === 125 && minTntDist >= TNT_BLAST_RADIUS + 54) break;
+      }
+    }
+    return bestAngle;
+  }
+
   private getMapSector(x: number, y: number): number {
     const col = clamp(Math.floor((x / this.map.width) * 3), 0, 2);
     const row = clamp(Math.floor((y / this.map.height) * 2), 0, 1);
@@ -1973,7 +2112,7 @@ export class ArenaEngine {
 
   private pickArenaPatrolPoint(bot: Player): Vec2 {
     const mem = this.getBotMemory(bot);
-    const pad = ARENA_WALL_THICKNESS + PLAYER_RADIUS + 54;
+    const pad = ARENA_WALL_THICKNESS + PLAYER_RADIUS + 68;
     const minDist = this.isImmersiveMode() ? Math.max(680, this.map.width * 0.36) : 340;
     const botSector = this.getMapSector(bot.x, bot.y);
     const bFloor = bot.floor ?? 0;
@@ -1986,16 +2125,19 @@ export class ArenaEngine {
       const dSelf = dist(bot.x, bot.y, x, y);
       if (
         dSelf >= (tries < 20 ? minDist : minDist * 0.55) &&
-        this.isPointWalkableOnFloor(x, y, PLAYER_RADIUS + 12, bFloor)
+        this.isPointWalkableOnFloor(x, y, PLAYER_RADIUS + 14, bFloor)
       ) {
         const sec = this.getMapSector(x, y);
-        let score = dSelf * 0.35;
+        const exits = this.countOpenExits(x, y, bFloor);
+        let score = dSelf * 0.35 + (exits <= 2 ? -320 : exits * 45);
         if (sec !== botSector) score += 420;
         if (sec !== mem.lastSector) score += 260;
-        // Slightly avoid picking a point right next to a Nitro crate
         for (const p of this.pickups) {
-          if (p.kind === 'nitro' && sameFloor(p.floor, bFloor) && dist(x, y, p.x, p.y) < 120) {
-            score -= 400;
+          if (!sameFloor(p.floor, bFloor)) continue;
+          if (p.kind === 'nitro' && dist(x, y, p.x, p.y) < 130) {
+            score -= 450;
+          } else if (p.kind === 'tnt' && p.armed && dist(x, y, p.x, p.y) < TNT_BLAST_RADIUS + 70) {
+            score -= 900;
           }
         }
         // Only softly spread from bots when >= 3 alive; when 2 remain, do NOT keep them in opposite corners!
@@ -2250,25 +2392,27 @@ export class ArenaEngine {
     threats: Player[],
     floor: FloorLevel,
     safeMedkit: Pickup | null,
-    safeBullet: Pickup | null
+    safeBullet: Pickup | null,
+    prevGoal: Vec2 | null = null
   ): Vec2 {
     const clearR = PLAYER_RADIUS + 4;
-    const pad = ARENA_WALL_THICKNESS + PLAYER_RADIUS + 34;
+    const pad = ARENA_WALL_THICKNESS + PLAYER_RADIUS + 48;
+    const centerX = this.map.width * 0.5;
+    const centerY = this.map.height * 0.5;
     const candidates: Vec2[] = [];
 
     for (let i = 0; i < 16; i++) {
       const a = (i / 16) * Math.PI * 2;
-      for (const r of [210, 350]) {
+      for (const r of [190, 320]) {
         candidates.push({ x: bot.x + Math.cos(a) * r, y: bot.y + Math.sin(a) * r });
       }
     }
-    let navAdded = 0;
+    // Evaluate well-connected nav intersections across the floor so unarmed bots route into open corridors instead of corners
     for (const node of this.botNavNodes) {
       if (!sameFloor(node.floor, floor)) continue;
       const dn = dist(bot.x, bot.y, node.x, node.y);
-      if (dn >= 150 && dn <= 560) {
+      if (dn >= 140 && dn <= 640 && node.neighbors.length >= 2) {
         candidates.push({ x: node.x, y: node.y });
-        if (++navAdded >= 14) break;
       }
     }
     if (safeMedkit) candidates.push({ x: safeMedkit.x, y: safeMedkit.y });
@@ -2291,41 +2435,102 @@ export class ArenaEngine {
       if (directClear && this.segmentHitsHazardOnFloor(bot.x, bot.y, pt.x, pt.y, floor)) continue;
 
       let score = directClear ? 95 : 0;
+
+      // Reject dead-end corners & reward open multi-exit intersections (never get cornered!)
+      const exits = this.countOpenExits(pt.x, pt.y, floor);
+      if (exits <= 2) {
+        score -= 560;
+      } else if (exits === 3) {
+        score -= 120;
+      } else {
+        score += exits * 58;
+      }
+
+      // Strongly reject points near armed TNTs (predicting sliding TNT), Nitros, or broken ice
+      let nearHazard = false;
+      for (const p of this.pickups) {
+        if (!sameFloor(p.floor, floor)) continue;
+        if (p.kind === 'tnt' && p.armed) {
+          const tx = p.x + (p.vx ?? 0) * 0.42;
+          const ty = p.y + (p.vy ?? 0) * 0.42;
+          const dTnt = Math.min(dist(pt.x, pt.y, p.x, p.y), dist(pt.x, pt.y, tx, ty));
+          if (dTnt < TNT_BLAST_RADIUS + 64) {
+            score -= 1300;
+            nearHazard = true;
+          }
+        } else if (p.kind === 'nitro') {
+          if (dist(pt.x, pt.y, p.x, p.y) < NITRO_RADIUS + PLAYER_RADIUS + 46) {
+            score -= 1050;
+            nearHazard = true;
+          }
+        }
+      }
+      if (!nearHazard) {
+        for (const pit of this.icePits) {
+          if (pit.broken && isPointInIcePit(pt.x, pt.y, pit, PLAYER_RADIUS + 34)) {
+            score -= 1100;
+            break;
+          }
+        }
+      }
+
       let minThreatDist = Infinity;
+      const moveLen = Math.max(1, dist(bot.x, bot.y, pt.x, pt.y));
+      const moveUx = (pt.x - bot.x) / moveLen;
+      const moveUy = (pt.y - bot.y) / moveLen;
 
       for (const t of threats) {
         const dt = dist(pt.x, pt.y, t.x, t.y);
         minThreatDist = Math.min(minThreatDist, dt);
         const hasLos = this.hasLineOfSight(t.x, t.y, pt.x, pt.y, floor);
         if (!hasLos) {
-          score += t.ammo > 0 ? 340 : 210;
-        } else if (t.ammo > 0 && dt < 360) {
+          score += t.ammo > 0 ? 360 : 220;
+        } else if (t.ammo > 0 && dt < 370) {
           const aimOff = Math.abs(normalizeAngle(Math.atan2(pt.y - t.y, pt.x - t.x) - t.angle));
-          if (aimOff < 0.38) score -= 220;
+          if (aimOff < 0.38) score -= 240;
+        }
+
+        // Penalize running straight toward a close armed threat in LOS (unless flanking behind cover)
+        const dBotThreat = dist(bot.x, bot.y, t.x, t.y);
+        if (t.ammo > 0 && dBotThreat < 360 && dt < dBotThreat - 30 && hasLos) {
+          const toThreatUx = (t.x - bot.x) / Math.max(1, dBotThreat);
+          const toThreatUy = (t.y - bot.y) / Math.max(1, dBotThreat);
+          if (moveUx * toThreatUx + moveUy * toThreatUy > 0.45) {
+            score -= 360;
+          }
         }
       }
 
       if (Number.isFinite(minThreatDist)) {
-        score += Math.min(500, minThreatDist) * 0.85;
+        score += Math.min(440, minThreatDist) * 0.72;
+      }
+
+      // Bias toward open arena center/midfield rather than getting pinned along outer walls
+      const botCenterD = dist(bot.x, bot.y, centerX, centerY);
+      const ptCenterD = dist(pt.x, pt.y, centerX, centerY);
+      if (ptCenterD < botCenterD) {
+        score += Math.min(180, (botCenterD - ptCenterD) * 0.45);
       }
 
       if (safeMedkit && bot.hp < bot.maxHp) {
         const dm = dist(pt.x, pt.y, safeMedkit.x, safeMedkit.y);
-        if (dm < 260) score += (260 - dm) * 1.1;
+        if (dm < 260) score += (260 - dm) * 1.15;
       }
       if (safeBullet && bot.ammo === 0) {
         const db = dist(pt.x, pt.y, safeBullet.x, safeBullet.y);
-        if (db < 220) score += (220 - db) * 0.9;
+        if (db < 260) score += (260 - db) * 1.1;
       }
 
-      // Softly avoid trapping self in tight outer corners
       const edgeClear = Math.min(
         pt.x - ARENA_WALL_THICKNESS,
         this.map.width - ARENA_WALL_THICKNESS - pt.x,
         pt.y - ARENA_WALL_THICKNESS,
         this.map.height - ARENA_WALL_THICKNESS - pt.y
       );
-      if (edgeClear < 90) score -= (90 - edgeClear) * 1.6;
+      if (edgeClear < 135) score -= (135 - edgeClear) * 2.2;
+      if (prevGoal && !nearHazard && dist(pt.x, pt.y, prevGoal.x, prevGoal.y) < 125) {
+        score += 135;
+      }
 
       if (score > bestScore) {
         bestScore = score;
@@ -2334,13 +2539,11 @@ export class ArenaEngine {
     }
 
     if (bestPt) return bestPt;
-    const meanX = threats.reduce((s, t) => s + t.x, 0) / Math.max(1, threats.length);
-    const meanY = threats.reduce((s, t) => s + t.y, 0) / Math.max(1, threats.length);
-    const awayA = Math.atan2(bot.y - meanY, bot.x - meanX);
-    const escA = this.pickClearMoveAngle(bot, awayA, 140, bot.aiStrafeDir);
+    const awayCenterA = Math.atan2(centerY - bot.y, centerX - bot.x);
+    const escA = this.pickClearMoveAngle(bot, awayCenterA, 120, bot.aiStrafeDir, true, true);
     return {
-      x: clamp(bot.x + Math.cos(escA) * 200, pad, this.map.width - pad),
-      y: clamp(bot.y + Math.sin(escA) * 200, pad, this.map.height - pad),
+      x: clamp(bot.x + Math.cos(escA) * 180, pad, this.map.width - pad),
+      y: clamp(bot.y + Math.sin(escA) * 180, pad, this.map.height - pad),
     };
   }
 
@@ -2417,33 +2620,53 @@ export class ArenaEngine {
     mem.unstickTimer = Math.max(0, mem.unstickTimer - dt);
     mem.stuckAvoidTimer = Math.max(0, mem.stuckAvoidTimer - dt);
     mem.pendingShotExpire = Math.max(0, mem.pendingShotExpire - dt);
+    mem.tntEscTimer = Math.max(0, mem.tntEscTimer - dt);
+    mem.escapeGoalTimer = Math.max(0, mem.escapeGoalTimer - dt);
     mem.scanPhase += dt * (this.config.extraDark ? 2.1 : 1.3);
 
     if (mem.pendingShotExpire <= 0) {
       mem.pendingShotAngle = null;
     }
 
-    // Stuck detection — marks avoid zone & forces A* backtrack onto an alternate corridor!
+    // Stuck detection — marks avoid zone & forces A* backtrack toward nearest open nav corridor!
     if (dist(bot.x, bot.y, mem.lastProgressX, mem.lastProgressY) > 20) {
       mem.lastProgressX = bot.x;
       mem.lastProgressY = bot.y;
       mem.stuckTimer = 0;
     } else if (bot.aiMoveRatio > 0.25) {
       mem.stuckTimer += dt;
-      if (mem.stuckTimer > 0.6) {
+      if (mem.stuckTimer > 0.45) {
         mem.stuckTimer = 0;
         bot.aiStrafeDir *= -1;
         mem.stuckAvoidX = bot.x;
         mem.stuckAvoidY = bot.y;
         mem.stuckAvoidTimer = 4.5;
         this.botPaths.delete(bot.id);
-        mem.unstickTimer = 0.45;
-        mem.unstickAngle = this.pickClearMoveAngle(
-          bot,
-          normalizeAngle(bot.aiTargetAngle + Math.PI * 0.85 * bot.aiStrafeDir),
-          88,
-          bot.aiStrafeDir
-        );
+        mem.unstickTimer = 0.5;
+        const nearestNode = this.findClosestNavNodeOnGraph(this.botNavNodes, bot.x, bot.y, bFloor, true);
+        if (
+          nearestNode &&
+          dist(bot.x, bot.y, nearestNode.x, nearestNode.y) > 16 &&
+          !this.segmentHitsHazardOnFloor(bot.x, bot.y, nearestNode.x, nearestNode.y, bFloor)
+        ) {
+          mem.unstickAngle = this.pickClearMoveAngle(
+            bot,
+            Math.atan2(nearestNode.y - bot.y, nearestNode.x - bot.x),
+            88,
+            bot.aiStrafeDir,
+            diff !== 'CHILL',
+            diff === 'RUTHLESS'
+          );
+        } else {
+          mem.unstickAngle = this.pickClearMoveAngle(
+            bot,
+            normalizeAngle(bot.aiTargetAngle + Math.PI * 0.72 * bot.aiStrafeDir),
+            88,
+            bot.aiStrafeDir,
+            diff !== 'CHILL',
+            diff === 'RUTHLESS'
+          );
+        }
         const np = this.pickArenaPatrolPoint(bot);
         mem.patrolX = np.x;
         mem.patrolY = np.y;
@@ -2478,26 +2701,48 @@ export class ArenaEngine {
       }
     }
 
-    // 2. Explosive hazard evasion
+    // 2. Explosive hazard evasion (cached/smoothed every ~0.11s so movement stays silky smooth)
+    let urgentTntEscape = false;
+    if (diff !== 'CHILL') {
+      const hasArmedTntNear = this.pickups.some(
+        (p) =>
+          p.kind === 'tnt' &&
+          p.armed &&
+          sameFloor(p.floor, bFloor) &&
+          dist(bot.x, bot.y, p.x, p.y) < TNT_BLAST_RADIUS + 95
+      );
+      if (hasArmedTntNear) {
+        urgentTntEscape = true;
+        if (mem.tntEscTimer <= 0) {
+          const tntEscA = this.pickTntSafeEscapeAngle(bot, bFloor, mem.tntEscAngle);
+          if (tntEscA !== null) {
+            mem.tntEscAngle = tntEscA;
+          }
+          mem.tntEscTimer = 0.11;
+        }
+        evadeX += Math.cos(mem.tntEscAngle) * 4.2;
+        evadeY += Math.sin(mem.tntEscAngle) * 4.2;
+      } else {
+        mem.tntEscTimer = 0;
+      }
+    }
     for (const p of this.pickups) {
       if (!sameFloor(p.floor, bFloor)) continue;
-      if (p.kind === 'tnt' && p.armed) {
+      if (p.kind === 'tnt' && p.armed && diff === 'CHILL') {
         const d = dist(bot.x, bot.y, p.x, p.y);
-        const fleeR = diff === 'CHILL' ? 105 : diff === 'RUTHLESS' ? TNT_BLAST_RADIUS + 62 : TNT_BLAST_RADIUS + 42;
-        if (d < fleeR) {
+        if (d < 105) {
           const away = Math.atan2(bot.y - p.y, bot.x - p.x);
-          const mult = diff === 'CHILL' ? 1.2 : 2.8;
-          const urgency = ((fleeR - d) / TNT_BLAST_RADIUS) * mult;
+          const urgency = ((105 - d) / TNT_BLAST_RADIUS) * 1.2;
           evadeX += Math.cos(away) * urgency;
           evadeY += Math.sin(away) * urgency;
         }
       } else if (p.kind === 'nitro' && diff !== 'CHILL') {
         const d = dist(bot.x, bot.y, p.x, p.y);
-        const safeDist = diff === 'RUTHLESS' ? NITRO_RADIUS + PLAYER_RADIUS + 38 : NITRO_RADIUS + PLAYER_RADIUS + 20;
+        const safeDist = diff === 'RUTHLESS' ? NITRO_RADIUS + PLAYER_RADIUS + 42 : NITRO_RADIUS + PLAYER_RADIUS + 20;
         if (d < safeDist) {
           const away = Math.atan2(bot.y - p.y, bot.x - p.x);
-          evadeX += Math.cos(away) * 2.2;
-          evadeY += Math.sin(away) * 2.2;
+          evadeX += Math.cos(away) * 2.4;
+          evadeY += Math.sin(away) * 2.4;
         }
       }
     }
@@ -2513,21 +2758,23 @@ export class ArenaEngine {
     }
 
     const isImmersive = this.isImmersiveMode();
-    // 4. Bot-to-bot separation & unarmed disengaging (prevents clumping & 0-ammo hugging!)
+    // 4. Bot-to-bot soft separation (kept separate from hardEvading so bots pass smoothly without cancelling combat!)
+    let sepX = 0;
+    let sepY = 0;
     for (const other of this.players) {
       if (other.id === bot.id || !other.alive || !sameFloor(other.floor, bFloor)) continue;
       const dO = dist(bot.x, bot.y, other.x, other.y);
       const isEnemy = !this.isTeammate(bot.id, other.id);
-      if (bot.ammo === 0 && isEnemy && other.ammo > 0 && dO < 420 && (!isImmersive || this.canBotSeePoint(bot, other.x, other.y, other.floor ?? 0))) {
+      if (diff === 'CHILL' && bot.ammo === 0 && isEnemy && other.ammo > 0 && dO < 360 && (!isImmersive || this.canBotSeePoint(bot, other.x, other.y, other.floor ?? 0))) {
         const away = Math.atan2(bot.y - other.y, bot.x - other.x);
-        const push = ((420 - dO) / 420) * 2.4;
+        const push = ((360 - dO) / 360) * 1.8;
         evadeX += Math.cos(away) * push;
         evadeY += Math.sin(away) * push;
-      } else if (!other.isHuman && dO < 150 && dO > 1) {
+      } else if (!other.isHuman && dO < 78 && dO > 1) {
         const away = Math.atan2(bot.y - other.y, bot.x - other.x);
-        const rep = ((150 - dO) / 150) * 1.15;
-        evadeX += Math.cos(away) * rep;
-        evadeY += Math.sin(away) * rep;
+        const rep = ((78 - dO) / 78) * 0.85;
+        sepX += Math.cos(away) * rep;
+        sepY += Math.sin(away) * rep;
       }
     }
 
@@ -2575,13 +2822,20 @@ export class ArenaEngine {
     let activeAimAngle: number | null = mem.pendingShotAngle;
 
     const hardEvading = Math.hypot(evadeX, evadeY) > 0.35;
-    if (hardEvading) {
-      const rawEvade = Math.atan2(evadeY, evadeX);
-      bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawEvade, 74, bot.aiStrafeDir);
-      bot.aiMoveRatio = 1.0;
-    } else if (mem.unstickTimer > 0) {
+    if (mem.unstickTimer > 0 && !urgentTntEscape) {
       bot.aiTargetAngle = mem.unstickAngle;
-      bot.aiMoveRatio = 0.9;
+      bot.aiMoveRatio = 0.95;
+    } else if (hardEvading) {
+      const rawEvade = Math.atan2(evadeY, evadeX);
+      bot.aiTargetAngle = this.pickClearMoveAngle(
+        bot,
+        rawEvade,
+        74,
+        bot.aiStrafeDir,
+        diff !== 'CHILL' && !urgentTntEscape,
+        diff === 'RUTHLESS' && !urgentTntEscape
+      );
+      bot.aiMoveRatio = 1.0;
     } else if (bot.aiThinkTimer <= 0) {
       bot.aiThinkTimer = reactionInterval + Math.random() * 0.08;
       if (Math.random() < 0.24) bot.aiStrafeDir *= -1;
@@ -2862,13 +3116,18 @@ export class ArenaEngine {
 
       if (shouldTacticalEscape && visibleEnemies.length > 0) {
         // Ruthless uses post-stun speed boost / low-HP urgency to escape behind cover and break targeting!
+        const prevEsc = mem.escapeGoalTimer > 0 ? { x: mem.escapeGoalX, y: mem.escapeGoalY } : null;
         const escPt = this.pickSafeEscapePoint(
           bot,
           visibleEnemies,
           bFloor,
           bot.hp < bot.maxHp ? nearestMedkit?.p ?? null : null,
-          bot.ammo === 0 ? nearestBullet?.p ?? null : null
+          bot.ammo === 0 ? nearestBullet?.p ?? null : null,
+          prevEsc
         );
+        mem.escapeGoalX = escPt.x;
+        mem.escapeGoalY = escPt.y;
+        mem.escapeGoalTimer = 1.4;
         goalX = escPt.x;
         goalY = escPt.y;
         moveRatio = 1.0;
@@ -2887,14 +3146,18 @@ export class ArenaEngine {
           planCombatShot(target);
         }
       } else if (bot.ammo === 0 || shouldStockpileRuthless) {
-        // NEVER chase enemy when ammo === 0! Seek safe bullets or explore fresh arena sectors
+        // Unarmed / stockpiling: seek safe bullets via open flanks; if pressured with no safe bullet, counter-flank instead of cornering!
         if (nearestBullet) {
           goalX = nearestBullet.p.x;
           goalY = nearestBullet.p.y;
           moveRatio = 0.98;
           isSeekingPickup = true;
-        } else if (diff === 'RUTHLESS' && visibleEnemies.length > 0 && bot.ammo === 0) {
-          const escPt = this.pickSafeEscapePoint(bot, visibleEnemies, bFloor, null, null);
+        } else if (diff !== 'CHILL' && visibleEnemies.length > 0 && bot.ammo === 0) {
+          const prevEsc = mem.escapeGoalTimer > 0 ? { x: mem.escapeGoalX, y: mem.escapeGoalY } : null;
+          const escPt = this.pickSafeEscapePoint(bot, visibleEnemies, bFloor, null, null, prevEsc);
+          mem.escapeGoalX = escPt.x;
+          mem.escapeGoalY = escPt.y;
+          mem.escapeGoalTimer = 1.4;
           goalX = escPt.x;
           goalY = escPt.y;
           moveRatio = 1.0;
@@ -2995,14 +3258,40 @@ export class ArenaEngine {
         }
       }
 
-      // Use cached hazard-aware A* path whenever direct segment hits walls or Nitros/broken ice pits!
+      const useThreatFlanking =
+        diff === 'RUTHLESS' &&
+        visibleEnemies.length > 0 &&
+        (bot.ammo === 0 || shouldTacticalEscape || bot.hp <= 42);
+      const threatZones = useThreatFlanking
+        ? visibleEnemies
+            .filter((e) => e.ammo > 0 && e.stunTimer <= 0)
+            .map((e) => ({
+              x: e.x,
+              y: e.y,
+              floor: e.floor ?? 0,
+              radius: 235,
+              penalty: 580,
+            }))
+        : undefined;
+
+      // Use cached hazard-aware & threat-flanking A* path whenever direct segment hits walls, Nitros/TNTs, or enemy firing lanes!
       let wpX = goalX;
       let wpY = goalY;
       const directWallClear = this.isSegmentClearOnFloor(bot.x, bot.y, goalX, goalY, PLAYER_RADIUS + 2, bFloor);
       const directHazardHit =
         diff !== 'CHILL' && this.segmentHitsHazardOnFloor(bot.x, bot.y, goalX, goalY, bFloor);
+      const directThreatCross =
+        Boolean(threatZones && threatZones.length > 0) &&
+        threatZones!.some((tz) => {
+          const dx = goalX - bot.x;
+          const dy = goalY - bot.y;
+          const lenSq = dx * dx + dy * dy;
+          if (lenSq < 16) return false;
+          const t = clamp(((tz.x - bot.x) * dx + (tz.y - bot.y) * dy) / lenSq, 0, 1);
+          return dist(bot.x + dx * t, bot.y + dy * t, tz.x, tz.y) < tz.radius * 0.72;
+        });
 
-      if ((!directWallClear || directHazardHit) && this.botNavNodes.length > 0) {
+      if ((!directWallClear || directHazardHit || directThreatCross) && this.botNavNodes.length > 0) {
         const existing = this.botPaths.get(bot.id);
         const needNewPath =
           !existing ||
@@ -3017,8 +3306,9 @@ export class ArenaEngine {
               mem.stuckAvoidTimer > 0
                 ? { x: mem.stuckAvoidX, y: mem.stuckAvoidY, radius: 135 }
                 : undefined,
+            avoidThreats: threatZones,
           });
-          this.botPaths.set(bot.id, { nodes, timer: 0.55, goalX, goalY, goalFloor: bFloor });
+          this.botPaths.set(bot.id, { nodes, timer: 0.45, goalX, goalY, goalFloor: bFloor });
         } else {
           existing.timer -= reactionInterval;
         }
@@ -3041,6 +3331,12 @@ export class ArenaEngine {
       }
 
       let rawMoveAngle = Math.atan2(wpY - bot.y, wpX - bot.x);
+      if (Math.hypot(sepX, sepY) > 0.05 && !isSeekingPickup) {
+        rawMoveAngle = Math.atan2(
+          Math.sin(rawMoveAngle) + sepY * 0.45,
+          Math.cos(rawMoveAngle) + sepX * 0.45
+        );
+      }
       if (diff === 'RUTHLESS' && Math.hypot(aimDodge.x, aimDodge.y) > 0.35 && !isSeekingPickup) {
         const bx = Math.cos(rawMoveAngle) * 0.72 + aimDodge.x * 0.65;
         const by = Math.sin(rawMoveAngle) * 0.72 + aimDodge.y * 0.65;
@@ -3049,7 +3345,14 @@ export class ArenaEngine {
       }
       const wpDist = dist(bot.x, bot.y, wpX, wpY);
       const probeDist = isSeekingPickup && wpDist < 130 ? Math.max(24, wpDist - 8) : 68;
-      bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawMoveAngle, probeDist, bot.aiStrafeDir);
+      bot.aiTargetAngle = this.pickClearMoveAngle(
+        bot,
+        rawMoveAngle,
+        probeDist,
+        bot.aiStrafeDir,
+        diff !== 'CHILL',
+        diff === 'RUTHLESS' && !(isSeekingPickup && wpDist < 110)
+      );
       bot.aiMoveRatio = moveRatio;
     }
 
@@ -4216,6 +4519,7 @@ export class ArenaEngine {
     opts?: {
       avoidHazards?: boolean;
       avoidPoint?: { x: number; y: number; radius: number };
+      avoidThreats?: Array<{ x: number; y: number; floor: FloorLevel; radius: number; penalty: number }>;
     }
   ): NavNode[] {
     if (graph.length === 0) return [];
@@ -4226,15 +4530,16 @@ export class ArenaEngine {
 
     const avoidHazards = Boolean(opts?.avoidHazards);
     const avoidPt = opts?.avoidPoint;
+    const avoidThreats = opts?.avoidThreats ?? [];
     const hazards = avoidHazards
       ? this.pickups
           .filter((p) => p.kind === 'nitro' || (p.kind === 'tnt' && p.armed))
           .map((p) => ({
-            x: p.x,
-            y: p.y,
+            x: p.kind === 'tnt' ? p.x + (p.vx ?? 0) * 0.42 : p.x,
+            y: p.kind === 'tnt' ? p.y + (p.vy ?? 0) * 0.42 : p.y,
             floor: p.floor ?? 0,
-            radius: p.kind === 'nitro' ? NITRO_RADIUS + PLAYER_RADIUS + 48 : TNT_BLAST_RADIUS + 44,
-            penalty: p.kind === 'nitro' ? 680 : 950,
+            radius: p.kind === 'nitro' ? NITRO_RADIUS + PLAYER_RADIUS + 48 : TNT_BLAST_RADIUS + 54,
+            penalty: p.kind === 'nitro' ? 850 : 1400,
           }))
       : [];
     const brokenPits = avoidHazards ? this.icePits.filter((pit) => pit.broken) : [];
@@ -4308,15 +4613,35 @@ export class ArenaEngine {
         if (closed[nbId]) continue;
         const nb = graph[nbId];
         let stepCost = curr.floor !== nb.floor ? 120 : dist(curr.x, curr.y, nb.x, nb.y);
+        const midX = (curr.x + nb.x) * 0.5;
+        const midY = (curr.y + nb.y) * 0.5;
         if (avoidHazards) {
           for (const h of hazards) {
-            if (h.floor === nb.floor && dist(nb.x, nb.y, h.x, h.y) < h.radius) {
+            if (
+              h.floor === nb.floor &&
+              (dist(nb.x, nb.y, h.x, h.y) < h.radius ||
+                (curr.floor === nb.floor && dist(midX, midY, h.x, h.y) < h.radius))
+            ) {
               stepCost += h.penalty;
             }
           }
           for (const pit of brokenPits) {
-            if (isPointInIcePit(nb.x, nb.y, pit, PLAYER_RADIUS + 34)) {
-              stepCost += 900;
+            if (
+              isPointInIcePit(nb.x, nb.y, pit, PLAYER_RADIUS + 34) ||
+              isPointInIcePit(midX, midY, pit, PLAYER_RADIUS + 34)
+            ) {
+              stepCost += 950;
+            }
+          }
+        }
+        if (avoidThreats.length > 0) {
+          for (const tz of avoidThreats) {
+            if (
+              tz.floor === nb.floor &&
+              (dist(nb.x, nb.y, tz.x, tz.y) < tz.radius ||
+                (curr.floor === nb.floor && dist(midX, midY, tz.x, tz.y) < tz.radius))
+            ) {
+              stepCost += tz.penalty;
             }
           }
         }
@@ -4985,7 +5310,16 @@ export class ArenaEngine {
       if (!this.isSegmentClearOnFloor(bot.x, bot.y, px, py, clearR - 2, floor)) continue;
 
       const nextD = dist(px, py, monster.x, monster.y);
-      let score = nextD;
+      const exits = this.countOpenExits(px, py, floor);
+      let score = nextD + (exits <= 2 ? -240 : exits * 28);
+      for (const p of this.pickups) {
+        if (!sameFloor(p.floor, floor)) continue;
+        if (p.kind === 'tnt' && p.armed && dist(px, py, p.x, p.y) < TNT_BLAST_RADIUS + 52) {
+          score -= 900;
+        } else if (p.kind === 'nitro' && dist(px, py, p.x, p.y) < NITRO_RADIUS + PLAYER_RADIUS + 34) {
+          score -= 700;
+        }
+      }
       // Bonus if heading toward an open staircase entry to shake Figure across floors
       for (const st of this.map.stairs ?? []) {
         const entryX = st.x + st.w * 0.5;
@@ -5029,6 +5363,10 @@ export class ArenaEngine {
     mem.goalLockTimer = Math.max(0, mem.goalLockTimer - dt);
     mem.defendPillarTimer = Math.max(0, mem.defendPillarTimer - dt);
     mem.pendingShotExpire = Math.max(0, mem.pendingShotExpire - dt);
+    mem.tntEscTimer = Math.max(0, mem.tntEscTimer - dt);
+    mem.escapeGoalTimer = Math.max(0, mem.escapeGoalTimer - dt);
+    mem.libMonsterEscTimer = Math.max(0, mem.libMonsterEscTimer - dt);
+    mem.libRivalEscTimer = Math.max(0, mem.libRivalEscTimer - dt);
     if (mem.pendingShotExpire <= 0) mem.pendingShotAngle = null;
 
     if (bot.hp < mem.lastKnownHp || bot.hurtFlashTimer > 0 || bot.stunTimer > 0) {
@@ -5161,9 +5499,12 @@ export class ArenaEngine {
         (m.mode === 'rage' && dist(m.targetX, m.targetY, bot.x, bot.y) < 190 && monsterDist < 520));
 
     if (monsterBeingTargeted && !mem.stairCommit) {
-      const escA = this.pickLibraryEscapeAngle(bot, m, bFloor);
-      evadeX += Math.cos(escA) * 3.8;
-      evadeY += Math.sin(escA) * 3.8;
+      if (mem.libMonsterEscTimer <= 0) {
+        mem.libMonsterEscAngle = this.pickLibraryEscapeAngle(bot, m, bFloor);
+        mem.libMonsterEscTimer = 0.12;
+      }
+      evadeX += Math.cos(mem.libMonsterEscAngle) * 3.8;
+      evadeY += Math.sin(mem.libMonsterEscAngle) * 3.8;
     }
 
     const bulletLook = diff === 'RUTHLESS' ? 240 : diff === 'TACTICAL' ? 200 : 110;
@@ -5178,12 +5519,35 @@ export class ArenaEngine {
       }
     }
 
+    let urgentLibTntEscape = false;
+    if (diff !== 'CHILL') {
+      const hasArmedLibTntNear = this.pickups.some(
+        (p) =>
+          p.kind === 'tnt' &&
+          p.armed &&
+          sameFloor(p.floor, bFloor) &&
+          dist(bot.x, bot.y, p.x, p.y) < TNT_BLAST_RADIUS + 95
+      );
+      if (hasArmedLibTntNear) {
+        urgentLibTntEscape = true;
+        if (mem.tntEscTimer <= 0) {
+          const tntEscA = this.pickTntSafeEscapeAngle(bot, bFloor, mem.tntEscAngle);
+          if (tntEscA !== null) {
+            mem.tntEscAngle = tntEscA;
+          }
+          mem.tntEscTimer = 0.11;
+        }
+        evadeX += Math.cos(mem.tntEscAngle) * 4.0;
+        evadeY += Math.sin(mem.tntEscAngle) * 4.0;
+      } else {
+        mem.tntEscTimer = 0;
+      }
+    }
     for (const p of this.pickups) {
       if (!sameFloor(p.floor, bFloor)) continue;
-      if (p.kind === 'tnt' && p.armed) {
+      if (p.kind === 'tnt' && p.armed && diff === 'CHILL') {
         const d = dist(bot.x, bot.y, p.x, p.y);
-        const fleeR = diff === 'CHILL' ? 105 : TNT_BLAST_RADIUS + 46;
-        if (d < fleeR) {
+        if (d < 105) {
           const away = Math.atan2(bot.y - p.y, bot.x - p.x);
           evadeX += Math.cos(away) * 2.8;
           evadeY += Math.sin(away) * 2.8;
@@ -5214,8 +5578,15 @@ export class ArenaEngine {
         ((bot.postStunGraceTimer ?? 0) > 0 || bot.hp <= 36) &&
         visibleRivals.some((e) => e.ammo > 0 && dist(bot.x, bot.y, e.x, e.y) < 350)
       ) {
-        const escPt = this.pickSafeEscapePoint(bot, visibleRivals, bFloor, null, null);
-        const escA = Math.atan2(escPt.y - bot.y, escPt.x - bot.x);
+        if (mem.libRivalEscTimer <= 0) {
+          const prevEsc = mem.escapeGoalTimer > 0 ? { x: mem.escapeGoalX, y: mem.escapeGoalY } : null;
+          const escPt = this.pickSafeEscapePoint(bot, visibleRivals, bFloor, null, null, prevEsc);
+          mem.escapeGoalX = escPt.x;
+          mem.escapeGoalY = escPt.y;
+          mem.escapeGoalTimer = 1.4;
+          mem.libRivalEscTimer = 0.14;
+        }
+        const escA = Math.atan2(mem.escapeGoalY - bot.y, mem.escapeGoalX - bot.x);
         evadeX += Math.cos(escA) * 1.9;
         evadeY += Math.sin(escA) * 1.9;
       }
@@ -5382,15 +5753,22 @@ export class ArenaEngine {
     }
 
     if (!mem.stairCommit) {
-      if (Math.hypot(evadeX, evadeY) > 0.35) {
+      if (mem.unstickTimer > 0 && !urgentLibTntEscape && !monsterBeingTargeted) {
+        bot.aiTargetAngle = mem.unstickAngle;
+        bot.aiMoveRatio = inHearing ? stealthWalkRatio : 0.92;
+      } else if (Math.hypot(evadeX, evadeY) > 0.35) {
         const rawEvade = Math.atan2(evadeY, evadeX);
-        bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawEvade, 74, bot.aiStrafeDir);
+        bot.aiTargetAngle = this.pickClearMoveAngle(
+          bot,
+          rawEvade,
+          74,
+          bot.aiStrafeDir,
+          diff !== 'CHILL' && !urgentLibTntEscape,
+          diff === 'RUTHLESS' && !urgentLibTntEscape
+        );
         // Strictly stay quiet inside Figure's hearing circle unless Figure is actively chasing close!
         const activeChase = monsterBeingTargeted && m.mode === 'rage' && monsterDist < 310;
-        bot.aiMoveRatio = activeChase ? 0.98 : inHearing ? stealthWalkRatio : 0.88;
-      } else if (mem.unstickTimer > 0) {
-        bot.aiTargetAngle = mem.unstickAngle;
-        bot.aiMoveRatio = inHearing ? stealthWalkRatio : 0.9;
+        bot.aiMoveRatio = activeChase || urgentLibTntEscape ? 0.98 : inHearing ? stealthWalkRatio : 0.88;
       } else {
         if (
           diff === 'RUTHLESS' &&
