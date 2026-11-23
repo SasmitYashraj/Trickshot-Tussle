@@ -57,6 +57,19 @@ function sanitizeModifierLevel(raw: unknown, fallback: ModifierLevel): ModifierL
   return raw === 'LOW' || raw === 'MEDIUM' || raw === 'HIGH' ? raw : fallback;
 }
 
+function sanitizeFigureDifficulty(
+  raw: unknown,
+  fallback: MatchModifiers['figureDifficulty']
+): MatchModifiers['figureDifficulty'] {
+  return raw === 'DOCILE' ||
+    raw === 'STANDARD' ||
+    raw === 'HUNTER' ||
+    raw === 'FERAL' ||
+    raw === 'NIGHTMARE'
+    ? raw
+    : fallback;
+}
+
 function sanitizeModifiers(raw: Partial<MatchModifiers> | undefined): MatchModifiers {
   if (!raw || typeof raw !== 'object') return { ...DEFAULT_MATCH_MODIFIERS };
   return {
@@ -72,6 +85,10 @@ function sanitizeModifiers(raw: Partial<MatchModifiers> | undefined): MatchModif
     spawnProtection: sanitizeModifierLevel(
       raw.spawnProtection,
       DEFAULT_MATCH_MODIFIERS.spawnProtection
+    ),
+    figureDifficulty: sanitizeFigureDifficulty(
+      raw.figureDifficulty,
+      DEFAULT_MATCH_MODIFIERS.figureDifficulty
     ),
     keepBulletsOnStun:
       typeof raw.keepBulletsOnStun === 'boolean'

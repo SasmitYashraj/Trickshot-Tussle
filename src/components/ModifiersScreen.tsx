@@ -1,6 +1,9 @@
 import { RotateCcw, Sliders, X } from 'lucide-react';
 import {
   DEFAULT_MATCH_MODIFIERS,
+  FIGURE_DIFFICULTY_ORDER,
+  FIGURE_DIFFICULTY_PROFILES,
+  type FigureDifficulty,
   type MatchModifiers,
   type ModifierLevel,
 } from '../game/types';
@@ -12,8 +15,13 @@ interface ModifiersScreenProps {
   onClose: () => void;
 }
 
+type LevelModifierKey = keyof Omit<
+  MatchModifiers,
+  'keepBulletsOnStun' | 'postStunGrace' | 'figureDifficulty'
+>;
+
 interface LevelRowDef {
-  key: keyof Omit<MatchModifiers, 'keepBulletsOnStun' | 'postStunGrace'>;
+  key: LevelModifierKey;
   label: string;
   hint: string;
   labels?: Record<ModifierLevel, string>;
@@ -60,12 +68,14 @@ export function ModifiersScreen({
   onChange,
   onClose,
 }: ModifiersScreenProps) {
-  const setLevel = (
-    key: keyof Omit<MatchModifiers, 'keepBulletsOnStun' | 'postStunGrace'>,
-    level: ModifierLevel
-  ) => {
+  const setLevel = (key: LevelModifierKey, level: ModifierLevel) => {
     if (readOnly) return;
     onChange({ ...modifiers, [key]: level });
+  };
+
+  const setFigureDifficulty = (figureDifficulty: FigureDifficulty) => {
+    if (readOnly) return;
+    onChange({ ...modifiers, figureDifficulty });
   };
 
   const toggleKeepBullets = () => {
@@ -82,6 +92,11 @@ export function ModifiersScreen({
     if (readOnly) return;
     onChange({ ...DEFAULT_MATCH_MODIFIERS });
   };
+
+  const activeFigureDiff =
+    modifiers.figureDifficulty ?? DEFAULT_MATCH_MODIFIERS.figureDifficulty;
+  const activeFigureProfile =
+    FIGURE_DIFFICULTY_PROFILES[activeFigureDiff] ?? FIGURE_DIFFICULTY_PROFILES.STANDARD;
 
   const isDefault = (Object.keys(DEFAULT_MATCH_MODIFIERS) as Array<keyof MatchModifiers>).every(
     (k) => (modifiers[k] ?? DEFAULT_MATCH_MODIFIERS[k]) === DEFAULT_MATCH_MODIFIERS[k]
@@ -208,6 +223,90 @@ export function ModifiersScreen({
               >
                 {modifiers.postStunGrace ? '0.5s Grace' : 'No Grace'}
               </button>
+            </div>
+          </div>
+
+          {/* Library Special Modifier: Figure Difficulty (5 Modes) */}
+          <div className="mt-3 rounded-xl border border-amber-500/30 bg-gradient-to-br from-amber-950/30 via-slate-900/80 to-rose-950/25 p-3.5">
+            <div className="flex flex-wrap items-baseline justify-between gap-2 mb-2.5">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/35">
+                  The Library Special
+                </span>
+                <span className="text-xs font-bold text-slate-100">Figure Difficulty Mode</span>
+              </div>
+              <span className="text-[11px] text-amber-200/75">
+                Scales hearing, rage speed &amp; duration, stair slowdown, and blast stun
+              </span>
+            </div>
+
+            <div className="grid grid-cols-5 gap-1 p-1 rounded-lg bg-slate-950/90 border border-slate-800">
+              {FIGURE_DIFFICULTY_ORDER.map((diffId) => {
+                const prof = FIGURE_DIFFICULTY_PROFILES[diffId];
+                const active = activeFigureDiff === diffId;
+                return (
+                  <button
+                    key={diffId}
+                    type="button"
+                    disabled={readOnly}
+                    onClick={() => setFigureDifficulty(diffId)}
+                    className={`px-1.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap truncate ${
+                      active
+                        ? diffId === 'STANDARD'
+                          ? 'bg-sky-500 text-slate-950'
+                          : diffId === 'DOCILE'
+                            ? 'bg-emerald-400 text-slate-950'
+                            : diffId === 'HUNTER'
+                              ? 'bg-amber-400 text-slate-950'
+                              : diffId === 'FERAL'
+                                ? 'bg-orange-500 text-slate-950'
+                                : 'bg-rose-500 text-white'
+                        : 'text-slate-400 hover:text-slate-200'
+                    } ${readOnly ? 'cursor-default' : 'cursor-pointer'}`}
+                  >
+                    {prof.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mt-2.5 grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+              <div className="rounded-lg bg-slate-950/65 border border-slate-800/80 px-2.5 py-1.5">
+                <div className="text-slate-400 text-[10px]">Hearing</div>
+                <div
+                  className={`font-semibold ${
+                    activeFigureProfile.hearThroughFloors ? 'text-rose-300' : 'text-slate-100'
+                  }`}
+                >
+                  {activeFigureProfile.hearingRadius}px ·{' '}
+                  {activeFigureProfile.hearThroughFloors ? 'Through Floors' : 'Same Floor'}
+                </div>
+              </div>
+              <div className="rounded-lg bg-slate-950/65 border border-slate-800/80 px-2.5 py-1.5">
+                <div className="text-slate-400 text-[10px]">Rage Speed &amp; Time</div>
+                <div className="font-semibold text-amber-200">
+                  {activeFigureProfile.rageMinRatio.toFixed(2)}x–
+                  {activeFigureProfile.rageMaxRatio.toFixed(2)}x · {activeFigureProfile.rageDuration}s
+                </div>
+              </div>
+              <div className="rounded-lg bg-slate-950/65 border border-slate-800/80 px-2.5 py-1.5">
+                <div className="text-slate-400 text-[10px]">Stair Climb</div>
+                <div
+                  className={`font-semibold ${
+                    activeFigureProfile.stairClimbTime <= 0 ? 'text-rose-300' : 'text-slate-100'
+                  }`}
+                >
+                  {activeFigureProfile.stairClimbTime <= 0
+                    ? 'No Slowdown'
+                    : `${activeFigureProfile.stairClimbTime}s`}
+                </div>
+              </div>
+              <div className="rounded-lg bg-slate-950/65 border border-slate-800/80 px-2.5 py-1.5">
+                <div className="text-slate-400 text-[10px]">Blast Stun</div>
+                <div className="font-semibold text-sky-200">
+                  {activeFigureProfile.stunDuration}s
+                </div>
+              </div>
             </div>
           </div>
 

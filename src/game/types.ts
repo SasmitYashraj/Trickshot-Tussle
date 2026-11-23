@@ -100,6 +100,92 @@ export interface LibraryClue {
 
 export type ModifierLevel = 'LOW' | 'MEDIUM' | 'HIGH';
 
+export type FigureDifficulty = 'DOCILE' | 'STANDARD' | 'HUNTER' | 'FERAL' | 'NIGHTMARE';
+
+export interface FigureDifficultyProfile {
+  id: FigureDifficulty;
+  label: string;
+  hearingRadius: number;
+  hearThroughFloors: boolean;
+  stealthThreshold: number;
+  rageMinRatio: number;
+  rageMaxRatio: number;
+  rageDuration: number;
+  stunDuration: number;
+  stairClimbTime: number; // 0 = no slowdown on stairs
+}
+
+export const FIGURE_DIFFICULTY_ORDER: FigureDifficulty[] = [
+  'DOCILE',
+  'STANDARD',
+  'HUNTER',
+  'FERAL',
+  'NIGHTMARE',
+];
+
+export const FIGURE_DIFFICULTY_PROFILES: Record<FigureDifficulty, FigureDifficultyProfile> = {
+  DOCILE: {
+    id: 'DOCILE',
+    label: 'Docile',
+    hearingRadius: 720,
+    hearThroughFloors: false,
+    stealthThreshold: 0.85,
+    rageMinRatio: 0.9,
+    rageMaxRatio: 1.32,
+    rageDuration: 7.5,
+    stunDuration: 13.0,
+    stairClimbTime: 2.2,
+  },
+  STANDARD: {
+    id: 'STANDARD',
+    label: 'Standard',
+    hearingRadius: 900,
+    hearThroughFloors: false,
+    stealthThreshold: 0.8,
+    rageMinRatio: 1.0,
+    rageMaxRatio: 1.5,
+    rageDuration: 10.0,
+    stunDuration: 10.0,
+    stairClimbTime: 1.5,
+  },
+  HUNTER: {
+    id: 'HUNTER',
+    label: 'Hunter',
+    hearingRadius: 1060,
+    hearThroughFloors: false,
+    stealthThreshold: 0.74,
+    rageMinRatio: 1.12,
+    rageMaxRatio: 1.65,
+    rageDuration: 12.0,
+    stunDuration: 8.0,
+    stairClimbTime: 1.0,
+  },
+  FERAL: {
+    id: 'FERAL',
+    label: 'Feral',
+    hearingRadius: 1220,
+    hearThroughFloors: false,
+    stealthThreshold: 0.68,
+    rageMinRatio: 1.24,
+    rageMaxRatio: 1.78,
+    rageDuration: 14.0,
+    stunDuration: 6.5,
+    stairClimbTime: 0.6,
+  },
+  NIGHTMARE: {
+    id: 'NIGHTMARE',
+    label: 'Nightmare',
+    hearingRadius: 1400,
+    hearThroughFloors: true,
+    stealthThreshold: 0.62,
+    rageMinRatio: 1.36,
+    rageMaxRatio: 1.95,
+    rageDuration: 16.5,
+    stunDuration: 5.0,
+    stairClimbTime: 0,
+  },
+};
+
 export interface MatchModifiers {
   bulletSpawn: ModifierLevel;
   nitroSpawn: ModifierLevel;
@@ -111,6 +197,7 @@ export interface MatchModifiers {
   bulletCapacity: ModifierLevel;
   stunTime: ModifierLevel;
   spawnProtection: ModifierLevel;
+  figureDifficulty: FigureDifficulty;
   keepBulletsOnStun: boolean;
   postStunGrace: boolean;
 }
@@ -126,6 +213,7 @@ export const DEFAULT_MATCH_MODIFIERS: MatchModifiers = {
   bulletCapacity: 'MEDIUM',
   stunTime: 'MEDIUM',
   spawnProtection: 'MEDIUM',
+  figureDifficulty: 'STANDARD',
   keepBulletsOnStun: true,
   postStunGrace: true,
 };
@@ -633,7 +721,7 @@ export const SPAWN_INVULN_DURATION = 1.5;
 export const KILL_STREAK_WINDOW = 3.0;
 
 export const MONSTER_RADIUS = PLAYER_RADIUS * 1.5;
-export const MONSTER_STUN_DURATION = 15.0;
+export const MONSTER_STUN_DURATION = 10.0;
 export const MONSTER_SLOW_DURATION = 5.0;
 export const LIBRARY_BRAWL_MAX_HEARTS = 8;
 export const LIBRARY_HEARING_RADIUS = 900;

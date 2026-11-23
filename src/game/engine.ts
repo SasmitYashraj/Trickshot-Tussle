@@ -19,6 +19,8 @@ import {
   DEFAULT_MATCH_MODIFIERS,
   type EngineEvent,
   type Explosion,
+  FIGURE_DIFFICULTY_PROFILES,
+  type FigureDifficultyProfile,
   type FloatingText,
   type FloorLevel,
   type GameSnapshot,
@@ -457,6 +459,13 @@ export class ArenaEngine {
 
   private getSpawnProtectionBoostBonus(): number {
     return SPAWN_PROTECTION_BOOST[this.getModifiers().spawnProtection] ?? 0.55;
+  }
+
+  private getFigureProfile(): FigureDifficultyProfile {
+    return (
+      FIGURE_DIFFICULTY_PROFILES[this.getModifiers().figureDifficulty] ??
+      FIGURE_DIFFICULTY_PROFILES.STANDARD
+    );
   }
 
   constructor(config: MatchConfig, slots?: SlotSetup[]) {
@@ -2956,7 +2965,8 @@ export class ArenaEngine {
         const m = this.libraryState.monster;
         const dM = dist(current.item.x, current.item.y, m.x, m.y);
         if (sameFloor(m.floor, blastFloor) && dM <= blastRadius + m.radius) {
-          m.stunTimer = MONSTER_STUN_DURATION;
+          const stunSecs = this.getFigureProfile().stunDuration;
+          m.stunTimer = stunSecs;
           m.mode = 'calm';
           m.rageTimer = 0;
           m.rageFadeTimer = 0;
@@ -2966,7 +2976,14 @@ export class ArenaEngine {
           this.monsterPath = [];
           this.monsterChasedPlayerId = null;
           this.emitEvent('monster_stun', m.x, m.y, undefined, undefined, m.floor);
-          this.addFloatingText(m.x, m.y - (m.radius + 14), 'FIGURE STUNNED 15s!', '#FDE047', m.floor);
+          const stunText = Number.isInteger(stunSecs) ? `${stunSecs}s` : `${stunSecs.toFixed(1)}s`;
+          this.addFloatingText(
+            m.x,
+            m.y - (m.radius + 14),
+            `FIGURE STUNNED ${stunText}!`,
+            '#FDE047',
+            m.floor
+          );
         } else {
           // Explosive blasts elsewhere alert The Figure into Rage mode toward the blast site
           this.triggerMonsterRage(current.item.x, current.item.y, blastFloor);
@@ -4010,7 +4027,7 @@ export class ArenaEngine {
     m.targetX = targetX;
     m.targetY = targetY;
     m.targetFloor = targetFloor;
-    m.rageTimer = 10.0;
+    m.rageTimer = this.getFigureProfile().rageDuration;
     m.reachedHoldTimer = -1;
     m.rageFadeTimer = 0;
     this.monsterPathTimer = 0;
@@ -4134,7 +4151,12 @@ export class ArenaEngine {
       return;
     }
 
-    // 1. Calm / Stealth / Loud-Sound Hearing Logic (900px circle; keeps tracking chased player onto/across stairs)
+    // 1. Calm / Stealth / Loud-Sound Hearing Logic (scales with Figure Difficulty Mode)
+    const figureProfile = this.getFigureProfile();
+    const hearRadius = figureProfile.hearingRadius;
+    const hearThroughFloors = figureProfile.hearThroughFloors;
+    const stealthThreshold = figureProfile.stealthThreshold;
+    const loudThreshold = Math.min(0.97, stealthThreshold + 0.16);
     const maxPlayerSpd = this.getPlayerMaxSpeed();
     let loudestSound: { x: number; y: number; floor: FloorLevel; playerId: number } | null = null;
     this.monsterHearCheckTimer -= dt;
@@ -4151,22 +4173,30 @@ export class ArenaEngine {
       const activelyChased =
         m.mode === 'rage' &&
         p.id === this.monsterChasedPlayerId &&
-        dist(p.x, p.y, m.x, m.y) <= LIBRARY_HEARING_RADIUS;
-      if (!onSameFloor && !onStairs && !activelyChased) continue;
+        dist(p.x, p.y, m.x, m.y) <= hearRadius;
+      if (!onSameFloor && !onStairs && !activelyChased && !hearThroughFloors) continue;
 
       const d = dist(p.x, p.y, m.x, m.y);
-      if (d > LIBRARY_HEARING_RADIUS) continue;
+      if (d > hearRadius) continue;
 
       const speed = Math.hypot(p.vx, p.vy);
       const speedRatio = speed / maxPlayerSpd;
-      if (speedRatio >= 0.96 || (activelyChased && (onStairs || !onSameFloor) && (speedRatio >= 0.55 || d <= 520))) {
+      if (
+        speedRatio >= loudThreshold ||
+        (activelyChased && (onStairs || !onSameFloor) && (speedRatio >= 0.55 || d <= 520))
+      ) {
         loudestSound = { x: p.x, y: p.y, floor: pFloor, playerId: p.id };
         break;
-      } else if (onSameFloor && speedRatio >= 0.80 && checkProbabilisticStealth) {
+      } else if ((onSameFloor || hearThroughFloors) && speedRatio >= stealthThreshold && checkProbabilisticStealth) {
         const closeDist = m.radius + PLAYER_RADIUS + 42;
-        const prox = clamp((LIBRARY_HEARING_RADIUS - d) / Math.max(1, LIBRARY_HEARING_RADIUS - closeDist), 0, 1);
-        const speedWeight = clamp((speedRatio - 0.80) / 0.20, 0.25, 1.0);
-        const chance = 0.30 * prox * speedWeight;
+        const prox = clamp((hearRadius - d) / Math.max(1, hearRadius - closeDist), 0, 1);
+        const speedWeight = clamp(
+          (speedRatio - stealthThreshold) / Math.max(0.08, loudThreshold - stealthThreshold),
+          0.25,
+          1.0
+        );
+        const floorAtten = onSameFloor ? 1.0 : 0.85;
+        const chance = 0.32 * prox * speedWeight * floorAtten;
         if (Math.random() < chance) {
           loudestSound = { x: p.x, y: p.y, floor: pFloor, playerId: p.id };
         }
@@ -4177,9 +4207,10 @@ export class ArenaEngine {
       this.triggerMonsterRage(loudestSound.x, loudestSound.y, loudestSound.floor, loudestSound.playerId);
     }
 
-    // 2. Speed & Mode State Machine (Calm 0.50->0.85x, Rage 1.00->1.50x, 1s smooth fade-out, 5s bullet slowdown to calm speed)
-    const calmRatio = 0.50 + progFrac * 0.35;
-    const rageRatio = 1.00 + progFrac * 0.50;
+    // 2. Speed & Mode State Machine (Calm 0.50->0.85x, Rage scales by difficulty, 1s fade-out, 5s bullet slowdown)
+    const calmRatio = 0.5 + progFrac * 0.35;
+    const rageRatio =
+      figureProfile.rageMinRatio + progFrac * (figureProfile.rageMaxRatio - figureProfile.rageMinRatio);
 
     m.slowTimer = Math.max(0, (m.slowTimer ?? 0) - dt);
 
@@ -4242,16 +4273,21 @@ export class ArenaEngine {
       }
     };
 
-    // 3. Dedicated 3.0-second Slow Cross-Floor Staircase Traversal & Fade
+    // 3. Cross-Floor Staircase Traversal & Fade (1.5s default, or full speed when stairClimbTime === 0)
     if (m.transitioning) {
-      const nextP = clamp((m.transitionProgress ?? 0) + dt / 3.0, 0, 1);
-      m.transitionProgress = nextP;
       const dxT = this.monsterTransToX - this.monsterTransFromX;
       const dyT = this.monsterTransToY - this.monsterTransFromY;
+      const transDist = Math.max(1, Math.hypot(dxT, dyT));
+      const stairDuration =
+        figureProfile.stairClimbTime > 0
+          ? figureProfile.stairClimbTime
+          : transDist / Math.max(140, moveSpeed);
+      const nextP = clamp((m.transitionProgress ?? 0) + dt / stairDuration, 0, 1);
+      m.transitionProgress = nextP;
       m.x = this.monsterTransFromX + dxT * nextP;
       m.y = this.monsterTransFromY + dyT * nextP;
-      m.vx = dxT / 3.0;
-      m.vy = dyT / 3.0;
+      m.vx = dxT / stairDuration;
+      m.vy = dyT / stairDuration;
       if (Math.hypot(dxT, dyT) > 2) {
         const desiredAngle = Math.atan2(dyT, dxT);
         const diff = normalizeAngle(desiredAngle - m.angle);
@@ -4794,7 +4830,12 @@ export class ArenaEngine {
       }
     }
 
-    const inHearing = m.stunTimer <= 0 && sameFloorMonster && monsterDist < LIBRARY_HEARING_RADIUS - 25;
+    const figureProfile = this.getFigureProfile();
+    const stealthWalkRatio = Math.max(0.5, Math.min(0.72, figureProfile.stealthThreshold - 0.05));
+    const inHearing =
+      m.stunTimer <= 0 &&
+      (sameFloorMonster || figureProfile.hearThroughFloors) &&
+      monsterDist < figureProfile.hearingRadius - 25;
 
     // 5. Committed Staircase Traversal — eliminates stair oscillation permanently!
     if (mem.stairCommit) {
@@ -4820,7 +4861,7 @@ export class ArenaEngine {
             : (bFloor === 0 ? groundOutY : upperOutY);
           const ang = Math.atan2(stepGoalY - bot.y, stepGoalX - bot.x);
           bot.aiTargetAngle = ang;
-          bot.aiMoveRatio = monsterBeingTargeted && monsterDist < 290 ? 0.96 : inHearing ? 0.70 : 0.88;
+          bot.aiMoveRatio = monsterBeingTargeted && monsterDist < 290 ? 0.96 : inHearing ? stealthWalkRatio : 0.88;
         }
       }
     }
@@ -4829,12 +4870,12 @@ export class ArenaEngine {
       if (Math.hypot(evadeX, evadeY) > 0.35) {
         const rawEvade = Math.atan2(evadeY, evadeX);
         bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawEvade, 74, bot.aiStrafeDir);
-        // Strictly stay quiet (< 0.72) inside Figure's hearing circle unless Figure is actively chasing close!
+        // Strictly stay quiet inside Figure's hearing circle unless Figure is actively chasing close!
         const activeChase = monsterBeingTargeted && m.mode === 'rage' && monsterDist < 310;
-        bot.aiMoveRatio = activeChase ? 0.98 : inHearing ? 0.70 : 0.88;
+        bot.aiMoveRatio = activeChase ? 0.98 : inHearing ? stealthWalkRatio : 0.88;
       } else if (mem.unstickTimer > 0) {
         bot.aiTargetAngle = mem.unstickAngle;
-        bot.aiMoveRatio = inHearing ? 0.70 : 0.9;
+        bot.aiMoveRatio = inHearing ? stealthWalkRatio : 0.9;
       } else {
         if (
           diff === 'RUTHLESS' &&
@@ -4862,7 +4903,7 @@ export class ArenaEngine {
         if (mem.rageBaitTimer > 0) {
           safeWalkRatio = 1.0;
         } else if (inHearing) {
-          safeWalkRatio = diff === 'CHILL' && Math.random() < 0.04 ? 0.98 : 0.70;
+          safeWalkRatio = diff === 'CHILL' && Math.random() < 0.04 ? 0.98 : stealthWalkRatio;
         }
 
         if (bot.aiThinkTimer <= 0) {

@@ -1,13 +1,31 @@
-import { LIBRARY_INTRO_DURATION } from '../game/types';
+import {
+  FIGURE_DIFFICULTY_PROFILES,
+  type FigureDifficulty,
+  LIBRARY_INTRO_DURATION,
+} from '../game/types';
 
 interface LibraryLoadingScreenProps {
   introTimer: number;
+  figureDifficulty?: FigureDifficulty;
 }
 
-export function LibraryLoadingScreen({ introTimer }: LibraryLoadingScreenProps) {
+export function LibraryLoadingScreen({
+  introTimer,
+  figureDifficulty = 'STANDARD',
+}: LibraryLoadingScreenProps) {
   if (introTimer <= 0) return null;
 
   const progress = Math.max(0, Math.min(1, 1 - introTimer / LIBRARY_INTRO_DURATION));
+  const profile =
+    FIGURE_DIFFICULTY_PROFILES[figureDifficulty] ?? FIGURE_DIFFICULTY_PROFILES.STANDARD;
+  const silentPct = Math.round(profile.stealthThreshold * 100);
+  const stunLabel = Number.isInteger(profile.stunDuration)
+    ? `${profile.stunDuration}s`
+    : `${profile.stunDuration.toFixed(1)}s`;
+  const stairLabel =
+    profile.stairClimbTime <= 0
+      ? 'no slowdown!'
+      : `${profile.stairClimbTime}s`;
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col justify-between bg-black text-slate-100 px-4 py-3 sm:p-6 md:p-10 select-none overflow-hidden h-dvh">
@@ -19,6 +37,7 @@ export function LibraryLoadingScreen({ introTimer }: LibraryLoadingScreenProps) 
           </h1>
           <p className="mt-0.5 sm:mt-1 text-[10px] sm:text-xs font-semibold uppercase tracking-[0.26em] text-amber-400/80">
             inspired by DOORS
+            {figureDifficulty !== 'STANDARD' ? ` · ${profile.label} Mode` : ''}
           </p>
         </div>
       </div>
@@ -66,7 +85,10 @@ export function LibraryLoadingScreen({ introTimer }: LibraryLoadingScreenProps) 
             <li className="flex items-center gap-1.5 sm:gap-2.5">
               <span className="h-1.5 w-1.5 sm:h-2 sm:w-2 rounded-full bg-sky-400 shrink-0" />
               <span className="font-display text-[11px] sm:text-sm md:text-base font-bold text-sky-100 leading-tight sm:leading-snug">
-                Hold <span className="text-sky-300">Shift</span> / walk &lt;80% speed to stay silent
+                Hold <span className="text-sky-300">Shift</span> / walk &lt;{silentPct}% speed to stay silent
+                {profile.hearThroughFloors ? (
+                  <span className="text-rose-300"> (hears through floors!)</span>
+                ) : null}
               </span>
             </li>
 
@@ -80,14 +102,22 @@ export function LibraryLoadingScreen({ introTimer }: LibraryLoadingScreenProps) 
             <li className="flex items-center gap-1.5 sm:gap-2.5">
               <span className="h-1.5 w-1.5 sm:h-2 sm:w-2 rounded-full bg-orange-500 shrink-0" />
               <span className="font-display text-[11px] sm:text-sm md:text-base font-bold text-orange-200 leading-tight sm:leading-snug">
-                Nitro or TNT blasts stun Figure for <span className="text-amber-300">15s</span>
+                Nitro or TNT blasts stun Figure for <span className="text-amber-300">{stunLabel}</span>
               </span>
             </li>
 
             <li className="flex items-center gap-1.5 sm:gap-2.5">
               <span className="h-1.5 w-1.5 sm:h-2 sm:w-2 rounded-full bg-rose-400 shrink-0" />
               <span className="font-display text-[11px] sm:text-sm md:text-base font-bold text-rose-100 leading-tight sm:leading-snug">
-                Figure climbs stairs slowly (<span className="text-rose-300">3s</span>)
+                {profile.stairClimbTime <= 0 ? (
+                  <>
+                    Figure climbs stairs at <span className="text-rose-300">full speed ({stairLabel})</span>
+                  </>
+                ) : (
+                  <>
+                    Figure climbs stairs slowly (<span className="text-rose-300">{stairLabel}</span>)
+                  </>
+                )}
               </span>
             </li>
           </ul>

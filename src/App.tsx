@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, Eye, Pause, Play, Volume2, VolumeX } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Eye, Pause, Play, Undo2, Volume2, VolumeX } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ColorSelectScreen } from './components/ColorSelectScreen';
 import { GameOverModal } from './components/GameOverModal';
@@ -343,6 +343,7 @@ export default function App() {
   const [pcSpeedLimit, setPcSpeedLimit] = useState<number>(100);
   const [spectateTargetId, setSpectateTargetId] = useState<number | null>(null);
   const [libraryLockOpen, setLibraryLockOpen] = useState<boolean>(false);
+  const [hostLobbyConfirmOpen, setHostLobbyConfirmOpen] = useState<boolean>(false);
   const [lockErrorSeq, setLockErrorSeq] = useState<number>(0);
   const [jumpscareFlash, setJumpscareFlash] = useState<boolean>(false);
   const [libraryUi, setLibraryUi] = useState<LibraryUiSnapshot | null>(null);
@@ -382,6 +383,7 @@ export default function App() {
   const pcSpeedLimitRef = useRef<number>(pcSpeedLimit);
   const spectateTargetIdRef = useRef<number | null>(spectateTargetId);
   const libraryLockOpenRef = useRef<boolean>(libraryLockOpen);
+  const hostLobbyConfirmOpenRef = useRef<boolean>(hostLobbyConfirmOpen);
   const libraryUiRef = useRef<LibraryUiSnapshot | null>(libraryUi);
   const lastHudSigRef = useRef<string>('');
   const immersiveSpectateRef = useRef<Array<{ id: number; name: string }>>([]);
@@ -402,6 +404,10 @@ export default function App() {
   useEffect(() => {
     libraryLockOpenRef.current = libraryLockOpen;
   }, [libraryLockOpen]);
+
+  useEffect(() => {
+    hostLobbyConfirmOpenRef.current = hostLobbyConfirmOpen;
+  }, [hostLobbyConfirmOpen]);
 
   useEffect(() => {
     pcSpeedLimitRef.current = pcSpeedLimit;
@@ -467,6 +473,7 @@ export default function App() {
           setKillStreak(null);
           setSelfKillPopup(null);
           setLibraryLockOpen(false);
+          setHostLobbyConfirmOpen(false);
           setLockErrorSeq(0);
           setSpectateTargetId(null);
           spectateTargetIdRef.current = null;
@@ -487,6 +494,7 @@ export default function App() {
           setKillStreak(null);
           setSelfKillPopup(null);
           setLibraryLockOpen(false);
+          setHostLobbyConfirmOpen(false);
           setLockErrorSeq(0);
           setSpectateTargetId(null);
           spectateTargetIdRef.current = null;
@@ -499,6 +507,7 @@ export default function App() {
         } else if (room.phase === 'GAME_OVER') {
           setKillStreak((prev) => (prev?.mode === 'ELIMINATION' ? prev : null));
           setLibraryLockOpen(false);
+          setHostLobbyConfirmOpen(false);
           immersiveSpectateRef.current = [];
           setImmersiveSpectateList([]);
           setGameState('GAME_OVER');
@@ -665,6 +674,7 @@ export default function App() {
   const handleLeaveOnline = () => {
     setOnlineConnecting(false);
     setOnlineError(null);
+    setHostLobbyConfirmOpen(false);
     clientRef.current?.leaveRoom();
     onlineWorldRef.current = null;
     onlineJoystickRef.current.active = false;
@@ -678,6 +688,24 @@ export default function App() {
     const next = !muted;
     setMuted(next);
     sound.setMuted(next);
+  };
+
+  const openHostLobbyMenu = useCallback(() => {
+    if (!isOnlineRef.current) return;
+    const room = roomStateRef.current;
+    if (!room || room.mySlot !== room.hostSlot || gameStateRef.current !== 'PLAYING') return;
+    pressedKeysRef.current.clear();
+    onlineJoystickRef.current.active = false;
+    onlineJoystickRef.current.pointerId = null;
+    onlineJoystickRef.current.magnitude = 0;
+    clientRef.current?.sendJoystickInput(false, onlineJoystickRef.current.angle, 0);
+    setLibraryLockOpen(false);
+    setHostLobbyConfirmOpen(true);
+  }, []);
+
+  const confirmReturnToLobby = () => {
+    setHostLobbyConfirmOpen(false);
+    clientRef.current?.returnToLobby();
   };
 
   const togglePause = useCallback(() => {
@@ -709,6 +737,11 @@ export default function App() {
     ]);
 
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && hostLobbyConfirmOpenRef.current) {
+        setHostLobbyConfirmOpen(false);
+        return;
+      }
+
       if (e.key === 'Escape' && libraryLockOpenRef.current) {
         setLibraryLockOpen(false);
         return;
@@ -724,7 +757,17 @@ export default function App() {
         return;
       }
 
-      if (gameStateRef.current !== 'PLAYING') return;
+      if (
+        isOnlineRef.current &&
+        e.key === 'Escape' &&
+        gameStateRef.current === 'PLAYING' &&
+        roomStateRef.current?.mySlot === roomStateRef.current?.hostSlot
+      ) {
+        openHostLobbyMenu();
+        return;
+      }
+
+      if (gameStateRef.current !== 'PLAYING' || hostLobbyConfirmOpenRef.current) return;
 
       if (e.code === 'KeyC' && !e.repeat && controlSchemeRef.current === 'CURSOR_SPACE') {
         const libUi = libraryUiRef.current;
@@ -824,7 +867,7 @@ export default function App() {
       window.removeEventListener('pageshow', onPageShowOrFocus);
       window.removeEventListener('focus', onPageShowOrFocus);
     };
-  }, [togglePause, togglePcStealth]);
+  }, [togglePause, togglePcStealth, openHostLobbyMenu]);
 
   // High-DPI Canvas ResizeObserver
   useEffect(() => {
@@ -1556,13 +1599,26 @@ export default function App() {
               <span>{gameState === 'PAUSED' ? 'Resume' : 'Pause'}</span>
             </button>
           ) : (
-            <button
-              type="button"
-              onClick={handleLeaveOnline}
-              className="h-9 px-3 inline-flex items-center rounded-lg border border-slate-700 bg-slate-800 text-xs font-semibold text-slate-100 hover:bg-slate-700 transition-colors cursor-pointer whitespace-nowrap shrink-0"
-            >
-              Leave Room
-            </button>
+            <>
+              {isHost && (
+                <button
+                  type="button"
+                  onClick={openHostLobbyMenu}
+                  title="Return all players to the lobby"
+                  className="h-9 px-3 inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/15 text-xs font-semibold text-amber-200 hover:bg-amber-500/25 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  <Undo2 className="w-3.5 h-3.5" />
+                  <span>Lobby</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleLeaveOnline}
+                className="h-9 px-3 inline-flex items-center rounded-lg border border-slate-700 bg-slate-800 text-xs font-semibold text-slate-100 hover:bg-slate-700 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              >
+                Leave Room
+              </button>
+            </>
           )}
         </div>
       </header>
@@ -1691,13 +1747,26 @@ export default function App() {
                 )}
               </button>
             ) : (
-              <button
-                type="button"
-                onClick={handleLeaveOnline}
-                className="h-8 px-2.5 inline-flex items-center rounded-lg bg-slate-950/55 text-[11px] font-semibold text-slate-200 hover:bg-slate-900/80 transition-colors cursor-pointer whitespace-nowrap"
-              >
-                Leave
-              </button>
+              <>
+                {isHost && (
+                  <button
+                    type="button"
+                    onClick={openHostLobbyMenu}
+                    aria-label="Return to lobby"
+                    title="Host Options: Return to Lobby"
+                    className="h-8 w-8 inline-flex items-center justify-center rounded-lg bg-slate-950/60 border border-amber-400/35 text-amber-300 hover:bg-slate-900/85 transition-colors cursor-pointer"
+                  >
+                    <Undo2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleLeaveOnline}
+                  className="h-8 px-2.5 inline-flex items-center rounded-lg bg-slate-950/55 text-[11px] font-semibold text-slate-200 hover:bg-slate-900/80 transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  Leave
+                </button>
+              </>
             )}
           </div>
 
@@ -2070,7 +2139,10 @@ export default function App() {
           {activeConfig.mapId === 'library' &&
             gameState === 'PLAYING' &&
             (libraryUi?.state.introTimer ?? LIBRARY_INTRO_DURATION) > 0 && (
-              <LibraryLoadingScreen introTimer={libraryUi?.state.introTimer ?? LIBRARY_INTRO_DURATION} />
+              <LibraryLoadingScreen
+                introTimer={libraryUi?.state.introTimer ?? LIBRARY_INTRO_DURATION}
+                figureDifficulty={activeConfig.modifiers?.figureDifficulty}
+              />
             )}
         </div>
 
@@ -2121,6 +2193,43 @@ export default function App() {
           )}
         </aside>
       </main>
+
+      {/* Host Return-to-Lobby Confirmation Overlay (Online Host Only) */}
+      {hostLobbyConfirmOpen && isOnline && isHost && gameState === 'PLAYING' && (
+        <div
+          onClick={() => setHostLobbyConfirmOpen(false)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-sm rounded-2xl border border-slate-700/80 bg-[#111A2C] p-6 shadow-2xl"
+          >
+            <h2 className="font-display text-xl font-bold text-slate-50">
+              Return Everyone to Lobby?
+            </h2>
+            <p className="mt-1.5 text-xs text-slate-400 leading-relaxed">
+              {ARENA_MAPS[activeConfig.mapId].name} · {formatClock(snapshot.elapsedTime)} elapsed.
+              This ends the live match for all players and brings the room straight back to the lobby.
+            </p>
+            <div className="mt-5 flex flex-col gap-2.5">
+              <button
+                type="button"
+                onClick={() => setHostLobbyConfirmOpen(false)}
+                className="w-full rounded-xl bg-sky-400 hover:bg-sky-300 px-4 py-2.5 text-sm font-bold text-slate-950 transition-colors cursor-pointer"
+              >
+                Keep Playing
+              </button>
+              <button
+                type="button"
+                onClick={confirmReturnToLobby}
+                className="w-full rounded-xl border border-amber-500/45 bg-amber-500/20 hover:bg-amber-500/30 px-4 py-2.5 text-sm font-bold text-amber-200 transition-colors cursor-pointer"
+              >
+                Return All to Lobby
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Pause Overlay (Solo only) */}
       {gameState === 'PAUSED' && !isOnline && (
