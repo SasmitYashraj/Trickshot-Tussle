@@ -1,4 +1,4 @@
-import { ChevronRight, Globe, Map as MapIcon, Palette, Play, Settings, Swords, User, Users } from 'lucide-react';
+import { BookOpen, ChevronRight, Globe, Map as MapIcon, Palette, Play, Settings, Swords, User, Users } from 'lucide-react';
 import { useState } from 'react';
 import { ARENA_MAPS, IMMERSIVE_DARK_PREVIEW_URLS, MAP_PREVIEW_URLS, SOLO_MAP_LIST } from '../game/maps';
 import type { GeneralSettings } from '../game/settings';
@@ -14,6 +14,7 @@ import {
 import { PlayerAvatar } from './PlayerAvatar';
 import { PWAInstallButton } from './PWAInstallButton';
 import { SettingsModal } from './SettingsModal';
+import { TutorialModal } from './TutorialModal';
 
 interface TitleScreenProps {
   config: MatchConfig;
@@ -50,6 +51,7 @@ export function TitleScreen({
   const [editingColorSlot, setEditingColorSlot] = useState<1 | 2>(1);
   const [joinCode, setJoinCode] = useState(initialRoomCode);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [tutorialOpen, setTutorialOpen] = useState(false);
   const [imgFailed, setImgFailed] = useState<Record<string, boolean>>({});
   const [pointerPct, setPointerPct] = useState<{ x: number; y: number }>({ x: 50, y: 35 });
 
@@ -193,18 +195,6 @@ export function TitleScreen({
                 <PWAInstallButton />
               </div>
 
-              <p className="mt-3 text-xs sm:text-sm text-slate-300 leading-relaxed max-w-xl">
-                {tab === 'LOCAL_2P' ? (
-                  <>
-                    Offline 2-Player mode on one screen: drag diagonal touch joysticks (<span className="font-semibold text-sky-300">{isRightStick ? 'P1 Bottom-Right' : 'P1 Bottom-Left'}</span>, <span className="font-semibold text-rose-300">{isRightStick ? 'P2 Top-Left' : 'P2 Top-Right'}</span>) &amp; release to fire—or play on PC with <span className="font-semibold text-slate-100">WASD + Space</span> vs <span className="font-semibold text-slate-100">Arrows + Enter</span>.
-                  </>
-                ) : (
-                  <>
-                    Move with <span className="font-semibold text-slate-100">WASD</span> (hold <span className="font-semibold text-slate-100">Shift</span> to creep), aim 360° with your cursor, and press <span className="font-semibold text-slate-100">Spacebar</span> to fire on PC—or drag &amp; release on touchscreens.
-                  </>
-                )}
-              </p>
-
               {/* Compact Fighter Colour Row + More Colours Button */}
               <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/65 p-3">
                 {tab === 'LOCAL_2P' && (
@@ -285,26 +275,27 @@ export function TitleScreen({
                 </div>
               </div>
 
-              <div className="mt-3.5 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
-                  <div className="flex items-center gap-2.5">
-                    <span className="h-3.5 w-3.5 rounded-full bg-yellow-400 border border-yellow-200 shrink-0" />
-                    <span className="text-xs sm:text-sm font-semibold text-slate-100">Ricochet Shots</span>
+              <div className="mt-3.5">
+                <button
+                  type="button"
+                  onClick={() => setTutorialOpen(true)}
+                  className="w-full rounded-xl border border-amber-400/35 bg-slate-900/80 hover:bg-slate-800/90 hover:border-amber-300/60 px-4 py-3.5 flex items-center justify-between gap-3 text-left transition-colors cursor-pointer group"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="h-10 w-10 rounded-xl bg-amber-500/15 border border-amber-400/35 flex items-center justify-center shrink-0 group-hover:bg-amber-400/25 transition-colors">
+                      <BookOpen className="w-4.5 h-4.5 text-amber-300" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="font-display text-sm sm:text-base font-extrabold text-slate-100 group-hover:text-amber-200 transition-colors">
+                        Tutorial
+                      </div>
+                      <div className="text-xs text-slate-400 truncate">
+                        Controls, trickshots, arena guides, The Library &amp; bot dossiers
+                      </div>
+                    </div>
                   </div>
-                  <p className="mt-1 text-xs text-slate-400 leading-snug">
-                    Collect floor ammo. Stunned fighters gain brief shield protection; tune rules in Settings.
-                  </p>
-                </div>
-
-                <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3">
-                  <div className="flex items-center gap-2.5">
-                    <span className="h-3.5 w-3.5 rounded-sm bg-red-600 border border-red-200 shrink-0" />
-                    <span className="text-xs sm:text-sm font-semibold text-slate-100">Cover, Nitro &amp; TNT</span>
-                  </div>
-                  <p className="mt-1 text-xs text-slate-400 leading-snug">
-                    Push crates &amp; 3s-fuse TNT barrels. Blasts light the room and stun The Figure in Library.
-                  </p>
-                </div>
+                  <ChevronRight className="w-4 h-4 text-amber-300 shrink-0 group-hover:translate-x-0.5 transition-transform" />
+                </button>
               </div>
             </div>
 
@@ -642,6 +633,8 @@ export function TitleScreen({
           onClose={() => setSettingsOpen(false)}
         />
       )}
+
+      {tutorialOpen && <TutorialModal onClose={() => setTutorialOpen(false)} />}
     </div>
   );
 }

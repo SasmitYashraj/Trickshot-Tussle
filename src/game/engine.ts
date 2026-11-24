@@ -726,10 +726,10 @@ export class ArenaEngine {
       this.buildLibraryNavGraph();
       this.initLibraryMatchState();
     } else {
-      const cacheKey = `${this.map.id}:bot36`;
+      const cacheKey = `${this.map.id}:bot32`;
       let cached = ArenaEngine.arenaBotGraphCache.get(cacheKey);
       if (!cached) {
-        cached = this.buildGridNavGraph(36, PLAYER_RADIUS + 4);
+        cached = this.buildGridNavGraph(32, PLAYER_RADIUS + 2);
         ArenaEngine.arenaBotGraphCache.set(cacheKey, cached);
       }
       this.botNavNodes = cached;
@@ -2007,11 +2007,11 @@ export class ArenaEngine {
     if (!this.isImmersiveMode()) return true;
     const dx = Math.abs(tx - bot.x);
     const dy = Math.abs(ty - bot.y);
-    const maxHoriz = this.config.extraDark ? (isGlowingObject ? 430 : 410) : 500;
-    const maxVert = this.config.extraDark ? (isGlowingObject ? 300 : 285) : 318;
+    const maxHoriz = this.config.extraDark ? (isGlowingObject ? 445 : 415) : 525;
+    const maxVert = this.config.extraDark ? (isGlowingObject ? 310 : 285) : 365;
     if (dx > maxHoriz || dy > maxVert) return false;
     const d = Math.hypot(dx, dy);
-    const maxRange = this.config.extraDark ? (isGlowingObject ? 440 : 415) : 505;
+    const maxRange = this.config.extraDark ? (isGlowingObject ? 455 : 420) : 560;
     if (d > maxRange) return false;
     if (checkDarkCone && this.config.extraDark) {
       const ambientAura = isGlowingObject ? 225 : 155;
@@ -2294,26 +2294,310 @@ export class ArenaEngine {
     return { x: this.map.width * 0.5, y: this.map.height * 0.5 };
   }
 
+  private simulateShotSafety(
+    shooter: Player,
+    angle: number,
+    floor: FloorLevel,
+    opts?: {
+      maxDist?: number;
+      maxCheckBounces?: number;
+      targetPoint?: Vec2;
+      targetHitRadius?: number;
+      allowExplosiveDetonation?: boolean;
+      ignoreTargetPlayerId?: number | null;
+    }
+  ): {
+    safe: boolean;
+    hitsSelf: boolean;
+    hitsTeammate: boolean;
+    hitsBox: boolean;
+    unsafeExplosive: boolean;
+    reachedTarget: boolean;
+    bouncesAtTarget: number;
+    stepsAtTarget: number;
+  } {
+    const bSpeed = this.getBulletSpeed();
+    const muzzleDist = PLAYER_RADIUS + BULLET_RADIUS + 3;
+    let x = shooter.x + Math.cos(angle) * muzzleDist;
+    let y = shooter.y + Math.sin(angle) * muzzleDist;
+    let vx = Math.cos(angle) * bSpeed;
+    let vy = Math.sin(angle) * bSpeed;
+
+    const floorWalls = this.wallsByFloor[floor];
+    const maxDist = opts?.maxDist ?? 680;
+    const maxCheckBounces = opts?.maxCheckBounces ?? 2;
+    const stepLen = 5;
+    const subDt = stepLen / bSpeed;
+    const maxSteps = Math.max(12, Math.ceil(maxDist / stepLen));
+
+    // Reject if muzzle spawns already inside a wall or explosive
+    for (const wall of floorWalls) {
+      if (circleIntersectsRect(x, y, BULLET_RADIUS, wall)) {
+        return {
+          safe: false,
+          hitsSelf: true,
+          hitsTeammate: false,
+          hitsBox: false,
+          unsafeExplosive: false,
+          reachedTarget: false,
+          bouncesAtTarget: 0,
+          stepsAtTarget: 0,
+        };
+      }
+    }
+
+    let bounces = 0;
+    let elapsed = 0;
+    let firstWallDist = Infinity;
+
+    for (let step = 1; step <= maxSteps; step++) {
+      x += vx * subDt;
+      y += vy * subDt;
+      elapsed += subDt;
+
+      // Wall collision & exact push-out reflection matching updateBullets()
+      for (const wall of floorWalls) {
+        const cx = clamp(x, wall.x, wall.x + wall.w);
+        const cy = clamp(y, wall.y, wall.y + wall.h);
+        const dx = x - cx;
+        const dy = y - cy;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < BULLET_RADIUS * BULLET_RADIUS) {
+          const d = Math.sqrt(d2);
+          let nx = 0;
+          let ny = 0;
+          if (d > 0.0001) {
+            nx = dx / d;
+            ny = dy / d;
+          } else {
+            const lp = x - wall.x;
+            const rp = wall.x + wall.w - x;
+            const tp = y - wall.y;
+            const bp = wall.y + wall.h - y;
+            const m = Math.min(lp, rp, tp, bp);
+            if (m === lp) nx = -1;
+            else if (m === rp) nx = 1;
+            else if (m === tp) ny = -1;
+            else ny = 1;
+          }
+          const overlap = BULLET_RADIUS - d + 0.5;
+          x += nx * overlap;
+          y += ny * overlap;
+          const dot = vx * nx + vy * ny;
+          if (dot < 0) {
+            vx -= 2 * dot * nx;
+            vy -= 2 * dot * ny;
+          }
+          if (bounces === 0) firstWallDist = step * stepLen;
+          bounces++;
+          break;
+        }
+      }
+
+      if (bounces > maxCheckBounces) break;
+
+      // Cardboard boxes block bullets completely
+      for (const box of this.boxes) {
+        if ((box.state !== 'active' && box.state !== 'spawning') || !sameFloor(box.floor, floor)) continue;
+        const rect: WallRect = {
+          x: box.x - box.w * 0.5,
+          y: box.y - box.h * 0.5,
+          w: box.w,
+          h: box.h,
+        };
+        if (circleIntersectsRect(x, y, BULLET_RADIUS, rect)) {
+          return {
+            safe: false,
+            hitsSelf: false,
+            hitsTeammate: false,
+            hitsBox: true,
+            unsafeExplosive: false,
+            reachedTarget: false,
+            bouncesAtTarget: bounces,
+            stepsAtTarget: step,
+          };
+        }
+      }
+
+      // Check Nitro & TNT objects in bullet path
+      for (const p of this.pickups) {
+        if (!sameFloor(p.floor, floor)) continue;
+        if (p.kind !== 'nitro' && p.kind !== 'tnt') continue;
+        let hitExp = false;
+        if (p.kind === 'nitro') {
+          hitExp = dist(x, y, p.x, p.y) <= BULLET_RADIUS + p.radius;
+        } else {
+          const tntRect: WallRect = {
+            x: p.x - TNT_HALF_SIZE,
+            y: p.y - TNT_HALF_SIZE,
+            w: TNT_HALF_SIZE * 2,
+            h: TNT_HALF_SIZE * 2,
+          };
+          hitExp = circleIntersectsRect(x, y, BULLET_RADIUS, tntRect);
+        }
+        if (hitExp) {
+          const blastR = p.kind === 'tnt' ? TNT_BLAST_RADIUS : NITRO_BLAST_RADIUS;
+          const predSelfX = shooter.x + shooter.vx * Math.min(elapsed + 0.2, 0.5);
+          const predSelfY = shooter.y + shooter.vy * Math.min(elapsed + 0.2, 0.5);
+          const selfInBlast =
+            dist(p.x, p.y, shooter.x, shooter.y) <= blastR + PLAYER_RADIUS + 20 ||
+            dist(p.x, p.y, predSelfX, predSelfY) <= blastR + PLAYER_RADIUS + 16;
+          const mateInBlast = this.players.some(
+            (tm) =>
+              tm.id !== shooter.id &&
+              tm.alive &&
+              this.isTeammate(shooter.id, tm.id) &&
+              sameFloor(tm.floor, floor) &&
+              dist(p.x, p.y, tm.x, tm.y) <= blastR + PLAYER_RADIUS + 14
+          );
+          if (selfInBlast || mateInBlast || !opts?.allowExplosiveDetonation) {
+            return {
+              safe: false,
+              hitsSelf: false,
+              hitsTeammate: mateInBlast,
+              hitsBox: false,
+              unsafeExplosive: selfInBlast || !opts?.allowExplosiveDetonation,
+              reachedTarget: false,
+              bouncesAtTarget: bounces,
+              stepsAtTarget: step,
+            };
+          }
+          return {
+            safe: true,
+            hitsSelf: false,
+            hitsTeammate: false,
+            hitsBox: false,
+            unsafeExplosive: false,
+            reachedTarget: true,
+            bouncesAtTarget: bounces,
+            stepsAtTarget: step,
+          };
+        }
+      }
+
+      // Check teammate collision
+      for (const tm of this.players) {
+        if (tm.id === shooter.id || !tm.alive || !this.isTeammate(shooter.id, tm.id) || !sameFloor(tm.floor, floor)) {
+          continue;
+        }
+        if (dist(x, y, tm.x, tm.y) <= PLAYER_RADIUS + BULLET_RADIUS + 8) {
+          return {
+            safe: false,
+            hitsSelf: false,
+            hitsTeammate: true,
+            hitsBox: false,
+            unsafeExplosive: false,
+            reachedTarget: false,
+            bouncesAtTarget: bounces,
+            stepsAtTarget: step,
+          };
+        }
+      }
+
+      // Self-hit safety check after >= 1 bounce (checking both current and moving shooter body!)
+      if (bounces >= 1) {
+        const predT = Math.min(elapsed, 0.58);
+        const predSx = shooter.x + shooter.vx * predT;
+        const predSy = shooter.y + shooter.vy * predT;
+        const selfMargin = PLAYER_RADIUS + BULLET_RADIUS + (bounces === 1 ? 30 : 22);
+        if (
+          dist(x, y, shooter.x, shooter.y) < selfMargin ||
+          dist(x, y, predSx, predSy) < selfMargin
+        ) {
+          return {
+            safe: false,
+            hitsSelf: true,
+            hitsTeammate: false,
+            hitsBox: false,
+            unsafeExplosive: false,
+            reachedTarget: false,
+            bouncesAtTarget: bounces,
+            stepsAtTarget: step,
+          };
+        }
+      }
+
+      // Check if we reached intended target point before any bad outcome
+      if (opts?.targetPoint) {
+        const hitR = opts.targetHitRadius ?? PLAYER_RADIUS + 10;
+        if (dist(x, y, opts.targetPoint.x, opts.targetPoint.y) <= hitR) {
+          return {
+            safe: true,
+            hitsSelf: false,
+            hitsTeammate: false,
+            hitsBox: false,
+            unsafeExplosive: false,
+            reachedTarget: true,
+            bouncesAtTarget: bounces,
+            stepsAtTarget: step,
+          };
+        }
+      }
+
+      // For direct shots without an explicit targetPoint, also check if any non-teammate alive enemy was hit cleanly
+      if (!opts?.targetPoint && opts?.ignoreTargetPlayerId !== undefined && opts.ignoreTargetPlayerId !== null) {
+        const tgt = this.players.find((pl) => pl.id === opts.ignoreTargetPlayerId && pl.alive && sameFloor(pl.floor, floor));
+        if (tgt && dist(x, y, tgt.x, tgt.y) <= PLAYER_RADIUS + BULLET_RADIUS + 2) {
+          return {
+            safe: true,
+            hitsSelf: false,
+            hitsTeammate: false,
+            hitsBox: false,
+            unsafeExplosive: false,
+            reachedTarget: true,
+            bouncesAtTarget: bounces,
+            stepsAtTarget: step,
+          };
+        }
+      }
+    }
+
+    // Also guard against point-blank perpendicular wall shots (< 58px) where fast bounces snap right back into shooter
+    if (firstWallDist < 58 && bounces >= 1) {
+      return {
+        safe: false,
+        hitsSelf: true,
+        hitsTeammate: false,
+        hitsBox: false,
+        unsafeExplosive: false,
+        reachedTarget: false,
+        bouncesAtTarget: bounces,
+        stepsAtTarget: maxSteps,
+      };
+    }
+
+    return {
+      safe: true,
+      hitsSelf: false,
+      hitsTeammate: false,
+      hitsBox: false,
+      unsafeExplosive: false,
+      reachedTarget: false,
+      bouncesAtTarget: bounces,
+      stepsAtTarget: maxSteps,
+    };
+  }
+
   private findTrickshotToPoint(
     shooter: Player,
     tx: number,
     ty: number,
     hitRadius = PLAYER_RADIUS + 14,
     numRays = 20,
-    maxBounces = 2
+    maxBounces = 2,
+    allowExplosiveDetonation = false
   ): number | null {
     const floor = shooter.floor ?? 0;
     if (this.isImmersiveMode() && !this.isPointWithinImmersiveBounds(shooter, tx, ty, false, true)) {
       return null;
     }
-    const bSpeed = this.getBulletSpeed();
-    const maxStepLimit = this.isImmersiveMode() ? Math.min(64, Math.ceil(540 / (bSpeed * 0.022))) : 64;
+    const maxRayDist = this.isImmersiveMode() ? 560 : 1280;
     const floorWalls = this.wallsByFloor[floor];
     const candidates: number[] = [];
     const seenBuckets = new Set<number>();
     const addCand = (ang: number) => {
       const na = normalizeAngle(ang);
-      const bucket = Math.round(na * 40);
+      const bucket = Math.round(na * 42);
       if (!seenBuckets.has(bucket)) {
         seenBuckets.add(bucket);
         candidates.push(na);
@@ -2344,54 +2628,18 @@ export class ArenaEngine {
     let bestScore = Infinity;
 
     for (const a of candidates) {
-      let x = shooter.x + Math.cos(a) * (PLAYER_RADIUS + 8);
-      let y = shooter.y + Math.sin(a) * (PLAYER_RADIUS + 8);
-      let vx = Math.cos(a) * bSpeed;
-      let vy = Math.sin(a) * bSpeed;
-      let bounces = 0;
-      let hitHazard = false;
-
-      for (let step = 0; step < maxStepLimit; step++) {
-        const subDt = 0.022;
-        x += vx * subDt;
-        y += vy * subDt;
-
-        if (step > 6 && dist(x, y, shooter.x, shooter.y) < PLAYER_RADIUS + 10) {
-          hitHazard = true;
-          break;
-        }
-        for (const tm of this.players) {
-          if (tm.id !== shooter.id && tm.alive && this.isTeammate(shooter.id, tm.id) && sameFloor(tm.floor, floor)) {
-            if (dist(x, y, tm.x, tm.y) < PLAYER_RADIUS + 14) {
-              hitHazard = true;
-              break;
-            }
-          }
-        }
-        if (hitHazard) break;
-
-        for (const wall of floorWalls) {
-          const cx = clamp(x, wall.x, wall.x + wall.w);
-          const cy = clamp(y, wall.y, wall.y + wall.h);
-          const dx = x - cx;
-          const dy = y - cy;
-          if (dx * dx + dy * dy < BULLET_RADIUS * BULLET_RADIUS) {
-            bounces++;
-            if (Math.abs(dx) > Math.abs(dy)) vx = -vx;
-            else vy = -vy;
-            x += Math.sign(dx || vx) * 4;
-            y += Math.sign(dy || vy) * 4;
-            break;
-          }
-        }
-        if (bounces > maxBounces) break;
-        if (bounces >= 1 && dist(x, y, tx, ty) < hitRadius) {
-          const score = bounces * 40 + step;
-          if (score < bestScore) {
-            bestScore = score;
-            bestAngle = a;
-          }
-          break;
+      const sim = this.simulateShotSafety(shooter, a, floor, {
+        maxDist: maxRayDist,
+        maxCheckBounces: maxBounces,
+        targetPoint: { x: tx, y: ty },
+        targetHitRadius: hitRadius,
+        allowExplosiveDetonation,
+      });
+      if (sim.safe && sim.reachedTarget && sim.bouncesAtTarget >= 1) {
+        const score = sim.bouncesAtTarget * 45 + sim.stepsAtTarget;
+        if (score < bestScore) {
+          bestScore = score;
+          bestAngle = a;
         }
       }
     }
@@ -2422,6 +2670,46 @@ export class ArenaEngine {
     return false;
   }
 
+  private isDirectShotClearAndSafe(
+    shooter: Player,
+    tx: number,
+    ty: number,
+    floor: FloorLevel,
+    targetId: number | null
+  ): boolean {
+    if (!this.isSegmentClearOnFloor(shooter.x, shooter.y, tx, ty, BULLET_RADIUS - 1, floor)) return false;
+    if (this.segmentHitsBoxOnFloor(shooter.x, shooter.y, tx, ty, BULLET_RADIUS + 1, floor)) return false;
+    if (this.isDirectShotBlockedByTeammate(shooter, tx, ty, floor)) return false;
+    const angle = Math.atan2(ty - shooter.y, tx - shooter.x);
+    const sim = this.simulateShotSafety(shooter, angle, floor, {
+      maxDist: Math.min(720, dist(shooter.x, shooter.y, tx, ty) + 260),
+      maxCheckBounces: 2,
+      targetPoint: { x: tx, y: ty },
+      targetHitRadius: PLAYER_RADIUS + 8,
+      allowExplosiveDetonation: false,
+      ignoreTargetPlayerId: targetId,
+    });
+    return sim.safe && !sim.hitsBox && !sim.hitsSelf && !sim.hitsTeammate && !sim.unsafeExplosive;
+  }
+
+  private isShotSafeAtFire(
+    bot: Player,
+    fireAngle: number,
+    targetId: number | null,
+    isTrickOrExplosive: boolean
+  ): boolean {
+    const floor = bot.floor ?? 0;
+    const sim = this.simulateShotSafety(bot, fireAngle, floor, {
+      maxDist: isTrickOrExplosive ? 720 : 540,
+      maxCheckBounces: 2,
+      allowExplosiveDetonation: isTrickOrExplosive && targetId === null,
+      ignoreTargetPlayerId: targetId,
+    });
+    if (sim.hitsSelf || sim.hitsTeammate || sim.unsafeExplosive) return false;
+    if (!isTrickOrExplosive && sim.hitsBox) return false;
+    return true;
+  }
+
   private getIncomingBulletEvade(
     bot: Player,
     floor: FloorLevel,
@@ -2429,15 +2717,16 @@ export class ArenaEngine {
   ): { x: number; y: number } {
     let evadeX = 0;
     let evadeY = 0;
-    const bulletLookDist = diff === 'RUTHLESS' ? 320 : diff === 'TACTICAL' ? 215 : 115;
-    const bulletWeight = diff === 'RUTHLESS' ? 3.25 : diff === 'TACTICAL' ? 2.2 : 0.75;
+    const bulletLookDist = diff === 'RUTHLESS' ? 340 : diff === 'TACTICAL' ? 225 : 115;
+    const bulletWeight = diff === 'RUTHLESS' ? 3.35 : diff === 'TACTICAL' ? 2.2 : 0.75;
     const floorWalls = this.wallsByFloor[floor];
 
     for (const b of this.bullets) {
-      if (b.ownerId === bot.id && b.age < BULLET_SELF_GRACE) continue;
+      // Never ignore own bullet once it has already bounced off a wall!
+      if (b.ownerId === bot.id && b.age < BULLET_SELF_GRACE && b.bouncesLeft >= b.maxBounces) continue;
       if (!sameFloor(b.floor, floor)) continue;
       const d = dist(bot.x, bot.y, b.x, b.y);
-      if (d >= Math.max(bulletLookDist, 360)) continue;
+      if (d >= Math.max(bulletLookDist, 420)) continue;
 
       const bSpeed = Math.hypot(b.vx, b.vy) || 1;
       const relX = bot.x - b.x;
@@ -2447,7 +2736,7 @@ export class ArenaEngine {
 
       if (d < bulletLookDist && dot > -15 && dot < bulletLookDist) {
         const perp = Math.abs((relX * b.vy - relY * b.vx) / bSpeed);
-        if (perp < PLAYER_RADIUS + 40) {
+        if (perp < PLAYER_RADIUS + 42) {
           const losClear = diff === 'CHILL' || this.hasLineOfSight(b.x, b.y, bot.x, bot.y, floor);
           if (losClear) {
             directThreat = true;
@@ -2459,48 +2748,92 @@ export class ArenaEngine {
         }
       }
 
-      // Ruthless also anticipates 1st wall bounce of nearby shots heading toward walls
-      if (diff === 'RUTHLESS' && !directThreat && b.bouncesLeft > 0 && d < 360) {
-        const stepDist = 34;
-        const ux = b.vx / bSpeed;
-        const uy = b.vy / bSpeed;
+      // Ruthless accurately predicts upcoming wall bounces (fine 6px substeps, up to 2 bounces!)
+      if (diff === 'RUTHLESS' && !directThreat && b.bouncesLeft > 0 && d < 420) {
+        const stepDist = 6;
+        let ux = b.vx / bSpeed;
+        let uy = b.vy / bSpeed;
         let px = b.x;
         let py = b.y;
-        for (let s = 1; s <= 7; s++) {
+        let bouncesChecked = 0;
+        const maxChecks = Math.min(2, b.bouncesLeft);
+
+        for (let s = 1; s <= 68; s++) {
           px += ux * stepDist;
           py += uy * stepDist;
-          let hitWall: WallRect | null = null;
-          for (const w of floorWalls) {
-            if (circleIntersectsRect(px, py, b.radius + 2, w)) {
-              hitWall = w;
+
+          // Stop ray if blocked by a cardboard box
+          let hitBox = false;
+          for (const box of this.boxes) {
+            if (box.state !== 'active' || !sameFloor(box.floor, floor)) continue;
+            if (
+              circleIntersectsRect(px, py, b.radius, {
+                x: box.x - box.w * 0.5,
+                y: box.y - box.h * 0.5,
+                w: box.w,
+                h: box.h,
+              })
+            ) {
+              hitBox = true;
               break;
             }
           }
-          if (hitWall) {
-            const cx = clamp(px, hitWall.x, hitWall.x + hitWall.w);
-            const cy = clamp(py, hitWall.y, hitWall.y + hitWall.h);
+          if (hitBox) break;
+
+          let bouncedNow = false;
+          for (const w of floorWalls) {
+            const cx = clamp(px, w.x, w.x + w.w);
+            const cy = clamp(py, w.y, w.y + w.h);
             const dx = px - cx;
             const dy = py - cy;
-            let nx = 0;
-            let ny = 0;
-            if (Math.abs(dx) > Math.abs(dy)) nx = dx >= 0 ? 1 : -1;
-            else ny = dy >= 0 ? 1 : -1;
-            const vDotN = ux * nx + uy * ny;
-            const rux = vDotN < 0 ? ux - 2 * vDotN * nx : ux;
-            const ruy = vDotN < 0 ? uy - 2 * vDotN * ny : uy;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < (b.radius + 1) * (b.radius + 1)) {
+              const dw = Math.sqrt(d2);
+              let nx = 0;
+              let ny = 0;
+              if (dw > 0.0001) {
+                nx = dx / dw;
+                ny = dy / dw;
+              } else {
+                const lp = px - w.x;
+                const rp = w.x + w.w - px;
+                const tp = py - w.y;
+                const bp = w.y + w.h - py;
+                const m = Math.min(lp, rp, tp, bp);
+                if (m === lp) nx = -1;
+                else if (m === rp) nx = 1;
+                else if (m === tp) ny = -1;
+                else ny = 1;
+              }
+              const overlap = b.radius + 1 - dw + 0.5;
+              px += nx * overlap;
+              py += ny * overlap;
+              const vDotN = ux * nx + uy * ny;
+              if (vDotN < 0) {
+                ux -= 2 * vDotN * nx;
+                uy -= 2 * vDotN * ny;
+              }
+              bouncesChecked++;
+              bouncedNow = true;
+              break;
+            }
+          }
+
+          if (bouncedNow) {
             const rRelX = bot.x - px;
             const rRelY = bot.y - py;
-            const rDot = rRelX * rux + rRelY * ruy;
-            if (rDot > -12 && rDot < 235) {
-              const rPerp = Math.abs(rRelX * ruy - rRelY * rux);
-              if (rPerp < PLAYER_RADIUS + 34 && this.hasLineOfSight(px, py, bot.x, bot.y, floor)) {
-                const side = rRelX * ruy - rRelY * rux >= 0 ? 1 : -1;
-                const bounceWeight = ((235 - Math.max(0, rDot)) / 235) * 2.35;
-                evadeX += ruy * side * bounceWeight;
-                evadeY += -rux * side * bounceWeight;
+            const rDot = rRelX * ux + rRelY * uy;
+            if (rDot > -12 && rDot < 270) {
+              const rPerp = Math.abs(rRelX * uy - rRelY * ux);
+              if (rPerp < PLAYER_RADIUS + 38 && this.hasLineOfSight(px, py, bot.x, bot.y, floor)) {
+                const side = rRelX * uy - rRelY * ux >= 0 ? 1 : -1;
+                const bounceWeight = ((270 - Math.max(0, rDot)) / 270) * 2.75;
+                evadeX += uy * side * bounceWeight;
+                evadeY += -ux * side * bounceWeight;
+                break;
               }
             }
-            break;
+            if (bouncesChecked >= maxChecks) break;
           }
         }
       }
@@ -3070,7 +3403,7 @@ export class ArenaEngine {
       mem.lastSeenVx = bestVisible.vx;
       mem.lastSeenVy = bestVisible.vy;
       mem.lastSeenFloor = bestVisible.floor ?? 0;
-      mem.lastSeenTimer = diff === 'RUTHLESS' ? 1.65 : 0.95;
+      mem.lastSeenTimer = diff === 'RUTHLESS' ? (isImmersive ? 2.6 : 1.75) : 0.95;
     }
 
     const hardEvading = Math.hypot(evadeX, evadeY) > 0.35;
@@ -3107,9 +3440,9 @@ export class ArenaEngine {
             continue;
           }
 
-          if (selfDist <= blastR + 26) continue;
+          if (selfDist <= blastR + 34) continue;
           const teammateInBlast = this.players.some(
-            (tm) => tm.alive && tm.id !== bot.id && this.isTeammate(bot.id, tm.id) && dist(n.x, n.y, tm.x, tm.y) <= blastR + 24
+            (tm) => tm.alive && tm.id !== bot.id && this.isTeammate(bot.id, tm.id) && dist(n.x, n.y, tm.x, tm.y) <= blastR + 28
           );
           if (teammateInBlast) continue;
 
@@ -3117,12 +3450,26 @@ export class ArenaEngine {
           const enemiesInBlast = visibleEnemies.filter((e) => dist(n.x, n.y, e.x, e.y) <= hitMargin);
           if (enemiesInBlast.length === 0) continue;
 
-          const directLos = this.hasLineOfSight(bot.x, bot.y, n.x, n.y, bFloor);
-          const shotA = directLos
-            ? Math.atan2(n.y - bot.y, n.x - bot.x)
-            : diff === 'RUTHLESS'
-              ? this.findTrickshotToPoint(bot, n.x, n.y, n.radius + 14, 36, 3)
-              : null;
+          const directClear =
+            this.isSegmentClearOnFloor(bot.x, bot.y, n.x, n.y, BULLET_RADIUS - 1, bFloor) &&
+            !this.segmentHitsBoxOnFloor(bot.x, bot.y, n.x, n.y, BULLET_RADIUS + 1, bFloor) &&
+            !this.isDirectShotBlockedByTeammate(bot, n.x, n.y, bFloor);
+          let shotA: number | null = directClear ? Math.atan2(n.y - bot.y, n.x - bot.x) : null;
+          if (shotA !== null) {
+            const simCheck = this.simulateShotSafety(bot, shotA, bFloor, {
+              maxDist: dist(bot.x, bot.y, n.x, n.y) + 80,
+              maxCheckBounces: 1,
+              targetPoint: { x: n.x, y: n.y },
+              targetHitRadius: n.radius + 12,
+              allowExplosiveDetonation: true,
+            });
+            if (!simCheck.safe || simCheck.hitsSelf || simCheck.hitsBox || simCheck.hitsTeammate) {
+              shotA = null;
+            }
+          }
+          if (shotA === null && diff === 'RUTHLESS') {
+            shotA = this.findTrickshotToPoint(bot, n.x, n.y, n.radius + 14, 36, 3, true);
+          }
 
           if (shotA !== null) {
             const score = enemiesInBlast.length * 100 + (n.kind === 'nitro' ? 30 : 15);
@@ -3177,18 +3524,14 @@ export class ArenaEngine {
 
         let finalAimX = predX;
         let finalAimY = predY;
-        if (diff === 'RUTHLESS') {
-          const predClear =
-            this.isSegmentClearOnFloor(bot.x, bot.y, predX, predY, BULLET_RADIUS - 1, bFloor) &&
-            !this.isDirectShotBlockedByTeammate(bot, predX, predY, bFloor);
+        if (diff !== 'CHILL') {
+          const predClear = this.isDirectShotClearAndSafe(bot, predX, predY, bFloor, tgt.id);
           if (!predClear) {
-            const directClear =
-              this.isSegmentClearOnFloor(bot.x, bot.y, tgt.x, tgt.y, BULLET_RADIUS - 1, bFloor) &&
-              !this.isDirectShotBlockedByTeammate(bot, tgt.x, tgt.y, bFloor);
+            const directClear = this.isDirectShotClearAndSafe(bot, tgt.x, tgt.y, bFloor, tgt.id);
             if (directClear) {
               finalAimX = tgt.x;
               finalAimY = tgt.y;
-            } else if (shieldLeft <= 0) {
+            } else if (diff === 'RUTHLESS' && shieldLeft <= 0) {
               const cornerTrick = this.findTrickshotAngle(bot, tgt, true);
               if (cornerTrick !== null) {
                 const aimA = cornerTrick + (Math.random() - 0.5) * aimSpread * 0.25;
@@ -3494,7 +3837,7 @@ export class ArenaEngine {
           mem.pendingShotTargetId = null;
           mem.pendingShotIsTrick = false;
         } else if (mem.lastSeenTimer > 0 && bot.ammo > 0) {
-          const elapsed = (diff === 'RUTHLESS' ? 1.65 : 0.95) - mem.lastSeenTimer;
+          const elapsed = (isImmersive ? 2.6 : 1.75) - mem.lastSeenTimer;
           const estX = clamp(mem.lastSeenX + mem.lastSeenVx * elapsed * 0.65, ARENA_WALL_THICKNESS + 45, this.map.width - ARENA_WALL_THICKNESS - 45);
           const estY = clamp(mem.lastSeenY + mem.lastSeenVy * elapsed * 0.65, ARENA_WALL_THICKNESS + 45, this.map.height - ARENA_WALL_THICKNESS - 45);
           const useX = this.isPointWalkableOnFloor(estX, estY, PLAYER_RADIUS, bFloor) ? estX : mem.lastSeenX;
@@ -3513,7 +3856,7 @@ export class ArenaEngine {
 
           // Fair bank shots only when predicted target remains within immersive sight & short disappearance window
           const fairLastSeen =
-            !isImmersive || (mem.lastSeenTimer > 0.8 && this.isPointWithinImmersiveBounds(bot, useX, useY, false, true));
+            !isImmersive || (mem.lastSeenTimer > 1.3 && this.isPointWithinImmersiveBounds(bot, useX, useY, false, true));
           if (diff === 'RUTHLESS' && fairLastSeen && bot.aiHoldShotTimer <= 0 && mem.lastSeenTimer > 0.35 && Math.random() < 0.62) {
             const predTrick = this.findTrickshotToPoint(bot, useX, useY, PLAYER_RADIUS + 20, 40, 3);
             if (predTrick !== null) {
@@ -3522,6 +3865,21 @@ export class ArenaEngine {
               mem.pendingShotTargetId = null;
               mem.pendingShotIsTrick = true;
             }
+          }
+        } else if (diff !== 'CHILL' && isImmersive && bot.ammo >= 1 && this.recentSoundCues.length > 0 && (!nearestBullet || bot.ammo >= 2)) {
+          // In Immersive arenas, hunt fresh directional gunshot/explosion cues!
+          let bestCue: { x: number; y: number; d: number } | null = null;
+          for (const cue of this.recentSoundCues) {
+            if (!sameFloor(cue.floor, bFloor)) continue;
+            const dCue = dist(bot.x, bot.y, cue.x, cue.y);
+            if (dCue > 150 && (!bestCue || dCue < bestCue.d)) {
+              bestCue = { x: cue.x, y: cue.y, d: dCue };
+            }
+          }
+          if (bestCue) {
+            goalX = bestCue.x;
+            goalY = bestCue.y;
+            moveRatio = 0.96;
           }
         } else if (nearestBullet && bot.ammo < bot.maxAmmo && (diff === 'RUTHLESS' || bot.ammo < 2)) {
           goalX = nearestBullet.p.x;
@@ -3605,7 +3963,8 @@ export class ArenaEngine {
         if (pathState && pathState.nodes.length > 0) {
           while (pathState.nodes.length > 0) {
             const next = pathState.nodes[0];
-            if (dist(bot.x, bot.y, next.x, next.y) < 42 && pathState.nodes.length > 1) {
+            const hitDist = next.isStair ? 42 : 44;
+            if (dist(bot.x, bot.y, next.x, next.y) < hitDist && pathState.nodes.length > 1) {
               pathState.nodes.shift();
             } else {
               wpX = next.x;
@@ -3635,13 +3994,14 @@ export class ArenaEngine {
       }
       const wpDist = dist(bot.x, bot.y, wpX, wpY);
       const probeDist = isSeekingPickup && wpDist < 130 ? Math.max(24, wpDist - 8) : 68;
+      // Don't block normal movement with movable cardboard boxes (bots push them smoothly instead of stalling in Immersive corridors!)
       bot.aiTargetAngle = this.pickClearMoveAngle(
         bot,
         rawMoveAngle,
         probeDist,
         bot.aiStrafeDir,
         diff !== 'CHILL',
-        diff === 'RUTHLESS' && !(isSeekingPickup && wpDist < 110)
+        false
       );
       bot.aiMoveRatio = moveRatio;
     }
@@ -3664,6 +4024,18 @@ export class ArenaEngine {
     let stickAngle = bot.aiTargetAngle;
     let stickMagnitude = bot.aiMoveRatio > 0.01 ? 0.08 + clamp(bot.aiMoveRatio, 0, 1) * 0.92 : 0;
 
+    // In Extra Dark Immersive mode, subtly sweep flashlight while patrolling so corridors are scanned naturally
+    if (
+      this.config.extraDark &&
+      mem.pendingShotAngle === null &&
+      !hardEvading &&
+      visibleEnemies.length === 0 &&
+      bot.aiMoveRatio > 0.25 &&
+      diff !== 'CHILL'
+    ) {
+      stickAngle = normalizeAngle(stickAngle + Math.sin(mem.scanPhase) * 0.22);
+    }
+
     if (mem.pendingShotAngle !== null) {
       stickAngle = mem.pendingShotAngle;
       const turnDelta = Math.abs(normalizeAngle(mem.pendingShotAngle - bot.aiTargetAngle));
@@ -3678,12 +4050,13 @@ export class ArenaEngine {
 
     this.applyAnalogInput(bot, stickMagnitude > 0, stickAngle, stickMagnitude, dt);
 
-    // Fire ONLY after rotating into alignment & re-verifying sight fairness
+    // Fire ONLY after rotating into tight alignment & re-verifying exact trajectory safety!
+    const fireTol = diff === 'RUTHLESS' ? 0.065 : diff === 'TACTICAL' ? 0.095 : 0.14;
     if (
       mem.pendingShotAngle !== null &&
       bot.ammo > 0 &&
       bot.aiHoldShotTimer <= 0 &&
-      Math.abs(normalizeAngle(mem.pendingShotAngle - bot.angle)) <= 0.14
+      Math.abs(normalizeAngle(mem.pendingShotAngle - bot.angle)) <= fireTol
     ) {
       let canFireNow = true;
       if (mem.pendingShotTargetId !== null) {
@@ -3697,6 +4070,13 @@ export class ArenaEngine {
             canFireNow = false;
           }
         }
+      }
+      if (
+        canFireNow &&
+        diff !== 'CHILL' &&
+        !this.isShotSafeAtFire(bot, bot.angle, mem.pendingShotTargetId, mem.pendingShotIsTrick)
+      ) {
+        canFireNow = false;
       }
       mem.pendingShotAngle = null;
       mem.pendingShotExpire = 0;
@@ -4692,10 +5072,10 @@ export class ArenaEngine {
     }
     this.navNodes = cachedMonster;
 
-    const botKey = `${this.map.id}:bot36`;
+    const botKey = `${this.map.id}:bot32`;
     let cachedBots = ArenaEngine.arenaBotGraphCache.get(botKey);
     if (!cachedBots) {
-      cachedBots = this.buildGridNavGraph(36, PLAYER_RADIUS + 4);
+      cachedBots = this.buildGridNavGraph(32, PLAYER_RADIUS + 2);
       ArenaEngine.arenaBotGraphCache.set(botKey, cachedBots);
     }
     this.botNavNodes = cachedBots;
@@ -5782,14 +6162,18 @@ export class ArenaEngine {
       }
     }
 
-    // 3. Evade Monster, incoming bullets, and TNT/Nitro blasts
+    // 3. Evade Monster ONLY when actually threatened (not when calm Figure is behind shelves!) + bullets + explosives
     let evadeX = 0;
     let evadeY = 0;
+    const figureClearLos =
+      sameFloorMonster && monsterDist < 420 && this.hasLineOfSight(bot.x, bot.y, m.x, m.y, bFloor);
     const monsterBeingTargeted =
       m.stunTimer <= 0 &&
       sameFloorMonster &&
-      (monsterDist < (diff === 'RUTHLESS' ? 350 : 300) ||
-        (m.mode === 'rage' && dist(m.targetX, m.targetY, bot.x, bot.y) < 190 && monsterDist < 520));
+      ((m.mode === 'rage' &&
+        (dist(m.targetX, m.targetY, bot.x, bot.y) < 250 || monsterDist < 340)) ||
+        monsterDist < 195 ||
+        (figureClearLos && monsterDist < (diff === 'RUTHLESS' ? 320 : 275)));
 
     if (monsterBeingTargeted && !mem.stairCommit) {
       if (mem.libMonsterEscTimer <= 0) {
@@ -5987,26 +6371,44 @@ export class ArenaEngine {
           const lead = diff === 'RUTHLESS' ? 0.94 : diff === 'TACTICAL' ? 0.72 : 0.15;
           const predX = target.x + target.vx * travelT * lead;
           const predY = target.y + target.vy * travelT * lead;
-          const usePred =
-            diff !== 'RUTHLESS' ||
-            this.isSegmentClearOnFloor(bot.x, bot.y, predX, predY, BULLET_RADIUS - 1, bFloor);
-          const shotA =
-            Math.atan2((usePred ? predY : target.y) - bot.y, (usePred ? predX : target.x) - bot.x) +
-            (Math.random() - 0.5) * aimSpread;
-          mem.pendingShotAngle = shotA;
-          mem.pendingShotExpire = 0.45;
-          mem.pendingShotTargetId = target.id;
-          mem.pendingShotIsTrick = false;
+          const predSafe =
+            diff === 'CHILL' || this.isDirectShotClearAndSafe(bot, predX, predY, bFloor, target.id);
+          const directSafe =
+            diff === 'CHILL' || this.isDirectShotClearAndSafe(bot, target.x, target.y, bFloor, target.id);
+          if (predSafe || directSafe) {
+            const aimX = predSafe ? predX : target.x;
+            const aimY = predSafe ? predY : target.y;
+            const shotA =
+              Math.atan2(aimY - bot.y, aimX - bot.x) + (Math.random() - 0.5) * aimSpread;
+            mem.pendingShotAngle = shotA;
+            mem.pendingShotExpire = 0.45;
+            mem.pendingShotTargetId = target.id;
+            mem.pendingShotIsTrick = false;
+          } else if (diff === 'RUTHLESS' && shieldLeft <= 0) {
+            const trickA = this.findTrickshotAngle(bot, target, true);
+            if (trickA !== null) {
+              mem.pendingShotAngle = trickA + (Math.random() - 0.5) * aimSpread * 0.25;
+              mem.pendingShotExpire = 0.45;
+              mem.pendingShotTargetId = target.id;
+              mem.pendingShotIsTrick = true;
+            }
+          }
         }
       }
     }
 
     const figureProfile = this.getFigureProfile();
     const stealthWalkRatio = Math.max(0.5, Math.min(0.72, figureProfile.stealthThreshold - 0.05));
+    const figureChasingElsewhere =
+      m.mode === 'rage' &&
+      !monsterBeingTargeted &&
+      monsterDist > 480 &&
+      dist(m.targetX, m.targetY, bot.x, bot.y) > 420;
     const inHearing =
       m.stunTimer <= 0 &&
       (sameFloorMonster || figureProfile.hearThroughFloors) &&
-      monsterDist < figureProfile.hearingRadius - 25;
+      monsterDist < figureProfile.hearingRadius - 30 &&
+      !figureChasingElsewhere;
 
     // 5. Committed Staircase Traversal — eliminates stair oscillation permanently!
     if (mem.stairCommit) {
@@ -6215,7 +6617,20 @@ export class ArenaEngine {
               dist(existing.goalX, existing.goalY, goalX, goalY) > 75 ||
               existing.nodes.length === 0;
             if (needNewPath) {
-              const nodes = this.findNavPathOnGraph(this.botNavNodes, bot.x, bot.y, bFloor, goalX, goalY, goalFloor);
+              const libThreats: Array<{ x: number; y: number; floor: FloorLevel; radius: number; penalty: number }> = [];
+              if (m.stunTimer <= 0) {
+                libThreats.push({
+                  x: m.x,
+                  y: m.y,
+                  floor: m.floor,
+                  radius: 250,
+                  penalty: 1200,
+                });
+              }
+              const nodes = this.findNavPathOnGraph(this.botNavNodes, bot.x, bot.y, bFloor, goalX, goalY, goalFloor, {
+                avoidHazards: diff !== 'CHILL',
+                avoidThreats: libThreats,
+              });
               this.botPaths.set(bot.id, { nodes, timer: 1.0, goalX, goalY, goalFloor });
             } else {
               existing.timer -= diff === 'RUTHLESS' ? 0.18 : 0.25;
@@ -6265,6 +6680,10 @@ export class ArenaEngine {
     let stickAngle = bot.aiTargetAngle;
     let stickMagnitude = bot.aiMoveRatio > 0.01 ? 0.08 + clamp(bot.aiMoveRatio, 0, 1) * 0.92 : 0;
 
+    if (this.config.extraDark && mem.pendingShotAngle === null && !monsterBeingTargeted && bot.aiMoveRatio > 0.25 && diff !== 'CHILL') {
+      stickAngle = normalizeAngle(stickAngle + Math.sin(mem.scanPhase) * 0.2);
+    }
+
     if (mem.pendingShotAngle !== null) {
       stickAngle = mem.pendingShotAngle;
       const turnDelta = Math.abs(normalizeAngle(mem.pendingShotAngle - bot.aiTargetAngle));
@@ -6278,19 +6697,31 @@ export class ArenaEngine {
 
     this.applyAnalogInput(bot, stickMagnitude > 0, stickAngle, stickMagnitude, dt);
 
-    // Fire ONLY when aligned and visibility holds cleanly!
+    // Fire ONLY when tightly aligned, visibility holds, and shot won't self-bounce/hit boxes!
+    const libFireTol = diff === 'RUTHLESS' ? 0.065 : diff === 'TACTICAL' ? 0.095 : 0.14;
     if (
       mem.pendingShotAngle !== null &&
       bot.ammo > 0 &&
       bot.aiHoldShotTimer <= 0 &&
-      Math.abs(normalizeAngle(mem.pendingShotAngle - bot.angle)) <= 0.14
+      Math.abs(normalizeAngle(mem.pendingShotAngle - bot.angle)) <= libFireTol
     ) {
       let canFireNow = true;
       if (mem.pendingShotTargetId !== null) {
         const tgt = this.players.find((pl) => pl.id === mem.pendingShotTargetId && pl.alive);
-        if (!tgt || !this.canBotSeePoint(bot, tgt.x, tgt.y, tgt.floor ?? 0)) {
+        if (!mem.pendingShotIsTrick) {
+          if (!tgt || !this.canBotSeePoint(bot, tgt.x, tgt.y, tgt.floor ?? 0)) {
+            canFireNow = false;
+          }
+        } else if (!tgt || !this.isPointWithinImmersiveBounds(bot, tgt.x, tgt.y, false, false)) {
           canFireNow = false;
         }
+      }
+      if (
+        canFireNow &&
+        diff !== 'CHILL' &&
+        !this.isShotSafeAtFire(bot, bot.angle, mem.pendingShotTargetId, mem.pendingShotIsTrick)
+      ) {
+        canFireNow = false;
       }
       mem.pendingShotAngle = null;
       mem.pendingShotExpire = 0;
