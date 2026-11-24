@@ -63,12 +63,17 @@ const LEVEL_ROWS: LevelRowDef[] = [
 const LEVELS: ModifierLevel[] = ['LOW', 'MEDIUM', 'HIGH'];
 const BULLET_SPAWN_LEVELS: BulletSpawnLevel[] = ['DREAD', 'LOW', 'MEDIUM', 'HIGH'];
 
-export function ModifiersScreen({
+export function ModifiersContent({
   modifiers,
   readOnly = false,
   onChange,
-  onClose,
-}: ModifiersScreenProps) {
+  footerAction,
+}: {
+  modifiers: MatchModifiers;
+  readOnly?: boolean;
+  onChange: (next: MatchModifiers) => void;
+  footerAction?: React.ReactNode;
+}) {
   const setLevel = (key: LevelModifierKey, level: ModifierLevel) => {
     if (readOnly) return;
     onChange({ ...modifiers, [key]: level });
@@ -110,37 +115,8 @@ export function ModifiersScreen({
   );
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto overscroll-contain bg-slate-950/80 backdrop-blur-sm">
-      <div className="min-h-full w-full flex flex-col items-center justify-center p-3 sm:p-5">
-        <div className="my-auto w-full max-w-2xl rounded-2xl border border-slate-700/80 bg-[#111A2C] p-5 sm:p-6 shadow-2xl">
-          <div className="flex items-center justify-between gap-3 pb-4 border-b border-slate-800">
-            <div className="flex items-center gap-2.5">
-              <div className="h-9 w-9 rounded-xl bg-sky-500/15 border border-sky-500/30 flex items-center justify-center">
-                <Sliders className="w-4 h-4 text-sky-400" />
-              </div>
-              <div>
-                <h2 className="font-display text-lg sm:text-xl font-extrabold text-slate-50">
-                  Arena Modifiers
-                </h2>
-                <p className="text-xs text-slate-400">
-                  {readOnly
-                    ? 'Host match tuning — Medium preserves classic balanced defaults'
-                    : 'Tune spawns, speed, ammo cap, and stun behavior · Medium = Classic Balance'}
-                </p>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close modifiers"
-              className="h-9 w-9 inline-flex items-center justify-center rounded-lg border border-slate-700 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white cursor-pointer"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-
-          <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+    <>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="rounded-xl border border-slate-800 bg-slate-900/65 p-3">
               <div className="flex items-baseline justify-between gap-2 mb-2">
                 <span className="text-xs font-bold text-slate-100">Bullet Spawns</span>
@@ -384,13 +360,64 @@ export function ModifiersScreen({
             ) : (
               <div />
             )}
+            {footerAction}
+          </div>
+    </>
+  );
+}
+
+export function ModifiersScreen({
+  modifiers,
+  readOnly = false,
+  onChange,
+  onClose,
+}: ModifiersScreenProps) {
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto overscroll-contain bg-slate-950/80 backdrop-blur-sm">
+      <div className="min-h-full w-full flex flex-col items-center justify-center p-3 sm:p-5">
+        <div className="my-auto w-full max-w-2xl rounded-2xl border border-slate-700/80 bg-[#111A2C] p-5 sm:p-6 shadow-2xl">
+          <div className="flex items-center justify-between gap-3 pb-4 border-b border-slate-800">
+            <div className="flex items-center gap-2.5">
+              <div className="h-9 w-9 rounded-xl bg-sky-500/15 border border-sky-500/30 flex items-center justify-center">
+                <Sliders className="w-4 h-4 text-sky-400" />
+              </div>
+              <div>
+                <h2 className="font-display text-lg sm:text-xl font-extrabold text-slate-50">
+                  Arena Modifiers
+                </h2>
+                <p className="text-xs text-slate-400">
+                  {readOnly
+                    ? 'Host match tuning — Medium preserves classic balanced defaults'
+                    : 'Tune spawns, speed, ammo cap, and stun behavior · Medium = Classic Balance'}
+                </p>
+              </div>
+            </div>
+
             <button
               type="button"
               onClick={onClose}
-              className="inline-flex items-center justify-center rounded-xl bg-sky-400 hover:bg-sky-300 px-5 py-2 text-xs font-bold text-slate-950 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              aria-label="Close modifiers"
+              className="h-9 w-9 inline-flex items-center justify-center rounded-lg border border-slate-700 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white cursor-pointer"
             >
-              Done
+              <X className="w-4 h-4" />
             </button>
+          </div>
+
+          <div className="mt-4">
+            <ModifiersContent
+              modifiers={modifiers}
+              readOnly={readOnly}
+              onChange={onChange}
+              footerAction={
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="inline-flex items-center justify-center rounded-xl bg-sky-400 hover:bg-sky-300 px-5 py-2 text-xs font-bold text-slate-950 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  Done
+                </button>
+              }
+            />
           </div>
         </div>
       </div>

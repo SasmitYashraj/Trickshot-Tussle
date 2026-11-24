@@ -9,7 +9,7 @@ interface TouchControlsProps {
   playerColor?: string;
   playerAccentColor?: string;
   playerFinish?: PlayerSkinFinish;
-  position?: 'bottom-left' | 'top-right';
+  position?: 'bottom-left' | 'bottom-right' | 'top-left' | 'top-right';
   playerLabel?: string;
   onStickChange: (active: boolean, angle: number, magnitude: number) => void;
   onStickRelease: () => void;
@@ -126,11 +126,32 @@ export function TouchControls({
           right: 'max(0.75rem, env(safe-area-inset-right))',
           top: 'max(0.75rem, env(safe-area-inset-top))',
         }
-      : {
-          touchAction: 'none',
-          left: 'max(0.75rem, env(safe-area-inset-left))',
-          bottom: 'max(0.75rem, env(safe-area-inset-bottom))',
-        };
+      : position === 'top-left'
+        ? {
+            touchAction: 'none',
+            left: 'max(0.75rem, env(safe-area-inset-left))',
+            top: 'max(0.75rem, env(safe-area-inset-top))',
+          }
+        : position === 'bottom-right'
+          ? {
+              touchAction: 'none',
+              right: 'max(0.75rem, env(safe-area-inset-right))',
+              bottom: 'max(0.75rem, env(safe-area-inset-bottom))',
+            }
+          : {
+              touchAction: 'none',
+              left: 'max(0.75rem, env(safe-area-inset-left))',
+              bottom: 'max(0.75rem, env(safe-area-inset-bottom))',
+            };
+
+  const labelPosClass =
+    position === 'top-right'
+      ? 'bottom-1.5 left-1.5'
+      : position === 'top-left'
+        ? 'bottom-1.5 right-1.5'
+        : position === 'bottom-right'
+          ? 'top-1.5 left-1.5'
+          : 'top-1.5 right-1.5';
 
   return (
     <div
@@ -171,9 +192,7 @@ export function TouchControls({
 
         {playerLabel && (
           <span
-            className={`pointer-events-none absolute font-mono-tabular text-[10px] font-black tracking-wider px-1.5 py-0.5 rounded bg-slate-950/75 text-slate-100 border border-white/15 ${
-              position === 'top-right' ? 'bottom-1.5 left-1.5' : 'top-1.5 right-1.5'
-            }`}
+            className={`pointer-events-none absolute font-mono-tabular text-[10px] font-black tracking-wider px-1.5 py-0.5 rounded bg-slate-950/75 text-slate-100 border border-white/15 ${labelPosClass}`}
           >
             {playerLabel}
           </span>

@@ -1,6 +1,7 @@
-import { ChevronRight, Globe, Map as MapIcon, Palette, Play, Sliders, Swords, User, Users } from 'lucide-react';
+import { ChevronRight, Globe, Map as MapIcon, Palette, Play, Settings, Swords, User, Users } from 'lucide-react';
 import { useState } from 'react';
 import { ARENA_MAPS, IMMERSIVE_DARK_PREVIEW_URLS, MAP_PREVIEW_URLS, SOLO_MAP_LIST } from '../game/maps';
+import type { GeneralSettings } from '../game/settings';
 import {
   type BotDifficulty,
   DEFAULT_MATCH_MODIFIERS,
@@ -10,16 +11,18 @@ import {
   PLAYER_COLOR_PALETTE,
   type TeamMode,
 } from '../game/types';
-import { ModifiersScreen } from './ModifiersScreen';
 import { PlayerAvatar } from './PlayerAvatar';
 import { PWAInstallButton } from './PWAInstallButton';
+import { SettingsModal } from './SettingsModal';
 
 interface TitleScreenProps {
   config: MatchConfig;
+  generalSettings: GeneralSettings;
   initialRoomCode?: string;
   onlineError: string | null;
   onlineConnecting?: boolean;
   onChangeConfig: (next: MatchConfig) => void;
+  onChangeGeneralSettings: (next: GeneralSettings) => void;
   onOpenMapSelect: () => void;
   onOpenColorSelect: (slot?: 1 | 2) => void;
   onStartSolo: () => void;
@@ -29,10 +32,12 @@ interface TitleScreenProps {
 
 export function TitleScreen({
   config,
+  generalSettings,
   initialRoomCode = '',
   onlineError,
   onlineConnecting = false,
   onChangeConfig,
+  onChangeGeneralSettings,
   onOpenMapSelect,
   onOpenColorSelect,
   onStartSolo,
@@ -43,11 +48,14 @@ export function TitleScreen({
     initialRoomCode || onlineError ? 'ONLINE' : config.local2P ? 'LOCAL_2P' : 'SOLO'
   );
   const [editingColorSlot, setEditingColorSlot] = useState<1 | 2>(1);
-  const [nickname, setNickname] = useState('Player');
   const [joinCode, setJoinCode] = useState(initialRoomCode);
-  const [modifiersOpen, setModifiersOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [imgFailed, setImgFailed] = useState<Record<string, boolean>>({});
   const [pointerPct, setPointerPct] = useState<{ x: number; y: number }>({ x: 50, y: 35 });
+
+  const nickname = generalSettings.playerName;
+  const effectiveOnlineName = nickname.trim() || 'Player';
+  const isRightStick = generalSettings.joystickPosition === 'RIGHT';
 
   const selectTab = (nextTab: 'SOLO' | 'LOCAL_2P' | 'ONLINE') => {
     setTab(nextTab);
@@ -188,7 +196,7 @@ export function TitleScreen({
               <p className="mt-3 text-xs sm:text-sm text-slate-300 leading-relaxed max-w-xl">
                 {tab === 'LOCAL_2P' ? (
                   <>
-                    Offline 2-Player mode on one screen: drag diagonal touch joysticks (<span className="font-semibold text-sky-300">P1 Bottom-Left</span>, <span className="font-semibold text-rose-300">P2 Top-Right</span>) &amp; release to fire—or play on PC with <span className="font-semibold text-slate-100">WASD + Space</span> vs <span className="font-semibold text-slate-100">Arrows + Enter</span>.
+                    Offline 2-Player mode on one screen: drag diagonal touch joysticks (<span className="font-semibold text-sky-300">{isRightStick ? 'P1 Bottom-Right' : 'P1 Bottom-Left'}</span>, <span className="font-semibold text-rose-300">{isRightStick ? 'P2 Top-Left' : 'P2 Top-Right'}</span>) &amp; release to fire—or play on PC with <span className="font-semibold text-slate-100">WASD + Space</span> vs <span className="font-semibold text-slate-100">Arrows + Enter</span>.
                   </>
                 ) : (
                   <>
@@ -212,7 +220,7 @@ export function TitleScreen({
                             : 'text-slate-400 hover:text-slate-200'
                         }`}
                       >
-                        P1 (Bottom-Left)
+                        {isRightStick ? 'P1 (Bottom-Right)' : 'P1 (Bottom-Left)'}
                       </button>
                       <button
                         type="button"
@@ -223,7 +231,7 @@ export function TitleScreen({
                             : 'text-slate-400 hover:text-slate-200'
                         }`}
                       >
-                        P2 (Top-Right)
+                        {isRightStick ? 'P2 (Top-Left)' : 'P2 (Top-Right)'}
                       </button>
                     </div>
                   </div>
@@ -284,7 +292,7 @@ export function TitleScreen({
                     <span className="text-xs sm:text-sm font-semibold text-slate-100">Ricochet Shots</span>
                   </div>
                   <p className="mt-1 text-xs text-slate-400 leading-snug">
-                    Collect floor ammo. Stunned fighters gain brief shield protection; tune rules in Modifiers.
+                    Collect floor ammo. Stunned fighters gain brief shield protection; tune rules in Settings.
                   </p>
                 </div>
 
@@ -517,11 +525,11 @@ export function TitleScreen({
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => setModifiersOpen(true)}
+                      onClick={() => setSettingsOpen(true)}
                       className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 hover:bg-slate-800 px-3.5 py-3 text-xs font-bold text-slate-200 transition-colors cursor-pointer whitespace-nowrap shrink-0"
                     >
-                      <Sliders className="w-3.5 h-3.5 text-sky-400" />
-                      Modifiers{modifiedCount > 0 ? ` (${modifiedCount})` : ''}
+                      <Settings className="w-3.5 h-3.5 text-sky-400" />
+                      Settings{modifiedCount > 0 ? ` (${modifiedCount})` : ''}
                     </button>
 
                     <button
@@ -555,15 +563,30 @@ export function TitleScreen({
                   )}
 
                   <div>
-                    <label htmlFor="player-nickname" className="block text-xs font-semibold text-slate-400 mb-1.5">
-                      Your Name
-                    </label>
+                    <div className="flex items-center justify-between gap-2 mb-1.5">
+                      <label htmlFor="player-nickname" className="block text-xs font-semibold text-slate-400">
+                        Your Name
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setSettingsOpen(true)}
+                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-sky-400 hover:text-sky-300 cursor-pointer"
+                      >
+                        <Settings className="w-3 h-3" />
+                        Settings
+                      </button>
+                    </div>
                     <input
                       id="player-nickname"
                       type="text"
                       maxLength={14}
                       value={nickname}
-                      onChange={(e) => setNickname(e.target.value)}
+                      onChange={(e) =>
+                        onChangeGeneralSettings({
+                          ...generalSettings,
+                          playerName: e.target.value.slice(0, 14),
+                        })
+                      }
                       placeholder="Enter your name"
                       className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-sky-400 focus:outline-none"
                     />
@@ -572,7 +595,7 @@ export function TitleScreen({
                   <button
                     type="button"
                     disabled={onlineConnecting}
-                    onClick={() => onCreateOnlineRoom(nickname)}
+                    onClick={() => onCreateOnlineRoom(effectiveOnlineName)}
                     className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-sky-400 hover:bg-sky-300 disabled:opacity-60 active:scale-[0.99] px-4 py-2.5 text-sm font-bold text-slate-950 transition-all cursor-pointer whitespace-nowrap"
                   >
                     <Users className="w-4 h-4" />
@@ -596,7 +619,7 @@ export function TitleScreen({
                       <button
                         type="button"
                         disabled={onlineConnecting || joinCode.trim().length < 3}
-                        onClick={() => onJoinOnlineRoom(joinCode, nickname)}
+                        onClick={() => onJoinOnlineRoom(joinCode, effectiveOnlineName)}
                         className="flex-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 px-4 py-2 text-sm font-semibold text-slate-100 transition-colors cursor-pointer whitespace-nowrap"
                       >
                         {onlineConnecting ? 'Joining...' : 'Join Lobby'}
@@ -610,11 +633,13 @@ export function TitleScreen({
         </div>
       </div>
 
-      {modifiersOpen && (
-        <ModifiersScreen
+      {settingsOpen && (
+        <SettingsModal
+          general={generalSettings}
           modifiers={activeModifiers}
-          onChange={setModifiers}
-          onClose={() => setModifiersOpen(false)}
+          onChangeGeneral={onChangeGeneralSettings}
+          onChangeModifiers={setModifiers}
+          onClose={() => setSettingsOpen(false)}
         />
       )}
     </div>

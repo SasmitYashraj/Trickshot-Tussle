@@ -1,4 +1,4 @@
-import { ArrowLeftRight, Check, Copy, Lock, LogOut, Play, Sliders, Users } from 'lucide-react';
+import { ArrowLeftRight, Check, Copy, Lock, LogOut, Play, Settings, Sliders, Users } from 'lucide-react';
 import { useState } from 'react';
 import {
   ARENA_MAPS,
@@ -7,6 +7,7 @@ import {
   MAP_PREVIEW_URLS,
   SOLO_MAP_LIST,
 } from '../game/maps';
+import type { GeneralSettings } from '../game/settings';
 import {
   type BotDifficulty,
   DEFAULT_MATCH_MODIFIERS,
@@ -17,13 +18,15 @@ import {
   PLAYER_COLOR_PALETTE,
   type TeamMode,
 } from '../game/types';
-import { ModifiersScreen } from './ModifiersScreen';
 import { PlayerAvatar } from './PlayerAvatar';
+import { SettingsModal } from './SettingsModal';
 
 interface OnlineLobbyScreenProps {
   room: OnlineRoomState;
+  generalSettings: GeneralSettings;
   errorMessage: string | null;
   onUpdateConfig: (config: MatchConfig) => void;
+  onChangeGeneralSettings: (next: GeneralSettings) => void;
   onUpdateColor: (colorId: string) => void;
   onSwapTeam: () => void;
   onStartMatch: () => void;
@@ -32,15 +35,17 @@ interface OnlineLobbyScreenProps {
 
 export function OnlineLobbyScreen({
   room,
+  generalSettings,
   errorMessage,
   onUpdateConfig,
+  onChangeGeneralSettings,
   onUpdateColor,
   onSwapTeam,
   onStartMatch,
   onLeave,
 }: OnlineLobbyScreenProps) {
   const [copied, setCopied] = useState(false);
-  const [modifiersOpen, setModifiersOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<'GENERAL' | 'MODIFIERS' | null>(null);
   const [previewFailed, setPreviewFailed] = useState<Record<string, boolean>>({});
   const isHost = room.mySlot === room.hostSlot;
   const is2v2 = room.config.teamMode === '2V2';
@@ -108,6 +113,14 @@ export function OnlineLobbyScreen({
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setSettingsTab('GENERAL')}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 hover:bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <Settings className="w-3.5 h-3.5 text-sky-400" />
+                Settings
+              </button>
               <button
                 type="button"
                 onClick={copyInviteLink}
@@ -546,7 +559,7 @@ export function OnlineLobbyScreen({
 
             <button
               type="button"
-              onClick={() => setModifiersOpen(true)}
+              onClick={() => setSettingsTab('MODIFIERS')}
               className="w-full inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900 hover:bg-slate-800 px-4 py-2 text-xs font-semibold text-slate-200 transition-colors cursor-pointer whitespace-nowrap"
             >
               <Sliders className="w-3.5 h-3.5 text-sky-400" />
@@ -573,12 +586,15 @@ export function OnlineLobbyScreen({
         </div>
       </div>
 
-      {modifiersOpen && (
-        <ModifiersScreen
+      {settingsTab !== null && (
+        <SettingsModal
+          general={generalSettings}
           modifiers={room.config.modifiers ?? DEFAULT_MATCH_MODIFIERS}
-          readOnly={!isHost}
-          onChange={(nextMods) => onUpdateConfig({ ...room.config, modifiers: nextMods })}
-          onClose={() => setModifiersOpen(false)}
+          initialTab={settingsTab}
+          modifiersReadOnly={!isHost}
+          onChangeGeneral={onChangeGeneralSettings}
+          onChangeModifiers={(nextMods) => onUpdateConfig({ ...room.config, modifiers: nextMods })}
+          onClose={() => setSettingsTab(null)}
         />
       )}
     </div>

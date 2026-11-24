@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, Eye, Pause, Play, Undo2, Volume2, VolumeX } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Eye, Pause, Play, RotateCw, Settings, Undo2, Volume2, VolumeX } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ColorSelectScreen } from './components/ColorSelectScreen';
 import { GameOverModal } from './components/GameOverModal';
@@ -7,10 +7,18 @@ import { LibraryOverlays } from './components/LibraryOverlays';
 import { MapSelectScreen } from './components/MapSelectScreen';
 import { OnlineLobbyScreen } from './components/OnlineLobbyScreen';
 import { PlayerHealthBar } from './components/PlayerHealthBar';
+import { SettingsModal } from './components/SettingsModal';
 import { TitleScreen } from './components/TitleScreen';
 import { TouchControls } from './components/TouchControls';
 import { ArenaEngine, canCollectBookSpot } from './game/engine';
 import { ARENA_MAPS } from './game/maps';
+import {
+  type GeneralSettings,
+  loadGeneralSettings,
+  loadSavedMatchConfig,
+  saveGeneralSettings,
+  saveMatchConfig,
+} from './game/settings';
 import {
   type CameraState,
   type RenderableWorld,
@@ -322,7 +330,16 @@ export default function App() {
   const [gameState, setGameState] = useState<GameState>('TITLE_MENU');
   const [menuStep, setMenuStep] = useState<'HUB' | 'MAP_SELECT' | 'COLOR_SELECT'>('HUB');
   const [colorSelectSlot, setColorSelectSlot] = useState<1 | 2>(1);
-  const [config, setConfig] = useState<MatchConfig>(DEFAULT_SOLO_CONFIG);
+  const [config, setConfig] = useState<MatchConfig>(() =>
+    loadSavedMatchConfig(DEFAULT_SOLO_CONFIG)
+  );
+  const [generalSettings, setGeneralSettings] = useState<GeneralSettings>(() =>
+    loadGeneralSettings()
+  );
+  const [pauseSettingsOpen, setPauseSettingsOpen] = useState(false);
+  const [isPortraitViewport, setIsPortraitViewport] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.innerHeight > window.innerWidth : false
+  );
   const [muted, setMuted] = useState(false);
   const [hasUsedJoystick, setHasUsedJoystick] = useState(false);
   const [controlScheme, setControlScheme] = useState<ControlScheme>(() => {
@@ -362,7 +379,7 @@ export default function App() {
     Array<{ id: number; name: string }>
   >([]);
 
-  const engineRef = useRef<ArenaEngine>(new ArenaEngine(DEFAULT_SOLO_CONFIG));
+  const engineRef = useRef<ArenaEngine>(new ArenaEngine(config));
   const [snapshot, setSnapshot] = useState<GameSnapshot>(() => engineRef.current.getSnapshot(0));
 
   const onlineWorldRef = useRef<WorldSyncState | null>(null);
@@ -415,9 +432,90 @@ export default function App() {
     }, 680);
   }, []);
 
+  const isLandscapeBlocked =
+    isPortraitViewport && (gameState === 'PLAYING' || gameState === 'PAUSED');
+  const isLandscapeBlockedRef = useRef<boolean>(isLandscapeBlocked);
+
   useEffect(() => {
     configRef.current = config;
+    saveMatchConfig(config);
   }, [config]);
+
+  useEffect(() => {
+    saveGeneralSettings(generalSettings);
+    sound.setMusicEnabled(generalSettings.musicEnabled);
+  }, [generalSettings]);
+
+  useEffect(() => {
+    isLandscapeBlockedRef.current = isLandscapeBlocked;
+    if (isLandscapeBlocked) {
+      pressedKeysRef.current.clear();
+      cursorScreenRef.current = null;
+      engineRef.current.releaseJoystick();
+      engineRef.current.releaseJoystick2();
+      engineRef.current.setHumanCursorInput(false, 0, 0);
+      engineRef.current.setPlayer2CursorInput(false, 0, 0);
+      onlineJoystickRef.current.active = false;
+      onlineJoystickRef.current.magnitude = 0;
+      if (isOnlineRef.current) {
+        clientRef.current?.sendJoystickInput(false, 0, 0);
+      }
+    }
+  }, [isLandscapeBlocked]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const syncOrientation = () => {
+      setIsPortraitViewport(window.innerHeight > window.innerWidth);
+    };
+    syncOrientation();
+    window.addEventListener('resize', syncOrientation);
+    window.addEventListener('orientationchange', syncOrientation);
+    window.screen?.orientation?.addEventListener?.('change', syncOrientation);
+    return () => {
+      window.removeEventListener('resize', syncOrientation);
+      window.removeEventListener('orientationchange', syncOrientation);
+      window.screen?.orientation?.removeEventListener?.('change', syncOrientation);
+    };
+  }, []);
+
+  const requestLandscapeLock = useCallback((allowFullscreen = false) => {
+    if (typeof window === 'undefined') return;
+    if (allowFullscreen) {
+      const docEl = document.documentElement as HTMLElement & {
+        requestFullscreen?: () => Promise<void>;
+      };
+      if (
+        typeof document.fullscreenElement !== 'undefined' &&
+        !document.fullscreenElement &&
+        window.matchMedia?.('(pointer: coarse)').matches
+      ) {
+        docEl.requestFullscreen?.().catch(() => {});
+      }
+    }
+    const orient = window.screen?.orientation as
+      | (ScreenOrientation & { lock?: (o: string) => Promise<void> })
+      | undefined;
+    orient?.lock?.('landscape').catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const orient = window.screen?.orientation as
+      | (ScreenOrientation & { lock?: (o: string) => Promise<void>; unlock?: () => void })
+      | undefined;
+    if (!orient) return;
+    if (gameState === 'PLAYING') {
+      orient.lock?.('landscape').catch(() => {});
+    } else if (gameState === 'TITLE_MENU' || gameState === 'ONLINE_LOBBY') {
+      setPauseSettingsOpen(false);
+      try {
+        orient.unlock?.();
+      } catch {
+        // Ignore unsupported unlock
+      }
+    }
+  }, [gameState]);
 
   useEffect(() => {
     libraryLockOpenRef.current = libraryLockOpen;
@@ -626,6 +724,7 @@ export default function App() {
         setConfig(nextCfg);
       }
       sound.unlock();
+      requestLandscapeLock(true);
       if (nextCfg.mapId === 'library') {
         sound.preloadLibraryAudio();
       } else if (mapDef.immersive) {
@@ -634,6 +733,7 @@ export default function App() {
       setIsOnline(false);
       setRoomState(null);
       setMenuStep('HUB');
+      setPauseSettingsOpen(false);
       cameraRef.current.initialized = false;
       cameraRef.current.scale = undefined;
       engineRef.current.reset(nextCfg);
@@ -657,7 +757,7 @@ export default function App() {
       renderedLibraryUiRef.current = null;
       setGameState('PLAYING');
     },
-    [config]
+    [config, requestLandscapeLock]
   );
 
   // Auto-expire self-kill funny popup (keep visible even on immediate GAME_OVER)
@@ -698,6 +798,7 @@ export default function App() {
     clientRef.current?.createRoom(name, {
       ...DEFAULT_ONLINE_CONFIG,
       playerColorId: config.playerColorId,
+      modifiers: { ...DEFAULT_MATCH_MODIFIERS, ...(config.modifiers ?? {}) },
     });
   };
 
@@ -1003,7 +1104,7 @@ export default function App() {
       } else {
         const engine = engineRef.current;
         const isLocal2PTick = Boolean(engine.config.local2P);
-        if (gameStateRef.current === 'PLAYING') {
+        if (gameStateRef.current === 'PLAYING' && !isLandscapeBlockedRef.current) {
           engine.update(dt);
           const evts = engine.drainEvents();
           if (evts.length > 0) {
@@ -1293,6 +1394,7 @@ export default function App() {
       const { width, height } = canvasSizeRef.current;
       if (
         gameStateRef.current === 'PLAYING' &&
+        !isLandscapeBlockedRef.current &&
         controlSchemeRef.current === 'CURSOR_SPACE' &&
         worldToRender
       ) {
@@ -1626,11 +1728,22 @@ export default function App() {
 
     if (menuStep === 'COLOR_SELECT') {
       const isP2Color = Boolean(config.local2P && colorSelectSlot === 2);
+      const isRightStickMenu = generalSettings.joystickPosition === 'RIGHT';
       return (
         <ColorSelectScreen
           config={config}
           selectedColorId={isP2Color ? config.player2ColorId ?? 'crimson' : config.playerColorId ?? 'cobalt'}
-          playerSlotLabel={config.local2P ? (isP2Color ? 'P2 (Top-Right)' : 'P1 (Bottom-Left)') : undefined}
+          playerSlotLabel={
+            config.local2P
+              ? isP2Color
+                ? isRightStickMenu
+                  ? 'P2 (Top-Left)'
+                  : 'P2 (Top-Right)'
+                : isRightStickMenu
+                  ? 'P1 (Bottom-Right)'
+                  : 'P1 (Bottom-Left)'
+              : undefined
+          }
           onSelectColor={(colorId) =>
             setConfig((prev) =>
               isP2Color ? { ...prev, player2ColorId: colorId } : { ...prev, playerColorId: colorId }
@@ -1644,10 +1757,12 @@ export default function App() {
     return (
       <TitleScreen
         config={config}
+        generalSettings={generalSettings}
         initialRoomCode={initialRoomCode}
         onlineError={onlineError}
         onlineConnecting={onlineConnecting}
         onChangeConfig={setConfig}
+        onChangeGeneralSettings={setGeneralSettings}
         onOpenMapSelect={() => setMenuStep('MAP_SELECT')}
         onOpenColorSelect={(slot) => {
           setColorSelectSlot(slot === 2 ? 2 : 1);
@@ -1664,17 +1779,23 @@ export default function App() {
     return (
       <OnlineLobbyScreen
         room={roomState}
+        generalSettings={generalSettings}
         errorMessage={onlineError}
         onUpdateConfig={(nextCfg) => clientRef.current?.updateRoomConfig(nextCfg)}
+        onChangeGeneralSettings={setGeneralSettings}
         onUpdateColor={(colorId) => clientRef.current?.updatePlayerColor(colorId)}
         onSwapTeam={() => clientRef.current?.swapTeam()}
-        onStartMatch={() => clientRef.current?.startMatch()}
+        onStartMatch={() => {
+          requestLandscapeLock(true);
+          clientRef.current?.startMatch();
+        }}
         onLeave={handleLeaveOnline}
       />
     );
   }
 
   const activeConfig = isOnline && roomState ? roomState.config : config;
+  const isRightStick = generalSettings.joystickPosition === 'RIGHT';
   const isLocal2P = !isOnline && Boolean(activeConfig.local2P);
   const local2PBots = !isLocal2P || activeConfig.local2PIncludeBots !== false;
   const is2v2 = ((activeConfig.teamMode ?? snapshot.teamMode ?? 'FFA') === '2V2') && local2PBots;
@@ -1895,8 +2016,10 @@ export default function App() {
             ) : isLocal2P ? (
               <>
                 <p className="leading-relaxed">
-                  <span className="font-semibold text-sky-300">P1</span> uses Bottom-Left stick;{' '}
-                  <span className="font-semibold text-rose-300">P2</span> uses Top-Right stick.
+                  <span className="font-semibold text-sky-300">P1</span> uses{' '}
+                  {isRightStick ? 'Bottom-Right' : 'Bottom-Left'} stick;{' '}
+                  <span className="font-semibold text-rose-300">P2</span> uses{' '}
+                  {isRightStick ? 'Top-Left' : 'Top-Right'} stick.
                 </p>
                 <p className="leading-relaxed">
                   Drag to move &amp; aim, release to shoot.
@@ -1905,7 +2028,7 @@ export default function App() {
             ) : (
               <>
                 <p className="leading-relaxed">
-                  Use the stationary left joystick to move &amp; aim. Speed scales smoothly by thumb distance.
+                  Use the stationary {isRightStick ? 'right' : 'left'} joystick to move &amp; aim. Speed scales smoothly by thumb distance.
                 </p>
                 <p className="leading-relaxed">
                   Release the joystick to shoot.
@@ -1992,13 +2115,22 @@ export default function App() {
           {/* Borderless Thin Overlay Health Bars at Screen Edges for Phone/Landscape */}
           {isLocal2P ? (
             <>
-              {/* P1 + optional Bot 3 Top-Left (keeps Bottom-Left clear for P1 Stick) */}
+              {/* P1 + optional Bot 3 HUD (automatically clears P1 & P2 diagonal sticks) */}
               <div
-                style={{
-                  top: 'max(0.375rem, env(safe-area-inset-top))',
-                  left: 'max(0.75rem, env(safe-area-inset-left))',
-                }}
-                className="pointer-events-none absolute flex flex-col gap-1.5 w-28 sm:w-36 lg:hidden z-10"
+                style={
+                  isRightStick
+                    ? {
+                        bottom: 'max(0.5rem, env(safe-area-inset-bottom))',
+                        left: 'max(0.75rem, env(safe-area-inset-left))',
+                      }
+                    : {
+                        top: 'max(0.375rem, env(safe-area-inset-top))',
+                        left: 'max(0.75rem, env(safe-area-inset-left))',
+                      }
+                }
+                className={`pointer-events-none absolute flex ${
+                  isRightStick ? 'flex-col-reverse' : 'flex-col'
+                } gap-1.5 w-28 sm:w-36 lg:hidden z-10`}
               >
                 {slot0Snap && (
                   <PlayerHealthBar
@@ -2019,13 +2151,22 @@ export default function App() {
                   />
                 )}
               </div>
-              {/* P2 + optional Bot 4 Bottom-Right (keeps Top-Right clear for P2 Stick) */}
+              {/* P2 + optional Bot 4 HUD */}
               <div
-                style={{
-                  bottom: 'max(0.5rem, env(safe-area-inset-bottom))',
-                  right: 'max(0.75rem, env(safe-area-inset-right))',
-                }}
-                className="pointer-events-none absolute flex flex-col-reverse gap-1.5 w-28 sm:w-36 lg:hidden z-10"
+                style={
+                  isRightStick
+                    ? {
+                        top: 'max(0.375rem, env(safe-area-inset-top))',
+                        right: 'max(0.75rem, env(safe-area-inset-right))',
+                      }
+                    : {
+                        bottom: 'max(0.5rem, env(safe-area-inset-bottom))',
+                        right: 'max(0.75rem, env(safe-area-inset-right))',
+                      }
+                }
+                className={`pointer-events-none absolute flex ${
+                  isRightStick ? 'flex-col' : 'flex-col-reverse'
+                } gap-1.5 w-28 sm:w-36 lg:hidden z-10`}
               >
                 {p2HumanSnap && (
                   <PlayerHealthBar
@@ -2231,11 +2372,11 @@ export default function App() {
             </div>
           )}
 
-          {/* Stationary Joystick(s): P1 Bottom-Left, plus P2 Top-Right in Offline 2P */}
-          {controlScheme === 'DRAG_STICK' && gameState === 'PLAYING' && (
+          {/* Stationary Joystick(s): Left or Right setting (plus diagonal P2 in Offline 2P) */}
+          {controlScheme === 'DRAG_STICK' && gameState === 'PLAYING' && !isLandscapeBlocked && (
             <>
               <TouchControls
-                position="bottom-left"
+                position={isRightStick ? 'bottom-right' : 'bottom-left'}
                 playerLabel={isLocal2P ? 'P1' : undefined}
                 ammo={localSnap?.ammo ?? 0}
                 stunned={(localSnap?.stunTimer ?? 0) > 0}
@@ -2267,7 +2408,7 @@ export default function App() {
               />
               {isLocal2P && p2HumanSnap && (
                 <TouchControls
-                  position="top-right"
+                  position={isRightStick ? 'top-left' : 'top-right'}
                   playerLabel="P2"
                   ammo={p2HumanSnap.ammo}
                   stunned={p2HumanSnap.stunTimer > 0}
@@ -2579,6 +2720,14 @@ export default function App() {
               </button>
               <button
                 type="button"
+                onClick={() => setPauseSettingsOpen(true)}
+                className="w-full inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-100 transition-colors cursor-pointer"
+              >
+                <Settings className="w-4 h-4 text-sky-400" />
+                Settings
+              </button>
+              <button
+                type="button"
                 onClick={() => startSoloMatch()}
                 className="w-full rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-100 transition-colors cursor-pointer"
               >
@@ -2586,7 +2735,10 @@ export default function App() {
               </button>
               <button
                 type="button"
-                onClick={() => setGameState('TITLE_MENU')}
+                onClick={() => {
+                  setPauseSettingsOpen(false);
+                  setGameState('TITLE_MENU');
+                }}
                 className="w-full rounded-xl border border-slate-800 bg-slate-900 hover:bg-slate-800 px-4 py-2.5 text-sm font-semibold text-slate-300 transition-colors cursor-pointer"
               >
                 Back to Setup
@@ -2594,6 +2746,17 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {pauseSettingsOpen && gameState === 'PAUSED' && !isOnline && (
+        <SettingsModal
+          general={generalSettings}
+          modifiers={activeConfig.modifiers ?? DEFAULT_MATCH_MODIFIERS}
+          hideModifiersTab
+          onChangeGeneral={setGeneralSettings}
+          onChangeModifiers={() => {}}
+          onClose={() => setPauseSettingsOpen(false)}
+        />
       )}
 
       {/* Game Over Modal */}
@@ -2604,6 +2767,7 @@ export default function App() {
           isHost={isHost}
           onPlayAgain={() => {
             if (isOnline) {
+              requestLandscapeLock(true);
               clientRef.current?.startMatch();
             } else {
               startSoloMatch();
@@ -2618,6 +2782,46 @@ export default function App() {
           }}
           onReturnToLobby={isOnline ? () => clientRef.current?.returnToLobby() : undefined}
         />
+      )}
+
+      {/* Landscape-Only Enforcement Overlay During Gameplay */}
+      {isLandscapeBlocked && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-[#060A14]/95 backdrop-blur-md p-6">
+          <div className="w-full max-w-sm rounded-2xl border border-amber-500/40 bg-[#111A2C] p-6 text-center shadow-2xl">
+            <div className="mx-auto mb-4 h-14 w-14 rounded-2xl border border-amber-400/40 bg-amber-500/15 flex items-center justify-center">
+              <RotateCw className="w-7 h-7 text-amber-300 animate-spin" style={{ animationDuration: '3.2s' }} />
+            </div>
+            <h2 className="font-display text-xl font-extrabold text-slate-50">
+              Landscape Mode Only
+            </h2>
+            <p className="mt-2 text-xs text-slate-300 leading-relaxed">
+              This game runs exclusively in landscape orientation while playing. Rotate your device sideways (or widen your window) to continue.
+            </p>
+            <div className="mt-5 flex flex-col gap-2.5">
+              <button
+                type="button"
+                onClick={() => requestLandscapeLock(true)}
+                className="w-full rounded-xl bg-amber-400 hover:bg-amber-300 px-4 py-2.5 text-sm font-extrabold text-slate-950 transition-colors cursor-pointer"
+              >
+                Switch to Landscape
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (isOnline) {
+                    handleLeaveOnline();
+                  } else {
+                    setPauseSettingsOpen(false);
+                    setGameState('TITLE_MENU');
+                  }
+                }}
+                className="w-full rounded-xl border border-slate-700 bg-slate-900 hover:bg-slate-800 px-4 py-2.5 text-xs font-semibold text-slate-200 transition-colors cursor-pointer"
+              >
+                {isOnline ? 'Leave Online Room' : 'Back to Setup'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

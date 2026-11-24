@@ -41,6 +41,7 @@ export interface SpatialAudioOpts {
 class SoundEngine {
   private ctx: AudioContext | null = null;
   private muted = false;
+  private musicEnabled = true;
   private appBackgrounded = false;
   private ambientNodes: AmbientNodes | null = null;
   private ambientActive = false;
@@ -110,7 +111,7 @@ class SoundEngine {
       this.stopNormalMusicImmediate();
       this.stopLibraryMusicImmediate();
       this.stopImmersiveMapMusicImmediate();
-    } else {
+    } else if (this.musicEnabled) {
       if (this.ambientActive) {
         this.setImmersiveAmbient(true, this.ambientExtraDark);
       }
@@ -134,6 +135,40 @@ class SoundEngine {
 
   public isMuted(): boolean {
     return this.muted;
+  }
+
+  public setMusicEnabled(enabled: boolean) {
+    if (this.musicEnabled === enabled) return;
+    this.musicEnabled = enabled;
+    if (!enabled) {
+      this.stopAmbientImmediate();
+      this.stopNormalMusicImmediate();
+      this.stopLibraryMusicImmediate();
+      this.stopImmersiveMapMusicImmediate();
+    } else if (!this.muted) {
+      if (this.ambientActive) {
+        this.setImmersiveAmbient(true, this.ambientExtraDark);
+      }
+      if (this.normalMusicActive) {
+        this.updateNormalMusic(0, true, this.normalMusicTension, this.normalMusicTheme);
+      }
+      if (this.libraryMusicActive) {
+        this.updateLibraryMusic(0, true, this.libraryMusicProgress, this.libraryMusicInRage);
+      }
+      if (this.immersiveMapMusicActive && this.immersiveMapMusicTheme) {
+        this.updateImmersiveMapMusic(
+          0,
+          true,
+          this.immersiveMapMusicTheme,
+          this.immersiveMapMusicProgress,
+          this.immersiveMapMusicFinalStage
+        );
+      }
+    }
+  }
+
+  public isMusicEnabled(): boolean {
+    return this.musicEnabled;
   }
 
   public setAppBackgrounded(backgrounded: boolean) {
@@ -335,7 +370,7 @@ class SoundEngine {
     this.ambientActive = active;
     this.ambientExtraDark = extraDark;
 
-    if (!active || this.muted) {
+    if (!active || this.muted || !this.musicEnabled) {
       this.stopAmbientImmediate();
       return;
     }
@@ -465,7 +500,7 @@ class SoundEngine {
       this.stopNormalMusicImmediate();
     }
 
-    if (!active || this.muted) {
+    if (!active || this.muted || !this.musicEnabled) {
       this.stopNormalMusicImmediate();
       return;
     }
@@ -1936,7 +1971,7 @@ class SoundEngine {
       .then((decoded) => {
         if (key === 'unhinged') {
           this.libraryMusicBuffer = decoded;
-          if (this.libraryMusicActive && !this.muted) {
+          if (this.libraryMusicActive && !this.muted && this.musicEnabled) {
             this.updateLibraryMusic(0, true, this.libraryMusicProgress, this.libraryMusicInRage);
           }
         } else if (key === 'step') {
@@ -1963,7 +1998,7 @@ class SoundEngine {
     this.libraryMusicProgress = progress;
     this.libraryMusicInRage = inRage;
 
-    if (!active || this.muted) {
+    if (!active || this.muted || !this.musicEnabled) {
       this.stopLibraryMusicImmediate();
       return;
     }
@@ -2131,7 +2166,8 @@ class SoundEngine {
         if (
           this.immersiveMapMusicActive &&
           this.immersiveMapMusicTheme &&
-          !this.muted
+          !this.muted &&
+          this.musicEnabled
         ) {
           this.updateImmersiveMapMusic(
             0,
@@ -2242,7 +2278,7 @@ class SoundEngine {
     this.immersiveMapMusicProgress = progress;
     this.immersiveMapMusicFinalStage = finalStage;
 
-    if (!active || this.muted) {
+    if (!active || this.muted || !this.musicEnabled) {
       this.stopImmersiveMapMusicImmediate();
       return;
     }
