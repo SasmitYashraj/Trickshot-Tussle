@@ -537,20 +537,26 @@ export function OnlineLobbyScreen({
             {(room.config.fillBots ?? true) && (
               <div>
                 <div className="text-xs font-semibold text-slate-400 mb-2">Bot Skill</div>
-                <div className="grid grid-cols-3 gap-1.5 p-1 rounded-lg bg-slate-900 border border-slate-800">
-                  {(['CHILL', 'TACTICAL', 'RUTHLESS'] as BotDifficulty[]).map((level) => (
+                <div className="grid grid-cols-4 gap-1 p-1 rounded-lg bg-slate-900 border border-slate-800">
+                  {(['CHILL', 'TACTICAL', 'VETERAN', 'RUTHLESS'] as BotDifficulty[]).map((level) => (
                     <button
                       key={level}
                       type="button"
                       disabled={!isHost}
                       onClick={() => setDifficulty(level)}
-                      className={`px-2 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap ${
+                      className={`px-1.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap ${
                         room.config.difficulty === level
                           ? 'bg-slate-700 text-white'
                           : 'text-slate-400 hover:text-slate-200'
                       } ${!isHost ? 'cursor-default' : 'cursor-pointer'}`}
                     >
-                      {level === 'CHILL' ? 'Chill' : level === 'TACTICAL' ? 'Tactical' : 'Ruthless'}
+                      {level === 'CHILL'
+                        ? 'Chill'
+                        : level === 'TACTICAL'
+                          ? 'Tactical'
+                          : level === 'VETERAN'
+                            ? 'Veteran'
+                            : 'Ruthless'}
                     </button>
                   ))}
                 </div>

@@ -27,6 +27,7 @@ import type {
   Particle,
   Pickup,
   PlayerSkinFinish,
+  PracticeTarget,
   TeamMode,
   WallRect,
 } from './types';
@@ -79,6 +80,7 @@ export interface RenderableWorld {
   bullets: Bullet[];
   pickups: Pickup[];
   boxes: CardboardBox[];
+  practiceTargets?: PracticeTarget[];
   icePits?: IcePit[];
   explosions: Explosion[];
   particles: Particle[];
@@ -4442,6 +4444,82 @@ function drawLibraryMonster(
   ctx.restore();
 }
 
+function drawPracticeTarget(ctx: CanvasRenderingContext2D, target: PracticeTarget, elapsedTime: number) {
+  const r = target.radius;
+  const popScale = Math.min(1, 0.55 + target.age * 4.5);
+
+  ctx.save();
+  ctx.translate(target.x, target.y);
+  ctx.scale(popScale, popScale);
+
+  // Soft ground shadow
+  ctx.fillStyle = 'rgba(2, 6, 23, 0.45)';
+  ctx.beginPath();
+  ctx.arc(3, 5, r + 2, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Outer red border ring
+  ctx.fillStyle = '#DC2626';
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Ring 2: crisp white
+  ctx.fillStyle = '#F8FAFC';
+  ctx.beginPath();
+  ctx.arc(0, 0, r * 0.78, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Ring 3: crimson red
+  ctx.fillStyle = '#EF4444';
+  ctx.beginPath();
+  ctx.arc(0, 0, r * 0.54, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Ring 4: crisp white
+  ctx.fillStyle = '#F8FAFC';
+  ctx.beginPath();
+  ctx.arc(0, 0, r * 0.32, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Bullseye center
+  ctx.fillStyle = '#B91C1C';
+  ctx.beginPath();
+  ctx.arc(0, 0, r * 0.14, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Subtle dark outer rim for contrast on snow/light floors
+  ctx.strokeStyle = 'rgba(15, 23, 42, 0.72)';
+  ctx.lineWidth = 2.4;
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Subtle motion ring / direction chevron for moving targets
+  if (target.moving) {
+    const moveAngle = Math.atan2(target.vy, target.vx);
+    const pulse = 0.55 + Math.sin(elapsedTime * 7) * 0.25;
+    ctx.strokeStyle = `rgba(254, 240, 138, ${pulse.toFixed(2)})`;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([7, 7]);
+    ctx.beginPath();
+    ctx.arc(0, 0, r + 5, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.rotate(moveAngle);
+    ctx.fillStyle = '#FDE047';
+    ctx.beginPath();
+    ctx.moveTo(r + 11, 0);
+    ctx.lineTo(r + 4, -5);
+    ctx.lineTo(r + 4, 5);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
 function drawCardboardBox(ctx: CanvasRenderingContext2D, box: CardboardBox) {
   let alpha = 1;
   let scaleX = 1;
@@ -5761,6 +5839,13 @@ export function renderArena(
     for (const box of world.boxes) {
       if (inViewRect(box.x - box.w * 0.5, box.y - box.h * 0.5, box.w, box.h)) {
         drawCardboardBox(ctx, box);
+      }
+    }
+    if (world.practiceTargets) {
+      for (const target of world.practiceTargets) {
+        if (inViewCircle(target.x, target.y, target.radius + 16)) {
+          drawPracticeTarget(ctx, target, world.elapsedTime);
+        }
       }
     }
     for (const player of world.players) {

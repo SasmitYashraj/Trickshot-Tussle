@@ -13,6 +13,7 @@ import {
   type ModifierLevel,
   type OptionalSpawnLevel,
   PLAYER_COLOR_PALETTE,
+  type PracticeTargetMode,
   type TeamMode,
 } from './types';
 
@@ -176,6 +177,7 @@ export function loadSavedMatchConfig(fallback: MatchConfig): MatchConfig {
     const difficulty: BotDifficulty =
       parsed.difficulty === 'CHILL' ||
       parsed.difficulty === 'TACTICAL' ||
+      parsed.difficulty === 'VETERAN' ||
       parsed.difficulty === 'RUTHLESS'
         ? parsed.difficulty
         : fallback.difficulty;
@@ -191,6 +193,12 @@ export function loadSavedMatchConfig(fallback: MatchConfig): MatchConfig {
       typeof parsed.local2PIncludeBots === 'boolean'
         ? parsed.local2PIncludeBots
         : fallback.local2PIncludeBots ?? true;
+    const practiceTargetMode: PracticeTargetMode =
+      parsed.practiceTargetMode === 'STATIC' ||
+      parsed.practiceTargetMode === 'MOVING' ||
+      parsed.practiceTargetMode === 'BOTH'
+        ? parsed.practiceTargetMode
+        : fallback.practiceTargetMode ?? 'BOTH';
 
     const effectiveMap = local2P && validMap.immersive ? SOLO_MAP_LIST[0] : validMap;
 
@@ -219,6 +227,8 @@ export function loadSavedMatchConfig(fallback: MatchConfig): MatchConfig {
           : fallback.targetKills,
       local2P,
       local2PIncludeBots,
+      targetPractice: false,
+      practiceTargetMode,
       playerColorId: p1ColorId,
       player2ColorId: p2ColorId,
       modifiers: sanitizeModifiers(parsed.modifiers),
@@ -231,7 +241,10 @@ export function loadSavedMatchConfig(fallback: MatchConfig): MatchConfig {
 export function saveMatchConfig(config: MatchConfig): void {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.setItem(MATCH_CONFIG_STORAGE_KEY, JSON.stringify(config));
+    window.localStorage.setItem(
+      MATCH_CONFIG_STORAGE_KEY,
+      JSON.stringify({ ...config, targetPractice: false })
+    );
   } catch {
     // Ignore storage quota or private-mode restrictions
   }

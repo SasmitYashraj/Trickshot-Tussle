@@ -4,7 +4,8 @@ export type MatchMode = 'ELIMINATION' | 'BRAWL';
 
 export type TeamMode = 'FFA' | '2V2';
 
-export type BotDifficulty = 'CHILL' | 'TACTICAL' | 'RUTHLESS';
+export type BotDifficulty = 'CHILL' | 'TACTICAL' | 'VETERAN' | 'RUTHLESS';
+export type PracticeTargetMode = 'STATIC' | 'MOVING' | 'BOTH';
 
 export type ControlScheme = 'CURSOR_SPACE' | 'DRAG_STICK';
 
@@ -334,6 +335,18 @@ export interface IcePit {
   broken: boolean;
 }
 
+export interface PracticeTarget {
+  id: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  radius: number;
+  moving: boolean;
+  age: number;
+  moveTimer: number;
+}
+
 export interface ArenaMap {
   id: MapId;
   name: string;
@@ -598,6 +611,8 @@ export interface MatchConfig {
   fillBots?: boolean;
   local2P?: boolean;
   local2PIncludeBots?: boolean;
+  targetPractice?: boolean;
+  practiceTargetMode?: PracticeTargetMode;
   playerColorId?: string;
   player2ColorId?: string;
   modifiers?: MatchModifiers;
@@ -611,6 +626,8 @@ export interface GameSnapshot {
   winnerId: number | null;
   winnerTeam?: number | null;
   winnerReason: string;
+  practiceTargetMode?: PracticeTargetMode;
+  practiceReloadTimer?: number;
 }
 
 export interface OnlineLobbySlot {

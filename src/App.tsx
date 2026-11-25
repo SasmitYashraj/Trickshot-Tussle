@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, Eye, Pause, Play, RotateCw, Settings, Undo2, Volume2, VolumeX } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Crosshair, Eye, Pause, Play, RotateCw, Settings, Undo2, Volume2, VolumeX } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ColorSelectScreen } from './components/ColorSelectScreen';
 import { GameOverModal } from './components/GameOverModal';
@@ -43,6 +43,7 @@ import {
   OnlineRoomState,
   PLAYER_MAX_SPEED,
   PLAYER_SPEED_MULTS,
+  type PracticeTargetMode,
   WorldSyncState,
 } from './game/types';
 import { MultiplayerClient } from './net/multiplayerClient';
@@ -312,7 +313,8 @@ function worldToSnapshot(world: WorldSyncState, localSlot: number): GameSnapshot
 
 function getHudSnapshotSignature(snap: GameSnapshot): string {
   const sec = Math.max(0, Math.floor(snap.elapsedTime));
-  let s = `${sec}|${snap.winnerId ?? 'n'}|${snap.winnerTeam ?? 'n'}`;
+  const pReload = snap.practiceReloadTimer ? Math.ceil(snap.practiceReloadTimer * 15) : 0;
+  let s = `${sec}|${snap.winnerId ?? 'n'}|${snap.winnerTeam ?? 'n'}|${snap.practiceTargetMode ?? ''}|${pReload}`;
   for (const p of snap.players) {
     const stun = p.stunTimer > 0 ? Math.ceil(p.stunTimer * 2) : 0;
     const resp = p.respawnTimer > 0 ? Math.ceil(p.respawnTimer * 2) : 0;
@@ -333,6 +335,7 @@ export default function App() {
   const [config, setConfig] = useState<MatchConfig>(() =>
     loadSavedMatchConfig(DEFAULT_SOLO_CONFIG)
   );
+  const [soloRunConfig, setSoloRunConfig] = useState<MatchConfig | null>(null);
   const [generalSettings, setGeneralSettings] = useState<GeneralSettings>(() =>
     loadGeneralSettings()
   );
@@ -711,23 +714,28 @@ export default function App() {
   const startSoloMatch = useCallback(
     (overrideConfig?: MatchConfig) => {
       const baseCfg = overrideConfig ?? config;
+      const isPractice = Boolean(baseCfg.targetPractice);
       const rawMapDef = ARENA_MAPS[baseCfg.mapId];
-      const effectiveMapId = baseCfg.local2P && rawMapDef.immersive ? 'crossroads' : baseCfg.mapId;
+      const effectiveMapId =
+        (isPractice || baseCfg.local2P) && rawMapDef.immersive ? 'crossroads' : baseCfg.mapId;
       const mapDef = ARENA_MAPS[effectiveMapId];
       const nextCfg: MatchConfig = {
         ...baseCfg,
         mapId: effectiveMapId,
-        immersive: mapDef.immersive,
-        extraDark: mapDef.immersive ? Boolean(baseCfg.extraDark) : false,
+        local2P: isPractice ? false : baseCfg.local2P,
+        immersive: isPractice ? false : mapDef.immersive,
+        extraDark: isPractice ? false : mapDef.immersive ? Boolean(baseCfg.extraDark) : false,
+        targetPractice: isPractice,
       };
-      if (effectiveMapId !== baseCfg.mapId) {
+      if (!isPractice && effectiveMapId !== baseCfg.mapId) {
         setConfig(nextCfg);
       }
+      setSoloRunConfig(isPractice ? nextCfg : null);
       sound.unlock();
       requestLandscapeLock(true);
-      if (nextCfg.mapId === 'library') {
+      if (!isPractice && nextCfg.mapId === 'library') {
         sound.preloadLibraryAudio();
-      } else if (mapDef.immersive) {
+      } else if (!isPractice && mapDef.immersive) {
         sound.preloadImmersiveTrack(mapDef.floorTheme);
       }
       setIsOnline(false);
@@ -758,6 +766,23 @@ export default function App() {
       setGameState('PLAYING');
     },
     [config, requestLandscapeLock]
+  );
+
+  const startTargetPractice = useCallback(
+    (practiceTargetMode: PracticeTargetMode, mapId: MatchConfig['mapId']) => {
+      setConfig((prev) => ({ ...prev, practiceTargetMode }));
+      startSoloMatch({
+        ...config,
+        mapId,
+        local2P: false,
+        immersive: false,
+        extraDark: false,
+        teamMode: 'FFA',
+        targetPractice: true,
+        practiceTargetMode,
+      });
+    },
+    [config, startSoloMatch]
   );
 
   // Auto-expire self-kill funny popup (keep visible even on immediate GAME_OVER)
@@ -909,7 +934,7 @@ export default function App() {
 
       if (gameStateRef.current !== 'PLAYING' || hostLobbyConfirmOpenRef.current) return;
 
-      const isLocal2PActive = !isOnlineRef.current && Boolean(configRef.current.local2P);
+      const isLocal2PActive = !isOnlineRef.current && Boolean(engineRef.current.config.local2P);
 
       if (e.code === 'KeyC' && !e.repeat && controlSchemeRef.current === 'CURSOR_SPACE') {
         const libUi = libraryUiRef.current;
@@ -1192,6 +1217,7 @@ export default function App() {
           bullets: engine.bullets,
           pickups: engine.pickups,
           boxes: engine.boxes,
+          practiceTargets: engine.practiceTargets,
           icePits: engine.icePits,
           explosions: engine.explosions,
           particles: engine.particles,
@@ -1689,7 +1715,7 @@ export default function App() {
     }
 
     if (controlSchemeRef.current === 'CURSOR_SPACE') {
-      if (!isOnlineRef.current && configRef.current.local2P) return;
+      if (!isOnlineRef.current && engineRef.current.config.local2P) return;
       const pt = getCanvasPoint(e);
       cursorScreenRef.current = pt;
       if (!hasUsedJoystick) setHasUsedJoystick(true);
@@ -1699,7 +1725,7 @@ export default function App() {
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (gameState !== 'PLAYING') return;
     if (controlSchemeRef.current === 'CURSOR_SPACE') {
-      if (!isOnlineRef.current && configRef.current.local2P) return;
+      if (!isOnlineRef.current && engineRef.current.config.local2P) return;
       cursorScreenRef.current = getCanvasPoint(e);
       if (!hasUsedJoystick) setHasUsedJoystick(true);
     }
@@ -1768,7 +1794,8 @@ export default function App() {
           setColorSelectSlot(slot === 2 ? 2 : 1);
           setMenuStep('COLOR_SELECT');
         }}
-        onStartSolo={() => startSoloMatch(config)}
+        onStartSolo={() => startSoloMatch({ ...config, targetPractice: false })}
+        onStartTargetPractice={startTargetPractice}
         onCreateOnlineRoom={handleCreateOnlineRoom}
         onJoinOnlineRoom={handleJoinOnlineRoom}
       />
@@ -1794,11 +1821,18 @@ export default function App() {
     );
   }
 
-  const activeConfig = isOnline && roomState ? roomState.config : config;
+  const activeConfig = isOnline && roomState ? roomState.config : soloRunConfig ?? config;
+  const isTargetPractice = !isOnline && Boolean(activeConfig.targetPractice);
+  const practiceModeLabel =
+    activeConfig.practiceTargetMode === 'STATIC'
+      ? 'Static Targets'
+      : activeConfig.practiceTargetMode === 'MOVING'
+        ? 'Moving Targets'
+        : 'Static & Moving';
   const isRightStick = generalSettings.joystickPosition === 'RIGHT';
-  const isLocal2P = !isOnline && Boolean(activeConfig.local2P);
+  const isLocal2P = !isOnline && !isTargetPractice && Boolean(activeConfig.local2P);
   const local2PBots = !isLocal2P || activeConfig.local2PIncludeBots !== false;
-  const is2v2 = ((activeConfig.teamMode ?? snapshot.teamMode ?? 'FFA') === '2V2') && local2PBots;
+  const is2v2 = ((activeConfig.teamMode ?? snapshot.teamMode ?? 'FFA') === '2V2') && local2PBots && !isTargetPractice;
   const isHost = isOnline && roomState ? roomState.mySlot === roomState.hostSlot : true;
   const localSlot = isOnline && roomState ? roomState.mySlot : 0;
   const localSnap = snapshot.players.find((p) => p.id === localSlot);
@@ -1834,23 +1868,37 @@ export default function App() {
               <span aria-hidden="true">·</span>
             </>
           )}
-          {is2v2 && (
+          {isTargetPractice ? (
             <>
-              <span className="font-mono-tabular font-bold text-sky-300">A {teamAKills}</span>
-              <span className="text-slate-600">vs</span>
-              <span className="font-mono-tabular font-bold text-rose-300">B {teamBKills}</span>
+              <span className="font-semibold text-rose-300">Target Practice</span>
               <span aria-hidden="true">·</span>
+              <span>{practiceModeLabel}</span>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono-tabular font-bold text-amber-300">
+                {p0?.kills ?? 0} Hits
+              </span>
+            </>
+          ) : (
+            <>
+              {is2v2 && (
+                <>
+                  <span className="font-mono-tabular font-bold text-sky-300">A {teamAKills}</span>
+                  <span className="text-slate-600">vs</span>
+                  <span className="font-mono-tabular font-bold text-rose-300">B {teamBKills}</span>
+                  <span aria-hidden="true">·</span>
+                </>
+              )}
+              <span>
+                {activeConfig.mode === 'BRAWL'
+                  ? is2v2
+                    ? `2v2 · First to ${activeConfig.targetKills} KOs`
+                    : `First to ${activeConfig.targetKills} KOs`
+                  : is2v2
+                    ? '2v2 Last Team Standing'
+                    : 'Last Standing'}
+              </span>
             </>
           )}
-          <span>
-            {activeConfig.mode === 'BRAWL'
-              ? is2v2
-                ? `2v2 · First to ${activeConfig.targetKills} KOs`
-                : `First to ${activeConfig.targetKills} KOs`
-              : is2v2
-                ? '2v2 Last Team Standing'
-                : 'Last Standing'}
-          </span>
           <span aria-hidden="true">·</span>
           <span>{ARENA_MAPS[activeConfig.mapId].name}</span>
           <span aria-hidden="true">·</span>
@@ -2188,6 +2236,33 @@ export default function App() {
                 )}
               </div>
             </>
+          ) : isTargetPractice ? (
+            <div
+              style={{
+                top: 'max(0.375rem, env(safe-area-inset-top))',
+                left: 'max(0.75rem, env(safe-area-inset-left))',
+                right: 'max(0.75rem, env(safe-area-inset-right))',
+              }}
+              className="pointer-events-none absolute flex items-start justify-between gap-2 lg:hidden z-10"
+            >
+              <div className="rounded-lg border border-slate-700/75 bg-slate-950/70 px-2.5 py-1.5 text-[11px] backdrop-blur-sm">
+                <div className="flex items-center gap-2">
+                  <Crosshair className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                  <span className="font-display font-bold text-slate-100">
+                    {p0?.kills ?? 0} Hits
+                  </span>
+                  <span className="text-slate-500">·</span>
+                  <span className="font-mono-tabular font-bold text-amber-300">
+                    {(p0?.ammo ?? 0) > 0
+                      ? 'Ready (1/1)'
+                      : `Reload ${(snapshot.practiceReloadTimer ?? 0).toFixed(1)}s`}
+                  </span>
+                </div>
+              </div>
+              <div className="rounded-lg border border-slate-700/75 bg-slate-950/70 px-2.5 py-1.5 text-[11px] font-semibold text-slate-300 backdrop-blur-sm">
+                {practiceModeLabel}
+              </div>
+            </div>
           ) : (
             <div
               style={{
@@ -2626,31 +2701,94 @@ export default function App() {
               targetKills={activeConfig.targetKills}
               align="right"
             />
+          ) : isTargetPractice ? (
+            <div className="rounded-xl border border-rose-500/35 bg-[#0F172A]/90 p-3.5 text-xs space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-display font-bold text-rose-300 flex items-center gap-1.5">
+                  <Crosshair className="w-3.5 h-3.5" />
+                  Target Practice
+                </span>
+                <span className="font-mono-tabular font-bold text-amber-300">
+                  {p0?.kills ?? 0} Hits
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-[11px] text-slate-300">
+                <span>Mode</span>
+                <span className="font-semibold text-slate-100">{practiceModeLabel}</span>
+              </div>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-slate-400">Auto Refill</span>
+                  <span className="font-mono-tabular font-bold text-sky-300">
+                    {(p0?.ammo ?? 0) > 0
+                      ? 'Chamber Full (1/1)'
+                      : `${(snapshot.practiceReloadTimer ?? 0).toFixed(2)}s`}
+                  </span>
+                </div>
+                <div className="h-1.5 w-full rounded-full bg-slate-800 overflow-hidden">
+                  <div
+                    className="h-full bg-sky-400 transition-all duration-75"
+                    style={{
+                      width: `${
+                        (p0?.ammo ?? 0) > 0
+                          ? 100
+                          : Math.max(0, Math.min(100, (1 - (snapshot.practiceReloadTimer ?? 0) / 0.5) * 100))
+                      }%`,
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
           ) : (
             <div />
           )}
           <div className="rounded-xl border border-slate-800/80 bg-[#0F172A]/80 p-3.5 text-xs text-slate-400 space-y-2">
-            <div className="font-semibold text-slate-200">Arena Objects</div>
-            <div className="flex items-center justify-between">
-              <span className="text-yellow-300">Bullet Hit</span>
-              <span className="font-mono-tabular text-slate-300">-33 HP · Stun</span>
+            <div className="font-semibold text-slate-200">
+              {isTargetPractice ? 'Practice Rules' : 'Arena Objects'}
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-lime-400">Nitro Crate</span>
-              <span className="font-mono-tabular text-slate-300">-33 HP · Blast</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-red-400">TNT (3s)</span>
-              <span className="font-mono-tabular text-slate-300">-45 HP · Shoot Fuse</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-amber-400">Cardboard</span>
-              <span className="font-mono-tabular text-slate-300">Push · 1-Hit Cover</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-emerald-400">Medkit</span>
-              <span className="font-mono-tabular text-slate-300">+35 HP</span>
-            </div>
+            {isTargetPractice ? (
+              <>
+                <div className="flex items-center justify-between">
+                  <span className="text-rose-300">Target Board</span>
+                  <span className="font-mono-tabular text-slate-300">0.5s Respawn</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-amber-300">Single Shot</span>
+                  <span className="font-mono-tabular text-slate-300">0.5s Auto Refill</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sky-300">Moving Speed</span>
+                  <span className="font-mono-tabular text-slate-300">Matches Modifier</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-300">Pickups</span>
+                  <span className="font-mono-tabular text-slate-400">Disabled</span>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex items-center justify-between">
+                  <span className="text-yellow-300">Bullet Hit</span>
+                  <span className="font-mono-tabular text-slate-300">-33 HP · Stun</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-lime-400">Nitro Crate</span>
+                  <span className="font-mono-tabular text-slate-300">-33 HP · Blast</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-red-400">TNT (3s)</span>
+                  <span className="font-mono-tabular text-slate-300">-45 HP · Shoot Fuse</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-amber-400">Cardboard</span>
+                  <span className="font-mono-tabular text-slate-300">Push · 1-Hit Cover</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-emerald-400">Medkit</span>
+                  <span className="font-mono-tabular text-slate-300">+35 HP</span>
+                </div>
+              </>
+            )}
           </div>
           {p3 ? (
             <PlayerHealthBar
@@ -2702,11 +2840,13 @@ export default function App() {
         </div>
       )}
 
-      {/* Pause Overlay (Solo only) */}
+      {/* Pause Overlay (Solo / Target Practice only) */}
       {gameState === 'PAUSED' && !isOnline && (
         <div className="fixed inset-0 z-20 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4">
           <div className="w-full max-w-sm rounded-2xl border border-slate-700/80 bg-[#111A2C] p-6 shadow-2xl">
-            <h2 className="font-display text-2xl font-bold text-slate-50">Match Paused</h2>
+            <h2 className="font-display text-2xl font-bold text-slate-50">
+              {isTargetPractice ? 'Practice Paused' : 'Match Paused'}
+            </h2>
             <p className="mt-1 text-xs text-slate-400">
               {ARENA_MAPS[activeConfig.mapId].name} · {formatClock(snapshot.elapsedTime)} elapsed
             </p>
@@ -2716,7 +2856,7 @@ export default function App() {
                 onClick={togglePause}
                 className="w-full rounded-xl bg-sky-400 hover:bg-sky-300 px-4 py-2.5 text-sm font-bold text-slate-950 transition-colors cursor-pointer"
               >
-                Resume Match
+                {isTargetPractice ? 'Resume Practice' : 'Resume Match'}
               </button>
               <button
                 type="button"
@@ -2728,15 +2868,16 @@ export default function App() {
               </button>
               <button
                 type="button"
-                onClick={() => startSoloMatch()}
+                onClick={() => startSoloMatch(activeConfig)}
                 className="w-full rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-100 transition-colors cursor-pointer"
               >
-                Restart Match
+                {isTargetPractice ? 'Reset Practice' : 'Restart Match'}
               </button>
               <button
                 type="button"
                 onClick={() => {
                   setPauseSettingsOpen(false);
+                  setSoloRunConfig(null);
                   setGameState('TITLE_MENU');
                 }}
                 className="w-full rounded-xl border border-slate-800 bg-slate-900 hover:bg-slate-800 px-4 py-2.5 text-sm font-semibold text-slate-300 transition-colors cursor-pointer"

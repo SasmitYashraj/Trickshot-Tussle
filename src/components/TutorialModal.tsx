@@ -216,6 +216,9 @@ export function TutorialModal({ onClose }: TutorialModalProps) {
                     <span className="font-bold text-sky-300">Tactical:</span> Contests ammo, banks shots off cover, yet struggles in fast crossfires.
                   </li>
                   <li>
+                    <span className="font-bold text-amber-300">Veteran:</span> Dodges 1st wall rebounds, strafes behind cover, and fires while evading—sharp without Ruthless aggression.
+                  </li>
+                  <li>
                     <span className="font-bold text-rose-300">Ruthless:</span> Predicts multi-wall rebounds, traps pickups, and hunts sound cues—still obeys human turn speed, so starve ammo or catch them mid-turn.
                   </li>
                 </ul>

@@ -150,7 +150,12 @@ function sanitizeConfig(raw: Partial<MatchConfig> | undefined): MatchConfig {
     teamMode,
     mapId: map.id,
     difficulty:
-      raw?.difficulty === 'CHILL' || raw?.difficulty === 'RUTHLESS' ? raw.difficulty : 'TACTICAL',
+      raw?.difficulty === 'CHILL' ||
+      raw?.difficulty === 'TACTICAL' ||
+      raw?.difficulty === 'VETERAN' ||
+      raw?.difficulty === 'RUTHLESS'
+        ? raw.difficulty
+        : 'TACTICAL',
     targetKills:
       typeof raw?.targetKills === 'number' ? Math.max(3, Math.min(20, raw.targetKills)) : 8,
     immersive: map.immersive,

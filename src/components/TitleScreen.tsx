@@ -1,19 +1,22 @@
-import { BookOpen, ChevronRight, Globe, Map as MapIcon, Palette, Play, Settings, Swords, User, Users } from 'lucide-react';
+import { BookOpen, ChevronRight, Crosshair, Globe, Map as MapIcon, Palette, Play, Settings, Swords, User, Users } from 'lucide-react';
 import { useState } from 'react';
 import { ARENA_MAPS, IMMERSIVE_DARK_PREVIEW_URLS, MAP_PREVIEW_URLS, SOLO_MAP_LIST } from '../game/maps';
 import type { GeneralSettings } from '../game/settings';
 import {
   type BotDifficulty,
   DEFAULT_MATCH_MODIFIERS,
+  type MapId,
   type MatchConfig,
   type MatchMode,
   type MatchModifiers,
   PLAYER_COLOR_PALETTE,
+  type PracticeTargetMode,
   type TeamMode,
 } from '../game/types';
 import { PlayerAvatar } from './PlayerAvatar';
 import { PWAInstallButton } from './PWAInstallButton';
 import { SettingsModal } from './SettingsModal';
+import { TargetPracticeModal } from './TargetPracticeModal';
 import { TutorialModal } from './TutorialModal';
 
 interface TitleScreenProps {
@@ -27,6 +30,7 @@ interface TitleScreenProps {
   onOpenMapSelect: () => void;
   onOpenColorSelect: (slot?: 1 | 2) => void;
   onStartSolo: () => void;
+  onStartTargetPractice: (mode: PracticeTargetMode, mapId: MapId) => void;
   onCreateOnlineRoom: (name: string) => void;
   onJoinOnlineRoom: (code: string, name: string) => void;
 }
@@ -42,6 +46,7 @@ export function TitleScreen({
   onOpenMapSelect,
   onOpenColorSelect,
   onStartSolo,
+  onStartTargetPractice,
   onCreateOnlineRoom,
   onJoinOnlineRoom,
 }: TitleScreenProps) {
@@ -52,6 +57,7 @@ export function TitleScreen({
   const [joinCode, setJoinCode] = useState(initialRoomCode);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [tutorialOpen, setTutorialOpen] = useState(false);
+  const [practiceOpen, setPracticeOpen] = useState(false);
   const [imgFailed, setImgFailed] = useState<Record<string, boolean>>({});
   const [pointerPct, setPointerPct] = useState<{ x: number; y: number }>({ x: 50, y: 35 });
 
@@ -275,14 +281,14 @@ export function TitleScreen({
                 </div>
               </div>
 
-              <div className="mt-3.5">
+              <div className="mt-3.5 space-y-2.5">
                 <button
                   type="button"
                   onClick={() => setTutorialOpen(true)}
-                  className="w-full rounded-xl border border-amber-400/35 bg-slate-900/80 hover:bg-slate-800/90 hover:border-amber-300/60 px-4 py-3.5 flex items-center justify-between gap-3 text-left transition-colors cursor-pointer group"
+                  className="w-full rounded-xl border border-amber-400/35 bg-slate-900/80 hover:bg-slate-800/90 hover:border-amber-300/60 px-4 py-3 flex items-center justify-between gap-3 text-left transition-colors cursor-pointer group"
                 >
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="h-10 w-10 rounded-xl bg-amber-500/15 border border-amber-400/35 flex items-center justify-center shrink-0 group-hover:bg-amber-400/25 transition-colors">
+                    <div className="h-9.5 w-9.5 rounded-xl bg-amber-500/15 border border-amber-400/35 flex items-center justify-center shrink-0 group-hover:bg-amber-400/25 transition-colors">
                       <BookOpen className="w-4.5 h-4.5 text-amber-300" />
                     </div>
                     <div className="min-w-0">
@@ -295,6 +301,27 @@ export function TitleScreen({
                     </div>
                   </div>
                   <ChevronRight className="w-4 h-4 text-amber-300 shrink-0 group-hover:translate-x-0.5 transition-transform" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setPracticeOpen(true)}
+                  className="w-full rounded-xl border border-rose-400/35 bg-slate-900/80 hover:bg-slate-800/90 hover:border-rose-300/65 px-4 py-3 flex items-center justify-between gap-3 text-left transition-colors cursor-pointer group"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="h-9.5 w-9.5 rounded-xl bg-rose-500/15 border border-rose-400/35 flex items-center justify-center shrink-0 group-hover:bg-rose-400/25 transition-colors">
+                      <Crosshair className="w-4.5 h-4.5 text-rose-400" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="font-display text-sm sm:text-base font-extrabold text-slate-100 group-hover:text-rose-200 transition-colors">
+                        Target Practice
+                      </div>
+                      <div className="text-xs text-slate-400 truncate">
+                        Static &amp; moving bullseye targets · 0.5s refill · Warm up rebounds
+                      </div>
+                    </div>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-rose-400 shrink-0 group-hover:translate-x-0.5 transition-transform" />
                 </button>
               </div>
             </div>
@@ -494,19 +521,25 @@ export function TitleScreen({
                   {(tab === 'SOLO' || local2PBots) && (
                     <div>
                       <div className="text-xs font-semibold text-slate-400 mb-1.5">Rival Skill</div>
-                      <div className="grid grid-cols-3 gap-1.5 p-1 rounded-lg bg-slate-900 border border-slate-800">
-                        {(['CHILL', 'TACTICAL', 'RUTHLESS'] as BotDifficulty[]).map((level) => (
+                      <div className="grid grid-cols-4 gap-1 p-1 rounded-lg bg-slate-900 border border-slate-800">
+                        {(['CHILL', 'TACTICAL', 'VETERAN', 'RUTHLESS'] as BotDifficulty[]).map((level) => (
                           <button
                             key={level}
                             type="button"
                             onClick={() => setDifficulty(level)}
-                            className={`px-2 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
+                            className={`px-1.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap cursor-pointer ${
                               config.difficulty === level
                                 ? 'bg-slate-700 text-white'
                                 : 'text-slate-400 hover:text-slate-200'
                             }`}
                           >
-                            {level === 'CHILL' ? 'Chill' : level === 'TACTICAL' ? 'Tactical' : 'Ruthless'}
+                            {level === 'CHILL'
+                              ? 'Chill'
+                              : level === 'TACTICAL'
+                                ? 'Tactical'
+                                : level === 'VETERAN'
+                                  ? 'Veteran'
+                                  : 'Ruthless'}
                           </button>
                         ))}
                       </div>
@@ -635,6 +668,18 @@ export function TitleScreen({
       )}
 
       {tutorialOpen && <TutorialModal onClose={() => setTutorialOpen(false)} />}
+
+      {practiceOpen && (
+        <TargetPracticeModal
+          initialMode={config.practiceTargetMode ?? 'BOTH'}
+          initialMapId={config.mapId}
+          onStart={(mode, mapId) => {
+            setPracticeOpen(false);
+            onStartTargetPractice(mode, mapId);
+          }}
+          onClose={() => setPracticeOpen(false)}
+        />
+      )}
     </div>
   );
 }
