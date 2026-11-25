@@ -7,6 +7,7 @@ import {
   type MatchModifiers,
   type BulletSpawnLevel,
   type ModifierLevel,
+  type OptionalSpawnLevel,
   type OnlineLobbySlot,
   type OnlineRoomState,
   PLAYER_COLOR_PALETTE,
@@ -64,6 +65,15 @@ function sanitizeBulletSpawnLevel(raw: unknown, fallback: BulletSpawnLevel): Bul
     : fallback;
 }
 
+function sanitizeOptionalSpawnLevel(
+  raw: unknown,
+  fallback: OptionalSpawnLevel
+): OptionalSpawnLevel {
+  return raw === 'NONE' || raw === 'LOW' || raw === 'MEDIUM' || raw === 'HIGH'
+    ? raw
+    : fallback;
+}
+
 function sanitizeFigureDifficulty(
   raw: unknown,
   fallback: MatchModifiers['figureDifficulty']
@@ -81,9 +91,9 @@ function sanitizeModifiers(raw: Partial<MatchModifiers> | undefined): MatchModif
   if (!raw || typeof raw !== 'object') return { ...DEFAULT_MATCH_MODIFIERS };
   return {
     bulletSpawn: sanitizeBulletSpawnLevel(raw.bulletSpawn, DEFAULT_MATCH_MODIFIERS.bulletSpawn),
-    nitroSpawn: sanitizeModifierLevel(raw.nitroSpawn, DEFAULT_MATCH_MODIFIERS.nitroSpawn),
-    tntSpawn: sanitizeModifierLevel(raw.tntSpawn, DEFAULT_MATCH_MODIFIERS.tntSpawn),
-    medkitSpawn: sanitizeModifierLevel(raw.medkitSpawn, DEFAULT_MATCH_MODIFIERS.medkitSpawn),
+    nitroSpawn: sanitizeOptionalSpawnLevel(raw.nitroSpawn, DEFAULT_MATCH_MODIFIERS.nitroSpawn),
+    tntSpawn: sanitizeOptionalSpawnLevel(raw.tntSpawn, DEFAULT_MATCH_MODIFIERS.tntSpawn),
+    medkitSpawn: sanitizeOptionalSpawnLevel(raw.medkitSpawn, DEFAULT_MATCH_MODIFIERS.medkitSpawn),
     playerSpeed: sanitizeModifierLevel(raw.playerSpeed, DEFAULT_MATCH_MODIFIERS.playerSpeed),
     turnSpeed: sanitizeModifierLevel(raw.turnSpeed, DEFAULT_MATCH_MODIFIERS.turnSpeed),
     bulletSpeed: sanitizeModifierLevel(raw.bulletSpeed, DEFAULT_MATCH_MODIFIERS.bulletSpeed),

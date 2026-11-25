@@ -7,6 +7,7 @@ import {
   type FigureDifficulty,
   type MatchModifiers,
   type ModifierLevel,
+  type OptionalSpawnLevel,
 } from '../game/types';
 
 interface ModifiersScreenProps {
@@ -16,10 +17,18 @@ interface ModifiersScreenProps {
   onClose: () => void;
 }
 
+type OptionalSpawnKey = 'nitroSpawn' | 'tntSpawn' | 'medkitSpawn';
+
 type LevelModifierKey = keyof Omit<
   MatchModifiers,
-  'keepBulletsOnStun' | 'figureDifficulty' | 'bulletSpawn'
+  'keepBulletsOnStun' | 'figureDifficulty' | 'bulletSpawn' | OptionalSpawnKey
 >;
+
+interface OptionalSpawnRowDef {
+  key: OptionalSpawnKey;
+  label: string;
+  hint: string;
+}
 
 interface LevelRowDef {
   key: LevelModifierKey;
@@ -28,10 +37,13 @@ interface LevelRowDef {
   labels?: Record<ModifierLevel, string>;
 }
 
-const LEVEL_ROWS: LevelRowDef[] = [
+const OPTIONAL_SPAWN_ROWS: OptionalSpawnRowDef[] = [
   { key: 'nitroSpawn', label: 'Nitro Spawns', hint: 'Instant-detonation crates' },
   { key: 'tntSpawn', label: 'TNT Spawns', hint: 'Pushable 3s fuse crates' },
   { key: 'medkitSpawn', label: 'Medkit Spawns', hint: '+35 HP healing kits' },
+];
+
+const LEVEL_ROWS: LevelRowDef[] = [
   { key: 'playerSpeed', label: 'Player Speed', hint: 'Movement & dash tempo' },
   {
     key: 'turnSpeed',
@@ -61,6 +73,7 @@ const LEVEL_ROWS: LevelRowDef[] = [
 ];
 
 const LEVELS: ModifierLevel[] = ['LOW', 'MEDIUM', 'HIGH'];
+const OPTIONAL_SPAWN_LEVELS: OptionalSpawnLevel[] = ['NONE', 'LOW', 'MEDIUM', 'HIGH'];
 const BULLET_SPAWN_LEVELS: BulletSpawnLevel[] = ['DREAD', 'LOW', 'MEDIUM', 'HIGH'];
 
 export function ModifiersContent({
@@ -75,6 +88,11 @@ export function ModifiersContent({
   footerAction?: React.ReactNode;
 }) {
   const setLevel = (key: LevelModifierKey, level: ModifierLevel) => {
+    if (readOnly) return;
+    onChange({ ...modifiers, [key]: level });
+  };
+
+  const setOptionalSpawn = (key: OptionalSpawnKey, level: OptionalSpawnLevel) => {
     if (readOnly) return;
     onChange({ ...modifiers, [key]: level });
   };
@@ -157,6 +175,55 @@ export function ModifiersContent({
                 })}
               </div>
             </div>
+
+            {OPTIONAL_SPAWN_ROWS.map((row) => {
+              const current = modifiers[row.key] ?? DEFAULT_MATCH_MODIFIERS[row.key];
+              return (
+                <div
+                  key={row.key}
+                  className="rounded-xl border border-slate-800 bg-slate-900/65 p-3"
+                >
+                  <div className="flex items-baseline justify-between gap-2 mb-2">
+                    <span className="text-xs font-bold text-slate-100">{row.label}</span>
+                    <span className="text-[11px] text-slate-400">{row.hint}</span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1 p-1 rounded-lg bg-slate-950/90 border border-slate-800">
+                    {OPTIONAL_SPAWN_LEVELS.map((lvl) => {
+                      const active = current === lvl;
+                      const label =
+                        lvl === 'NONE'
+                          ? 'None'
+                          : lvl === 'LOW'
+                            ? 'Low'
+                            : lvl === 'MEDIUM'
+                              ? 'Medium'
+                              : 'High';
+                      return (
+                        <button
+                          key={lvl}
+                          type="button"
+                          disabled={readOnly}
+                          onClick={() => setOptionalSpawn(row.key, lvl)}
+                          className={`px-1.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                            active
+                              ? lvl === 'NONE'
+                                ? 'bg-rose-500 text-white'
+                                : lvl === 'MEDIUM'
+                                  ? 'bg-sky-500 text-slate-950'
+                                  : lvl === 'HIGH'
+                                    ? 'bg-amber-400 text-slate-950'
+                                    : 'bg-slate-600 text-white'
+                              : 'text-slate-400 hover:text-slate-200'
+                          } ${readOnly ? 'cursor-default' : 'cursor-pointer'}`}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
 
             {LEVEL_ROWS.map((row) => {
               const current = modifiers[row.key] ?? DEFAULT_MATCH_MODIFIERS[row.key];

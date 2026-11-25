@@ -10,6 +10,7 @@ import {
   type MatchMode,
   type MatchModifiers,
   type ModifierLevel,
+  type OptionalSpawnLevel,
   PLAYER_COLOR_PALETTE,
   type TeamMode,
 } from './types';
@@ -39,6 +40,10 @@ function isBulletSpawnLevel(val: unknown): val is BulletSpawnLevel {
   return val === 'DREAD' || val === 'LOW' || val === 'MEDIUM' || val === 'HIGH';
 }
 
+function isOptionalSpawnLevel(val: unknown): val is OptionalSpawnLevel {
+  return val === 'NONE' || val === 'LOW' || val === 'MEDIUM' || val === 'HIGH';
+}
+
 function isFigureDifficulty(val: unknown): val is FigureDifficulty {
   return (
     typeof val === 'string' &&
@@ -52,13 +57,13 @@ export function sanitizeModifiers(raw: unknown): MatchModifiers {
     bulletSpawn: isBulletSpawnLevel(obj.bulletSpawn)
       ? obj.bulletSpawn
       : DEFAULT_MATCH_MODIFIERS.bulletSpawn,
-    nitroSpawn: isModifierLevel(obj.nitroSpawn)
+    nitroSpawn: isOptionalSpawnLevel(obj.nitroSpawn)
       ? obj.nitroSpawn
       : DEFAULT_MATCH_MODIFIERS.nitroSpawn,
-    tntSpawn: isModifierLevel(obj.tntSpawn)
+    tntSpawn: isOptionalSpawnLevel(obj.tntSpawn)
       ? obj.tntSpawn
       : DEFAULT_MATCH_MODIFIERS.tntSpawn,
-    medkitSpawn: isModifierLevel(obj.medkitSpawn)
+    medkitSpawn: isOptionalSpawnLevel(obj.medkitSpawn)
       ? obj.medkitSpawn
       : DEFAULT_MATCH_MODIFIERS.medkitSpawn,
     playerSpeed: isModifierLevel(obj.playerSpeed)

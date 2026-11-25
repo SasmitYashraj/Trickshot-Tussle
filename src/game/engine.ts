@@ -49,6 +49,7 @@ import {
   type MatchModifiers,
   type BulletSpawnLevel,
   type ModifierLevel,
+  type OptionalSpawnLevel,
   NITRO_BLAST_RADIUS,
   NITRO_DAMAGE,
   NITRO_RADIUS,
@@ -114,7 +115,8 @@ function getWallBounceCode(kind?: WallRect['kind']): number {
   }
 }
 
-const SPAWN_RATE_MULTS: Record<ModifierLevel, number> = {
+const OPTIONAL_SPAWN_RATE_MULTS: Record<OptionalSpawnLevel, number> = {
+  NONE: 0,
   LOW: 0.6,
   MEDIUM: 1.0,
   HIGH: 1.55,
@@ -596,9 +598,12 @@ export class ArenaEngine {
     this.bulletSpawnTimer =
       (isLibrary ? 1.8 : isImmersive ? 1.5 : 2.0) /
       (BULLET_SPAWN_RATE_MULTS[mods.bulletSpawn] ?? BULLET_SPAWN_RATE_MULTS.MEDIUM);
-    this.nitroSpawnTimer = (isLibrary ? 12.0 : isImmersive ? 11.5 : 6.0) / SPAWN_RATE_MULTS[mods.nitroSpawn];
-    this.tntSpawnTimer = (isLibrary ? 9.0 : isImmersive ? 7.5 : 9.0) / SPAWN_RATE_MULTS[mods.tntSpawn];
-    this.medkitSpawnTimer = (isLibrary ? 10.5 : isImmersive ? 9.0 : 11.0) / SPAWN_RATE_MULTS[mods.medkitSpawn];
+    const nMult = OPTIONAL_SPAWN_RATE_MULTS[mods.nitroSpawn] ?? 1.0;
+    const tMult = OPTIONAL_SPAWN_RATE_MULTS[mods.tntSpawn] ?? 1.0;
+    const mMult = OPTIONAL_SPAWN_RATE_MULTS[mods.medkitSpawn] ?? 1.0;
+    this.nitroSpawnTimer = nMult > 0 ? (isLibrary ? 12.0 : isImmersive ? 11.5 : 6.0) / nMult : 999999;
+    this.tntSpawnTimer = tMult > 0 ? (isLibrary ? 9.0 : isImmersive ? 7.5 : 9.0) / tMult : 999999;
+    this.medkitSpawnTimer = mMult > 0 ? (isLibrary ? 10.5 : isImmersive ? 9.0 : 11.0) / mMult : 999999;
     this.boxSpawnTimer = isLibrary ? 3.5 : isImmersive ? 2.5 : 2.4;
 
     this.joystick.active = false;
@@ -737,8 +742,8 @@ export class ArenaEngine {
 
     // Calm initial pickups & movable cardboard cover boxes spread across the arena
     const initBullets = isLibrary ? 7 : isImmersive ? 5 : 3;
-    const initNitros = isLibrary ? 2 : 1;
-    const initTnts = isLibrary ? 1 : 0;
+    const initNitros = mods.nitroSpawn === 'NONE' ? 0 : isLibrary ? 2 : 1;
+    const initTnts = mods.tntSpawn === 'NONE' ? 0 : isLibrary ? 1 : 0;
     const initBoxes = isLibrary ? 12 : isImmersive ? 10 : 6;
     for (let i = 0; i < initBullets; i++) this.spawnPickup('bullet');
     for (let i = 0; i < initNitros; i++) this.spawnPickup('nitro');
@@ -964,21 +969,21 @@ export class ArenaEngine {
   private updateSpawners(dt: number) {
     const mods = this.getModifiers();
     const bMult = BULLET_SPAWN_RATE_MULTS[mods.bulletSpawn] ?? BULLET_SPAWN_RATE_MULTS.MEDIUM;
-    const nMult = SPAWN_RATE_MULTS[mods.nitroSpawn];
-    const tMult = SPAWN_RATE_MULTS[mods.tntSpawn];
-    const mMult = SPAWN_RATE_MULTS[mods.medkitSpawn];
+    const nMult = OPTIONAL_SPAWN_RATE_MULTS[mods.nitroSpawn] ?? 1.0;
+    const tMult = OPTIONAL_SPAWN_RATE_MULTS[mods.tntSpawn] ?? 1.0;
+    const mMult = OPTIONAL_SPAWN_RATE_MULTS[mods.medkitSpawn] ?? 1.0;
 
     const isImmersive = this.map.immersive;
     const bulletCap = Math.max(2, Math.round((isImmersive ? 9 : 5) * bMult));
-    const nitroCap = Math.max(1, Math.round((isImmersive ? 2 : 2) * nMult));
-    const tntCap = Math.max(1, Math.round((isImmersive ? 2 : 1) * tMult));
-    const medkitCap = Math.max(1, Math.round((isImmersive ? 2 : 1) * mMult));
+    const nitroCap = nMult > 0 ? Math.max(1, Math.round((isImmersive ? 2 : 2) * nMult)) : 0;
+    const tntCap = tMult > 0 ? Math.max(1, Math.round((isImmersive ? 2 : 1) * tMult)) : 0;
+    const medkitCap = mMult > 0 ? Math.max(1, Math.round((isImmersive ? 2 : 1) * mMult)) : 0;
     const boxCap = isImmersive ? 15 : 9;
 
     const bulletInterval = (isImmersive ? 2.1 : 2.6) / bMult;
-    const nitroInterval = (isImmersive ? 13.5 : 8.0) / nMult;
-    const tntInterval = (isImmersive ? 9.5 : 11.5) / tMult;
-    const medkitInterval = (isImmersive ? 11.5 : 13.5) / mMult;
+    const nitroInterval = nMult > 0 ? (isImmersive ? 13.5 : 8.0) / nMult : 999999;
+    const tntInterval = tMult > 0 ? (isImmersive ? 9.5 : 11.5) / tMult : 999999;
+    const medkitInterval = mMult > 0 ? (isImmersive ? 11.5 : 13.5) / mMult : 999999;
     const boxInterval = isImmersive ? 3.6 : 3.2;
 
     const bulletCount = this.pickups.filter((p) => p.kind === 'bullet').length;
@@ -993,22 +998,28 @@ export class ArenaEngine {
       if (bulletCount < bulletCap) this.spawnPickup('bullet');
     }
 
-    this.nitroSpawnTimer -= dt;
-    if (this.nitroSpawnTimer <= 0) {
-      this.nitroSpawnTimer = nitroInterval;
-      if (nitroCount < nitroCap) this.spawnPickup('nitro');
+    if (nitroCap > 0) {
+      this.nitroSpawnTimer -= dt;
+      if (this.nitroSpawnTimer <= 0) {
+        this.nitroSpawnTimer = nitroInterval;
+        if (nitroCount < nitroCap) this.spawnPickup('nitro');
+      }
     }
 
-    this.tntSpawnTimer -= dt;
-    if (this.tntSpawnTimer <= 0) {
-      this.tntSpawnTimer = tntInterval;
-      if (tntCount < tntCap) this.spawnPickup('tnt');
+    if (tntCap > 0) {
+      this.tntSpawnTimer -= dt;
+      if (this.tntSpawnTimer <= 0) {
+        this.tntSpawnTimer = tntInterval;
+        if (tntCount < tntCap) this.spawnPickup('tnt');
+      }
     }
 
-    this.medkitSpawnTimer -= dt;
-    if (this.medkitSpawnTimer <= 0) {
-      this.medkitSpawnTimer = medkitInterval;
-      if (medkitCount < medkitCap) this.spawnPickup('medkit');
+    if (medkitCap > 0) {
+      this.medkitSpawnTimer -= dt;
+      if (this.medkitSpawnTimer <= 0) {
+        this.medkitSpawnTimer = medkitInterval;
+        if (medkitCount < medkitCap) this.spawnPickup('medkit');
+      }
     }
 
     this.boxSpawnTimer -= dt;
