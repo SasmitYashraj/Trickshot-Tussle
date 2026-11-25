@@ -141,7 +141,7 @@ export function TutorialModal({ onClose }: TutorialModalProps) {
                     <span className="font-semibold text-slate-100">Offline 2P:</span> Diagonal touch sticks on one landscape screen, or <span className="text-slate-100">WASD+Space</span> vs <span className="text-slate-100">Arrows+Enter</span>.
                   </li>
                   <li>
-                    <span className="font-semibold text-slate-100">Shots &amp; Modes:</span> Bullets bounce up to 5 times and can hurt you too; battle in <span className="text-slate-100">Last Up</span> or <span className="text-slate-100">8 KOs</span> (<span className="text-slate-100">FFA / 2v2</span>).
+                    <span className="font-semibold text-slate-100">Shots &amp; Modes:</span> Bullets bounce up to 4 times and can hurt you too; battle in <span className="text-slate-100">Last Up</span> or <span className="text-slate-100">8 KOs</span> (<span className="text-slate-100">FFA / 2v2</span>).
                   </li>
                 </ul>
               </section>

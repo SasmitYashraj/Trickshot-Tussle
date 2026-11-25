@@ -47,6 +47,7 @@ import {
   MONSTER_STUN_DURATION,
   type MatchConfig,
   type MatchModifiers,
+  type BulletBounceLevel,
   type BulletSpawnLevel,
   type ModifierLevel,
   type OptionalSpawnLevel,
@@ -139,6 +140,24 @@ const BULLET_SPEED_MULTS: Record<ModifierLevel, number> = {
   LOW: 0.76,
   MEDIUM: 1.0,
   HIGH: 1.32,
+};
+
+const BULLET_BOUNCE_COUNTS: Record<BulletBounceLevel, number> = {
+  NONE: 0,
+  LOW: 2,
+  MEDIUM: BULLET_MAX_BOUNCES,
+  HIGH: 6,
+  VERY_HIGH: 9,
+  INSANITY: 15,
+};
+
+const BULLET_BOUNCE_MAX_AGE: Record<BulletBounceLevel, number> = {
+  NONE: BULLET_MAX_AGE,
+  LOW: BULLET_MAX_AGE,
+  MEDIUM: BULLET_MAX_AGE,
+  HIGH: 6.5,
+  VERY_HIGH: 9.0,
+  INSANITY: 14.0,
 };
 
 const BULLET_CAP_VALUES: Record<ModifierLevel, number> = {
@@ -499,6 +518,14 @@ export class ArenaEngine {
 
   private getBulletSpeed(): number {
     return BULLET_SPEED * BULLET_SPEED_MULTS[this.getModifiers().bulletSpeed];
+  }
+
+  private getBulletMaxBounces(): number {
+    return BULLET_BOUNCE_COUNTS[this.getModifiers().bulletBounces] ?? BULLET_MAX_BOUNCES;
+  }
+
+  private getBulletMaxAge(): number {
+    return BULLET_BOUNCE_MAX_AGE[this.getModifiers().bulletBounces] ?? BULLET_MAX_AGE;
   }
 
   private getSpawnProtectionDuration(): number {
@@ -2336,7 +2363,7 @@ export class ArenaEngine {
 
     const floorWalls = this.wallsByFloor[floor];
     const maxDist = opts?.maxDist ?? 680;
-    const maxCheckBounces = opts?.maxCheckBounces ?? 2;
+    const maxCheckBounces = Math.min(opts?.maxCheckBounces ?? 2, this.getBulletMaxBounces());
     const stepLen = 5;
     const subDt = stepLen / bSpeed;
     const maxSteps = Math.max(12, Math.ceil(maxDist / stepLen));
@@ -2598,6 +2625,8 @@ export class ArenaEngine {
     maxBounces = 2,
     allowExplosiveDetonation = false
   ): number | null {
+    const allowedBounces = Math.min(maxBounces, this.getBulletMaxBounces());
+    if (allowedBounces < 1) return null;
     const floor = shooter.floor ?? 0;
     if (this.isImmersiveMode() && !this.isPointWithinImmersiveBounds(shooter, tx, ty, false, true)) {
       return null;
@@ -4146,6 +4175,8 @@ export class ArenaEngine {
     const by = player.y + Math.sin(player.angle) * muzzleDist;
 
     const bSpeed = this.getBulletSpeed();
+    const maxBounces = this.getBulletMaxBounces();
+    const maxAge = this.getBulletMaxAge();
     const bullet: Bullet = {
       id: this.nextId++,
       ownerId: player.id,
@@ -4156,10 +4187,10 @@ export class ArenaEngine {
       vy: Math.sin(player.angle) * bSpeed,
       radius: BULLET_RADIUS,
       floor: pFloor,
-      bouncesLeft: BULLET_MAX_BOUNCES,
-      maxBounces: BULLET_MAX_BOUNCES,
+      bouncesLeft: maxBounces,
+      maxBounces,
       age: 0,
-      maxAge: BULLET_MAX_AGE,
+      maxAge,
       trail: [{ x: bx, y: by }],
     };
 

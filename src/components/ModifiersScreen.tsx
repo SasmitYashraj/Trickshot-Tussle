@@ -3,6 +3,7 @@ import {
   DEFAULT_MATCH_MODIFIERS,
   FIGURE_DIFFICULTY_ORDER,
   FIGURE_DIFFICULTY_PROFILES,
+  type BulletBounceLevel,
   type BulletSpawnLevel,
   type FigureDifficulty,
   type MatchModifiers,
@@ -21,7 +22,7 @@ type OptionalSpawnKey = 'nitroSpawn' | 'tntSpawn' | 'medkitSpawn';
 
 type LevelModifierKey = keyof Omit<
   MatchModifiers,
-  'keepBulletsOnStun' | 'figureDifficulty' | 'bulletSpawn' | OptionalSpawnKey
+  'keepBulletsOnStun' | 'figureDifficulty' | 'bulletSpawn' | 'bulletBounces' | OptionalSpawnKey
 >;
 
 interface OptionalSpawnRowDef {
@@ -75,6 +76,14 @@ const LEVEL_ROWS: LevelRowDef[] = [
 const LEVELS: ModifierLevel[] = ['LOW', 'MEDIUM', 'HIGH'];
 const OPTIONAL_SPAWN_LEVELS: OptionalSpawnLevel[] = ['NONE', 'LOW', 'MEDIUM', 'HIGH'];
 const BULLET_SPAWN_LEVELS: BulletSpawnLevel[] = ['DREAD', 'LOW', 'MEDIUM', 'HIGH'];
+const BULLET_BOUNCE_LEVELS: Array<{ id: BulletBounceLevel; label: string }> = [
+  { id: 'NONE', label: 'None (0)' },
+  { id: 'LOW', label: 'Low (2)' },
+  { id: 'MEDIUM', label: 'Med (4)' },
+  { id: 'HIGH', label: 'High (6)' },
+  { id: 'VERY_HIGH', label: 'Very High (9)' },
+  { id: 'INSANITY', label: 'Insanity (15)' },
+];
 
 export function ModifiersContent({
   modifiers,
@@ -100,6 +109,11 @@ export function ModifiersContent({
   const setBulletSpawn = (bulletSpawn: BulletSpawnLevel) => {
     if (readOnly) return;
     onChange({ ...modifiers, bulletSpawn });
+  };
+
+  const setBulletBounces = (bulletBounces: BulletBounceLevel) => {
+    if (readOnly) return;
+    onChange({ ...modifiers, bulletBounces });
   };
 
   const setFigureDifficulty = (figureDifficulty: FigureDifficulty) => {
@@ -270,6 +284,47 @@ export function ModifiersContent({
                 </div>
               );
             })}
+
+            {/* Bullet Bounces (6 Levels: None to Insanity, Default Med = 4) */}
+            <div className="sm:col-span-2 rounded-xl border border-slate-800 bg-slate-900/65 p-3">
+              <div className="flex items-baseline justify-between gap-2 mb-2">
+                <span className="text-xs font-bold text-slate-100">Bullet Bounces</span>
+                <span className="text-[11px] text-slate-400">
+                  Wall rebounds before breaking (Med 4 = Default)
+                </span>
+              </div>
+              <div className="grid grid-cols-3 sm:grid-cols-6 gap-1 p-1 rounded-lg bg-slate-950/90 border border-slate-800">
+                {BULLET_BOUNCE_LEVELS.map((opt) => {
+                  const active =
+                    (modifiers.bulletBounces ?? DEFAULT_MATCH_MODIFIERS.bulletBounces) === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      disabled={readOnly}
+                      onClick={() => setBulletBounces(opt.id)}
+                      className={`px-1.5 py-1.5 text-[11px] font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                        active
+                          ? opt.id === 'NONE'
+                            ? 'bg-rose-500 text-white'
+                            : opt.id === 'MEDIUM'
+                              ? 'bg-sky-500 text-slate-950'
+                              : opt.id === 'HIGH'
+                                ? 'bg-amber-400 text-slate-950'
+                                : opt.id === 'VERY_HIGH'
+                                  ? 'bg-orange-500 text-slate-950'
+                                  : opt.id === 'INSANITY'
+                                    ? 'bg-fuchsia-500 text-white'
+                                    : 'bg-slate-600 text-white'
+                          : 'text-slate-400 hover:text-slate-200'
+                      } ${readOnly ? 'cursor-default' : 'cursor-pointer'}`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           </div>
 
           {/* Stun & Recovery Toggles */}

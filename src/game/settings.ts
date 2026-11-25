@@ -1,6 +1,7 @@
 import { ARENA_MAPS, SOLO_MAP_LIST } from './maps';
 import {
   type BotDifficulty,
+  type BulletBounceLevel,
   type BulletSpawnLevel,
   DEFAULT_MATCH_MODIFIERS,
   FIGURE_DIFFICULTY_ORDER,
@@ -44,6 +45,17 @@ function isOptionalSpawnLevel(val: unknown): val is OptionalSpawnLevel {
   return val === 'NONE' || val === 'LOW' || val === 'MEDIUM' || val === 'HIGH';
 }
 
+function isBulletBounceLevel(val: unknown): val is BulletBounceLevel {
+  return (
+    val === 'NONE' ||
+    val === 'LOW' ||
+    val === 'MEDIUM' ||
+    val === 'HIGH' ||
+    val === 'VERY_HIGH' ||
+    val === 'INSANITY'
+  );
+}
+
 function isFigureDifficulty(val: unknown): val is FigureDifficulty {
   return (
     typeof val === 'string' &&
@@ -66,6 +78,9 @@ export function sanitizeModifiers(raw: unknown): MatchModifiers {
     medkitSpawn: isOptionalSpawnLevel(obj.medkitSpawn)
       ? obj.medkitSpawn
       : DEFAULT_MATCH_MODIFIERS.medkitSpawn,
+    bulletBounces: isBulletBounceLevel(obj.bulletBounces)
+      ? obj.bulletBounces
+      : DEFAULT_MATCH_MODIFIERS.bulletBounces,
     playerSpeed: isModifierLevel(obj.playerSpeed)
       ? obj.playerSpeed
       : DEFAULT_MATCH_MODIFIERS.playerSpeed,

@@ -101,6 +101,7 @@ export interface LibraryClue {
 export type ModifierLevel = 'LOW' | 'MEDIUM' | 'HIGH';
 export type OptionalSpawnLevel = 'NONE' | ModifierLevel;
 export type BulletSpawnLevel = 'DREAD' | ModifierLevel;
+export type BulletBounceLevel = 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'VERY_HIGH' | 'INSANITY';
 
 export type FigureDifficulty = 'DOCILE' | 'STANDARD' | 'HUNTER' | 'FERAL' | 'NIGHTMARE';
 
@@ -193,6 +194,7 @@ export interface MatchModifiers {
   nitroSpawn: OptionalSpawnLevel;
   tntSpawn: OptionalSpawnLevel;
   medkitSpawn: OptionalSpawnLevel;
+  bulletBounces: BulletBounceLevel;
   playerSpeed: ModifierLevel;
   turnSpeed: ModifierLevel;
   bulletSpeed: ModifierLevel;
@@ -209,6 +211,7 @@ export const DEFAULT_MATCH_MODIFIERS: MatchModifiers = {
   nitroSpawn: 'MEDIUM',
   tntSpawn: 'MEDIUM',
   medkitSpawn: 'MEDIUM',
+  bulletBounces: 'MEDIUM',
   playerSpeed: 'MEDIUM',
   turnSpeed: 'MEDIUM',
   bulletSpeed: 'MEDIUM',
@@ -701,7 +704,7 @@ export const PLAYER_MAX_AMMO = 5;
 export const BULLET_SPEED = 860;
 export const BULLET_RADIUS = 10;
 export const BULLET_DAMAGE = 33;
-export const BULLET_MAX_BOUNCES = 5;
+export const BULLET_MAX_BOUNCES = 4;
 export const BULLET_MAX_AGE = 5.0;
 export const BULLET_SELF_GRACE = 0.14;
 

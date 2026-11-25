@@ -2752,7 +2752,7 @@ export default function App() {
         <SettingsModal
           general={generalSettings}
           modifiers={activeConfig.modifiers ?? DEFAULT_MATCH_MODIFIERS}
-          hideModifiersTab
+          modifiersReadOnly
           onChangeGeneral={setGeneralSettings}
           onChangeModifiers={() => {}}
           onClose={() => setPauseSettingsOpen(false)}

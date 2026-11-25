@@ -5,6 +5,7 @@ import {
   DEFAULT_MATCH_MODIFIERS,
   type MatchConfig,
   type MatchModifiers,
+  type BulletBounceLevel,
   type BulletSpawnLevel,
   type ModifierLevel,
   type OptionalSpawnLevel,
@@ -74,6 +75,20 @@ function sanitizeOptionalSpawnLevel(
     : fallback;
 }
 
+function sanitizeBulletBounceLevel(
+  raw: unknown,
+  fallback: BulletBounceLevel
+): BulletBounceLevel {
+  return raw === 'NONE' ||
+    raw === 'LOW' ||
+    raw === 'MEDIUM' ||
+    raw === 'HIGH' ||
+    raw === 'VERY_HIGH' ||
+    raw === 'INSANITY'
+    ? raw
+    : fallback;
+}
+
 function sanitizeFigureDifficulty(
   raw: unknown,
   fallback: MatchModifiers['figureDifficulty']
@@ -94,6 +109,10 @@ function sanitizeModifiers(raw: Partial<MatchModifiers> | undefined): MatchModif
     nitroSpawn: sanitizeOptionalSpawnLevel(raw.nitroSpawn, DEFAULT_MATCH_MODIFIERS.nitroSpawn),
     tntSpawn: sanitizeOptionalSpawnLevel(raw.tntSpawn, DEFAULT_MATCH_MODIFIERS.tntSpawn),
     medkitSpawn: sanitizeOptionalSpawnLevel(raw.medkitSpawn, DEFAULT_MATCH_MODIFIERS.medkitSpawn),
+    bulletBounces: sanitizeBulletBounceLevel(
+      raw.bulletBounces,
+      DEFAULT_MATCH_MODIFIERS.bulletBounces
+    ),
     playerSpeed: sanitizeModifierLevel(raw.playerSpeed, DEFAULT_MATCH_MODIFIERS.playerSpeed),
     turnSpeed: sanitizeModifierLevel(raw.turnSpeed, DEFAULT_MATCH_MODIFIERS.turnSpeed),
     bulletSpeed: sanitizeModifierLevel(raw.bulletSpeed, DEFAULT_MATCH_MODIFIERS.bulletSpeed),
