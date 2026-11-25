@@ -69,6 +69,7 @@ import {
   type Pickup,
   type PickupKind,
   type Player,
+  PRACTICE_STREAK_WINDOW,
   type PracticeTarget,
   RESPAWN_DELAY,
   SPAWN_INVULN_DURATION,
@@ -469,6 +470,14 @@ export class ArenaEngine {
   private medkitSpawnTimer = 9.0;
   private boxSpawnTimer = 4.0;
   private practiceTargetSpawnTimer = 0;
+  private practiceStreak = 0;
+  private practiceLastHitAt: number | null = null;
+  private practiceLastSplitMs: number | null = null;
+  private practiceSplitSumMs = 0;
+  private practiceSplitCount = 0;
+  private practiceTargetSpawnedAt = 0;
+  private practiceShotRecordedForTarget = false;
+  private practicePrevReactionMs: number | null = null;
   private rapidStreaks = new Map<number, { count: number; lastKillAt: number }>();
 
   private static arenaBotGraphCache = new Map<string, NavNode[]>();
@@ -590,6 +599,14 @@ export class ArenaEngine {
     this.practiceTargets = [];
     this.practiceReloadTimer = 0;
     this.practiceTargetSpawnTimer = 0;
+    this.practiceStreak = 0;
+    this.practiceLastHitAt = null;
+    this.practiceLastSplitMs = null;
+    this.practiceSplitSumMs = 0;
+    this.practiceSplitCount = 0;
+    this.practiceTargetSpawnedAt = 0;
+    this.practiceShotRecordedForTarget = false;
+    this.practicePrevReactionMs = null;
     this.icePits = (this.map.icePits ?? []).map((pit, idx) => ({
       id: idx + 1,
       x: pit.x,
@@ -1016,6 +1033,13 @@ export class ArenaEngine {
     }
 
     if (this.config.targetPractice) {
+      if (
+        this.practiceStreak > 0 &&
+        this.practiceLastHitAt !== null &&
+        this.elapsedTime - this.practiceLastHitAt > PRACTICE_STREAK_WINDOW
+      ) {
+        this.practiceStreak = 0;
+      }
       const solo = this.players[0];
       if (solo && solo.ammo < 1 && this.practiceReloadTimer > 0) {
         this.practiceReloadTimer = Math.max(0, this.practiceReloadTimer - dt);
@@ -1084,6 +1108,8 @@ export class ArenaEngine {
 
     const speed = moving ? this.getPlayerMaxSpeed() : 0;
     const ang = Math.random() * Math.PI * 2;
+    this.practiceTargetSpawnedAt = this.elapsedTime;
+    this.practiceShotRecordedForTarget = false;
     this.practiceTargets.push({
       id: this.nextId++,
       x: spawnX,
@@ -4397,6 +4423,13 @@ export class ArenaEngine {
     player.ammo = Math.max(0, player.ammo - 1);
     if (this.config.targetPractice) {
       this.practiceReloadTimer = 0.5;
+      if (!this.practiceShotRecordedForTarget && this.practiceTargets.length > 0) {
+        this.practicePrevReactionMs = Math.max(
+          0,
+          Math.round((this.elapsedTime - this.practiceTargetSpawnedAt) * 1000)
+        );
+        this.practiceShotRecordedForTarget = true;
+      }
     }
     player.shotsFired += 1;
 
@@ -4608,6 +4641,19 @@ export class ArenaEngine {
             if (dist(b.x, b.y, pt.x, pt.y) <= b.radius + pt.radius) {
               this.practiceTargets.splice(tIdx, 1);
               this.practiceTargetSpawnTimer = 0.5;
+              const nowT = this.elapsedTime;
+              if (this.practiceLastHitAt !== null) {
+                const splitMs = Math.max(0, Math.round((nowT - this.practiceLastHitAt) * 1000));
+                this.practiceLastSplitMs = splitMs;
+                this.practiceSplitSumMs += splitMs;
+                this.practiceSplitCount += 1;
+              }
+              const withinWindow =
+                this.practiceLastHitAt !== null &&
+                nowT - this.practiceLastHitAt <= PRACTICE_STREAK_WINDOW;
+              this.practiceStreak = withinWindow ? this.practiceStreak + 1 : 1;
+              this.practiceLastHitAt = nowT;
+
               const shooter = this.players.find((pl) => pl.id === b.ownerId);
               if (shooter) {
                 shooter.shotsHit += 1;
@@ -4615,9 +4661,24 @@ export class ArenaEngine {
                 shooter.damageDealt += 100;
               }
               this.emitEvent('hit', pt.x, pt.y, 1, undefined, 0);
+              this.events.push({
+                type: 'killstreak',
+                x: pt.x,
+                y: pt.y,
+                value: this.practiceStreak,
+                playerId: shooter?.id ?? 0,
+                floor: 0,
+                streakKind: 'PRACTICE',
+              });
               this.spawnParticles(pt.x, pt.y, '#EF4444', 12, 165, 0);
               this.spawnParticles(pt.x, pt.y, '#FFFFFF', 8, 130, 0);
-              this.addFloatingText(pt.x, pt.y - (pt.radius + 12), 'HIT!', '#FDE047', 0);
+              this.addFloatingText(
+                pt.x,
+                pt.y - (pt.radius + 12),
+                this.practiceStreak > 1 ? `${this.practiceStreak}x HIT!` : 'HIT!',
+                '#FDE047',
+                0
+              );
               destroyed = true;
               break;
             }
@@ -7089,6 +7150,14 @@ export class ArenaEngine {
       winnerReason: this.winnerReason,
       practiceTargetMode: this.config.targetPractice ? (this.config.practiceTargetMode ?? 'BOTH') : undefined,
       practiceReloadTimer: this.config.targetPractice ? this.practiceReloadTimer : undefined,
+      practiceStreak: this.config.targetPractice ? this.practiceStreak : undefined,
+      practiceLastSplitMs: this.config.targetPractice ? this.practiceLastSplitMs : undefined,
+      practiceAvgSplitMs: this.config.targetPractice
+        ? this.practiceSplitCount > 0
+          ? Math.round(this.practiceSplitSumMs / this.practiceSplitCount)
+          : null
+        : undefined,
+      practicePrevReactionMs: this.config.targetPractice ? this.practicePrevReactionMs : undefined,
     };
   }
 

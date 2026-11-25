@@ -43,6 +43,7 @@ import {
   OnlineRoomState,
   PLAYER_MAX_SPEED,
   PLAYER_SPEED_MULTS,
+  PRACTICE_STREAK_WINDOW,
   type PracticeTargetMode,
   WorldSyncState,
 } from './game/types';
@@ -100,7 +101,7 @@ function playEngineEvents(
   listenerX?: number,
   listenerY?: number,
   listenerIds: number[] = [0],
-  onLocalKillStreak?: (streak: number, mode: MatchMode, playerId?: number) => void,
+  onLocalKillStreak?: (streak: number, mode: MatchMode | 'PRACTICE', playerId?: number) => void,
   onLocalSelfKill?: (playerId?: number) => void,
   listenerFloor: FloorLevel = 0,
   onLocalLockError?: () => void,
@@ -250,7 +251,7 @@ function playEngineEvents(
           // Strictly private: audible and visible ONLY to local player(s) who scored the kill
           if (evt.playerId !== undefined && localSet.has(evt.playerId)) {
             const count = evt.value ?? 1;
-            const streakMode: MatchMode = evt.mode ?? 'BRAWL';
+            const streakMode: MatchMode | 'PRACTICE' = evt.streakKind ?? evt.mode ?? 'BRAWL';
             sound.playKillStreak(count, streakMode);
             onLocalKillStreak?.(count, streakMode, evt.playerId);
           }
@@ -314,7 +315,7 @@ function worldToSnapshot(world: WorldSyncState, localSlot: number): GameSnapshot
 function getHudSnapshotSignature(snap: GameSnapshot): string {
   const sec = Math.max(0, Math.floor(snap.elapsedTime));
   const pReload = snap.practiceReloadTimer ? Math.ceil(snap.practiceReloadTimer * 15) : 0;
-  let s = `${sec}|${snap.winnerId ?? 'n'}|${snap.winnerTeam ?? 'n'}|${snap.practiceTargetMode ?? ''}|${pReload}`;
+  let s = `${sec}|${snap.winnerId ?? 'n'}|${snap.winnerTeam ?? 'n'}|${snap.practiceTargetMode ?? ''}|${pReload}|${snap.practiceStreak ?? 0}|${snap.practiceLastSplitMs ?? ''}|${snap.practiceAvgSplitMs ?? ''}|${snap.practicePrevReactionMs ?? ''}`;
   for (const p of snap.players) {
     const stun = p.stunTimer > 0 ? Math.ceil(p.stunTimer * 2) : 0;
     const resp = p.respawnTimer > 0 ? Math.ceil(p.respawnTimer * 2) : 0;
@@ -363,7 +364,7 @@ export default function App() {
   const [killStreak, setKillStreak] = useState<{
     count: number;
     expiresAt: number;
-    mode: MatchMode;
+    mode: MatchMode | 'PRACTICE';
     durationMs: number;
     playerId?: number;
   } | null>(null);
@@ -659,7 +660,12 @@ export default function App() {
             [mySlot],
             (streak, streakMode, playerId) => {
               const nowMs = performance.now();
-              const durationMs = streakMode === 'ELIMINATION' ? 3400 : KILL_STREAK_WINDOW * 1000;
+              const durationMs =
+                streakMode === 'ELIMINATION'
+                  ? 3400
+                  : streakMode === 'PRACTICE'
+                    ? PRACTICE_STREAK_WINDOW * 1000
+                    : KILL_STREAK_WINDOW * 1000;
               setStreakNow(nowMs);
               setKillStreak({ count: streak, expiresAt: nowMs + durationMs, mode: streakMode, durationMs, playerId });
             },
@@ -1165,7 +1171,12 @@ export default function App() {
               isLocal2PTick ? [0, 1] : [0],
               (streak, streakMode, playerId) => {
                 const nowMs = performance.now();
-                const durationMs = streakMode === 'ELIMINATION' ? 3400 : KILL_STREAK_WINDOW * 1000;
+                const durationMs =
+                  streakMode === 'ELIMINATION'
+                    ? 3400
+                    : streakMode === 'PRACTICE'
+                      ? PRACTICE_STREAK_WINDOW * 1000
+                      : KILL_STREAK_WINDOW * 1000;
                 setStreakNow(nowMs);
                 setKillStreak({
                   count: streak,
@@ -1875,7 +1886,19 @@ export default function App() {
               <span>{practiceModeLabel}</span>
               <span aria-hidden="true">·</span>
               <span className="font-mono-tabular font-bold text-amber-300">
-                {p0?.kills ?? 0} Hits
+                {p0?.kills ?? 0} Kills
+              </span>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono-tabular text-sky-300">
+                Last {snapshot.practiceLastSplitMs != null ? `${snapshot.practiceLastSplitMs}ms` : '--'}
+              </span>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono-tabular text-emerald-300">
+                Avg {snapshot.practiceAvgSplitMs != null ? `${snapshot.practiceAvgSplitMs}ms` : '--'}
+              </span>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono-tabular text-violet-300">
+                Prev Reaction {snapshot.practicePrevReactionMs != null ? `${snapshot.practicePrevReactionMs}ms` : '--'}
               </span>
             </>
           ) : (
@@ -2245,11 +2268,11 @@ export default function App() {
               }}
               className="pointer-events-none absolute flex items-start justify-between gap-2 lg:hidden z-10"
             >
-              <div className="rounded-lg border border-slate-700/75 bg-slate-950/70 px-2.5 py-1.5 text-[11px] backdrop-blur-sm">
+              <div className="rounded-lg border border-slate-700/75 bg-slate-950/75 px-2.5 py-1.5 text-[11px] backdrop-blur-sm space-y-0.5">
                 <div className="flex items-center gap-2">
                   <Crosshair className="w-3.5 h-3.5 text-rose-400 shrink-0" />
                   <span className="font-display font-bold text-slate-100">
-                    {p0?.kills ?? 0} Hits
+                    {p0?.kills ?? 0} Kills
                   </span>
                   <span className="text-slate-500">·</span>
                   <span className="font-mono-tabular font-bold text-amber-300">
@@ -2258,9 +2281,26 @@ export default function App() {
                       : `Reload ${(snapshot.practiceReloadTimer ?? 0).toFixed(1)}s`}
                   </span>
                 </div>
+                <div className="text-[10px] font-medium text-slate-400">
+                  {practiceModeLabel}
+                </div>
               </div>
-              <div className="rounded-lg border border-slate-700/75 bg-slate-950/70 px-2.5 py-1.5 text-[11px] font-semibold text-slate-300 backdrop-blur-sm">
-                {practiceModeLabel}
+              <div className="rounded-lg border border-slate-700/75 bg-slate-950/75 px-2.5 py-1.5 text-[10px] backdrop-blur-sm text-right space-y-0.5">
+                <div className="flex items-center justify-end gap-2 font-mono-tabular">
+                  <span className="text-slate-400">
+                    Last <strong className="text-sky-300">{snapshot.practiceLastSplitMs != null ? `${snapshot.practiceLastSplitMs}ms` : '--'}</strong>
+                  </span>
+                  <span className="text-slate-600">·</span>
+                  <span className="text-slate-400">
+                    Avg <strong className="text-emerald-300">{snapshot.practiceAvgSplitMs != null ? `${snapshot.practiceAvgSplitMs}ms` : '--'}</strong>
+                  </span>
+                </div>
+                <div className="font-mono-tabular text-slate-400">
+                  Prev Reaction{' '}
+                  <strong className="text-violet-300">
+                    {snapshot.practicePrevReactionMs != null ? `${snapshot.practicePrevReactionMs}ms` : '--'}
+                  </strong>
+                </div>
               </div>
             </div>
           ) : (
@@ -2321,38 +2361,51 @@ export default function App() {
             (() => {
               const remainingMs = Math.max(0, killStreak.expiresAt - streakNow);
               const isElimination = killStreak.mode === 'ELIMINATION';
+              const isPracticeStreak = killStreak.mode === 'PRACTICE';
               const pct = Math.max(0, Math.min(100, (remainingMs / killStreak.durationMs) * 100));
               const count = killStreak.count;
 
-              const fires = isElimination
-                ? count >= 3
-                  ? '🔥🔥🔥👑'
-                  : count === 2
-                    ? '🔥🔥'
-                    : '🔥'
-                : count >= 4
-                  ? '🔥🔥🔥'
-                  : count === 3
-                    ? '🔥🔥'
-                    : '🔥';
+              const fires = isPracticeStreak
+                ? count >= 10
+                  ? '🔥🔥🔥🔥🔥👑'
+                  : count >= 7
+                    ? '🔥🔥🔥🔥'
+                    : count >= 4
+                      ? '🔥🔥🔥'
+                      : count >= 2
+                        ? '🔥🔥'
+                        : '🔥'
+                : isElimination
+                  ? count >= 3
+                    ? '🔥🔥🔥👑'
+                    : count === 2
+                      ? '🔥🔥'
+                      : '🔥'
+                  : count >= 4
+                    ? '🔥🔥🔥'
+                    : count === 3
+                      ? '🔥🔥'
+                      : '🔥';
 
-              const headlineText = isElimination
-                ? count >= 3
-                  ? 'SOLO ACE!'
-                  : count === 2
-                    ? 'RAMPAGE!'
-                    : 'KILL!'
-                : `${count}x ${
-                    count >= 6
-                      ? 'GODLIKE'
-                      : count === 5
-                        ? 'UNSTOPPABLE'
-                        : count === 4
-                          ? 'RAMPAGE'
-                          : count === 3
-                            ? 'TRIPLE STREAK'
-                            : 'DOUBLE KILL'
-                  }`;
+              const headlineText = isPracticeStreak
+                ? `${count}x KILL STREAK`
+                : isElimination
+                  ? count >= 3
+                    ? 'SOLO ACE!'
+                    : count === 2
+                      ? 'RAMPAGE!'
+                      : 'KILL!'
+                  : `${count}x ${
+                      count >= 6
+                        ? 'GODLIKE'
+                        : count === 5
+                          ? 'UNSTOPPABLE'
+                          : count === 4
+                            ? 'RAMPAGE'
+                            : count === 3
+                              ? 'TRIPLE STREAK'
+                              : 'DOUBLE KILL'
+                    }`;
 
               const subCaption = isElimination
                 ? count >= 3
@@ -2362,19 +2415,29 @@ export default function App() {
                     : '1 ELIMINATED'
                 : null;
 
-              const tierColor = isElimination
-                ? count >= 3
+              const tierColor = isPracticeStreak
+                ? count >= 10
                   ? 'text-amber-200'
-                  : count === 2
-                    ? 'text-orange-300'
-                    : 'text-yellow-200'
-                : count >= 5
-                  ? 'text-rose-300'
-                  : count >= 4
-                    ? 'text-orange-300'
-                    : count === 3
-                      ? 'text-amber-300'
-                      : 'text-yellow-200';
+                  : count >= 7
+                    ? 'text-rose-300'
+                    : count >= 4
+                      ? 'text-orange-300'
+                      : count >= 2
+                        ? 'text-amber-300'
+                        : 'text-yellow-200'
+                : isElimination
+                  ? count >= 3
+                    ? 'text-amber-200'
+                    : count === 2
+                      ? 'text-orange-300'
+                      : 'text-yellow-200'
+                  : count >= 5
+                    ? 'text-rose-300'
+                    : count >= 4
+                      ? 'text-orange-300'
+                      : count === 3
+                        ? 'text-amber-300'
+                        : 'text-yellow-200';
 
               const actorPrefix =
                 isLocal2P && killStreak.playerId !== undefined
@@ -2709,12 +2772,32 @@ export default function App() {
                   Target Practice
                 </span>
                 <span className="font-mono-tabular font-bold text-amber-300">
-                  {p0?.kills ?? 0} Hits
+                  {p0?.kills ?? 0} Kills
                 </span>
               </div>
               <div className="flex items-center justify-between text-[11px] text-slate-300">
                 <span>Mode</span>
                 <span className="font-semibold text-slate-100">{practiceModeLabel}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5 pt-0.5 text-[11px]">
+                <div className="rounded-lg border border-slate-800 bg-slate-900/75 px-2 py-1.5">
+                  <div className="text-[10px] text-slate-400">Latest Split</div>
+                  <div className="font-mono-tabular font-bold text-sky-300">
+                    {snapshot.practiceLastSplitMs != null ? `${snapshot.practiceLastSplitMs}ms` : '--'}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/75 px-2 py-1.5">
+                  <div className="text-[10px] text-slate-400">Avg Split</div>
+                  <div className="font-mono-tabular font-bold text-emerald-300">
+                    {snapshot.practiceAvgSplitMs != null ? `${snapshot.practiceAvgSplitMs}ms` : '--'}
+                  </div>
+                </div>
+                <div className="col-span-2 flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/75 px-2 py-1.5">
+                  <span className="text-[10px] text-slate-400">Prev Reaction Time</span>
+                  <span className="font-mono-tabular font-bold text-violet-300">
+                    {snapshot.practicePrevReactionMs != null ? `${snapshot.practicePrevReactionMs}ms` : '--'}
+                  </span>
+                </div>
               </div>
               <div className="space-y-1">
                 <div className="flex items-center justify-between text-[11px]">

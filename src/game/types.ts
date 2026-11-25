@@ -561,6 +561,7 @@ export interface EngineEvent {
   playerId?: number;
   floor?: FloorLevel;
   mode?: MatchMode;
+  streakKind?: 'BRAWL' | 'ELIMINATION' | 'PRACTICE';
 }
 
 export interface JoystickState {
@@ -628,6 +629,10 @@ export interface GameSnapshot {
   winnerReason: string;
   practiceTargetMode?: PracticeTargetMode;
   practiceReloadTimer?: number;
+  practiceStreak?: number;
+  practiceLastSplitMs?: number | null;
+  practiceAvgSplitMs?: number | null;
+  practicePrevReactionMs?: number | null;
 }
 
 export interface OnlineLobbySlot {
@@ -749,6 +754,7 @@ export const POST_STUN_GRACE_DURATION = 1.0;
 export const RESPAWN_DELAY = 2.6;
 export const SPAWN_INVULN_DURATION = 1.5;
 export const KILL_STREAK_WINDOW = 3.0;
+export const PRACTICE_STREAK_WINDOW = 4.0;
 
 export const MONSTER_RADIUS = PLAYER_RADIUS * 1.5;
 export const MONSTER_STUN_DURATION = 10.0;

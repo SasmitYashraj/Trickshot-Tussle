@@ -1681,34 +1681,47 @@ class SoundEngine {
    * Dramatic ramping orchestral cue for:
    * - BRAWL: rapid consecutive kills under 3s (2x..6x+)
    * - ELIMINATION (Last Standing): non-time-dependent kill progression (1=Kill, 2=Rampage, 3=Solo Ace Climax)
+   * - PRACTICE: 10-step ramping progression for consecutive target hits under 4s (1x..10x+)
    */
-  public playKillStreak(streak: number, mode: MatchMode = 'BRAWL') {
+  public playKillStreak(streak: number, mode: MatchMode | 'PRACTICE' = 'BRAWL') {
     const ctx = this.ensureCtx();
     if (!ctx) return;
     const now = ctx.currentTime;
-    const tier =
-      mode === 'ELIMINATION'
+    const isPractice = mode === 'PRACTICE';
+    const practiceTier = isPractice ? Math.max(1, Math.min(10, streak)) : 0;
+    const tier = isPractice
+      ? 0.85 + ((practiceTier - 1) / 9) * 4.65
+      : mode === 'ELIMINATION'
         ? streak >= 3
           ? 5
           : streak === 2
             ? 3
             : 1
         : Math.max(1, Math.min(5, streak - 1)); // 1=2x, 2=3x, 3=4x, 4=5x, 5=6x+
-    const { node: out } = this.createOutputNode(ctx, { volume: Math.min(1.12, 0.84 + tier * 0.06) });
+    const { node: out } = this.createOutputNode(ctx, { volume: Math.min(1.14, 0.82 + tier * 0.058) });
 
     // 1. Orchestral Timpani Impact (+ dramatic double/triple pre-roll at higher streaks)
-    const hitOffsets =
-      tier >= 4 ? [0, 0.075, 0.15] : tier >= 2 ? [0, 0.08] : [0];
+    const hitOffsets = isPractice
+      ? practiceTier >= 7
+        ? [0, 0.07, 0.14]
+        : practiceTier >= 3
+          ? [0, 0.08]
+          : [0]
+      : tier >= 4
+        ? [0, 0.075, 0.15]
+        : tier >= 2
+          ? [0, 0.08]
+          : [0];
     hitOffsets.forEach((offset, idx) => {
       const t0 = now + offset;
       const isMain = idx === hitOffsets.length - 1;
       const timp = ctx.createOscillator();
       const timpGain = ctx.createGain();
       timp.type = 'sine';
-      const baseHz = 96 + tier * 4;
+      const baseHz = 94 + tier * 4.4;
       timp.frequency.setValueAtTime(isMain ? baseHz : baseHz * 0.9, t0);
       timp.frequency.exponentialRampToValueAtTime(42, t0 + (isMain ? 0.36 : 0.14));
-      const peak = (isMain ? 0.34 : 0.16) + tier * 0.025;
+      const peak = (isMain ? 0.33 : 0.15) + tier * 0.024;
       timpGain.gain.setValueAtTime(0.001, t0);
       timpGain.gain.linearRampToValueAtTime(peak, t0 + 0.008);
       timpGain.gain.exponentialRampToValueAtTime(0.0008, t0 + (isMain ? 0.38 : 0.16));
@@ -1724,15 +1737,27 @@ class SoundEngine {
         t0,
         isMain ? 0.065 : 0.035,
         'lowpass',
-        420 + tier * 60,
+        420 + tier * 65,
         110,
         1.1,
-        isMain ? 0.16 : 0.08,
+        isMain ? 0.15 : 0.08,
         1.8
       );
     });
 
     // 2. Symphonic String Ensemble Chord Swell (climbs in pitch & harmonic density with streak)
+    const practiceChordVoicings: number[][] = [
+      [261.63, 392.0, 523.25], // 1x: C4 - G4 - C5
+      [293.66, 440.0, 587.33], // 2x: D4 - A4 - D5
+      [329.63, 493.88, 659.25, 783.99], // 3x: E4 - B4 - E5 - G5
+      [349.23, 523.25, 698.46, 880.0], // 4x: F4 - C5 - F5 - A5
+      [392.0, 587.33, 783.99, 987.77], // 5x: G4 - D5 - G5 - B5
+      [440.0, 659.25, 880.0, 1046.5], // 6x: A4 - E5 - A5 - C6
+      [493.88, 739.99, 987.77, 1174.66], // 7x: B4 - F#5 - B5 - D6
+      [523.25, 783.99, 1046.5, 1318.51], // 8x: C5 - G5 - C6 - E6
+      [587.33, 880.0, 1174.66, 1479.98, 1760.0], // 9x: D5 - A5 - D6 - F#6 - A6
+      [659.25, 987.77, 1318.51, 1661.22, 1975.53], // 10x+: E5 - B5 - E6 - G#6 - B6
+    ];
     const chordVoicings: number[][] = [
       [293.66, 440.0, 587.33], // 2x: D4 - A4 - D5 (tense power fourth/fifth)
       [349.23, 523.25, 698.46, 880.0], // 3x: F4 - C5 - F5 - A5 (rising heroic swell)
@@ -1740,17 +1765,19 @@ class SoundEngine {
       [523.25, 783.99, 1046.5, 1318.51], // 5x: C5 - G5 - C6 - E6 (triumphant climax)
       [587.33, 880.0, 1174.66, 1479.98, 1760.0], // 6x+: D5 - A5 - D6 - F#6 - A6
     ];
-    const chord = chordVoicings[tier - 1];
+    const chord = isPractice
+      ? practiceChordVoicings[practiceTier - 1]
+      : chordVoicings[Math.max(0, Math.min(4, Math.round(tier) - 1))];
 
     const stringFilter = ctx.createBiquadFilter();
     stringFilter.type = 'lowpass';
     stringFilter.Q.setValueAtTime(1.4, now);
     stringFilter.frequency.setValueAtTime(340, now);
-    stringFilter.frequency.exponentialRampToValueAtTime(2100 + tier * 520, now + 0.34);
+    stringFilter.frequency.exponentialRampToValueAtTime(2050 + tier * 540, now + 0.34);
     stringFilter.frequency.exponentialRampToValueAtTime(880, now + 0.85);
     stringFilter.connect(out);
 
-    const swellDur = 0.72 + tier * 0.06;
+    const swellDur = 0.68 + tier * 0.065;
     const detunes = [-7, 0, 7];
     for (const freq of chord) {
       for (const cents of detunes) {
@@ -1760,7 +1787,7 @@ class SoundEngine {
         osc.frequency.setValueAtTime(freq, now + 0.02);
         osc.detune.setValueAtTime(cents, now + 0.02);
 
-        const voicePeak = (0.042 + tier * 0.005) / chord.length;
+        const voicePeak = (0.04 + tier * 0.0055) / chord.length;
         g.gain.setValueAtTime(0.0005, now + 0.02);
         g.gain.linearRampToValueAtTime(voicePeak, now + 0.16);
         g.gain.exponentialRampToValueAtTime(0.0005, now + swellDur);
@@ -1777,13 +1804,31 @@ class SoundEngine {
     hornFilter.type = 'bandpass';
     hornFilter.Q.setValueAtTime(1.1, now);
     hornFilter.frequency.setValueAtTime(680, now + 0.04);
-    hornFilter.frequency.exponentialRampToValueAtTime(1550 + tier * 240, now + 0.35);
+    hornFilter.frequency.exponentialRampToValueAtTime(1550 + tier * 260, now + 0.35);
     hornFilter.connect(out);
 
     const root = chord[0] * 0.5;
     const fifth = chord[1] * 0.5;
-    const fanfareNotes =
-      tier >= 3
+    const thirdOrOctave = (chord[3] ?? chord[2]) * 0.5;
+    const fanfareNotes = isPractice
+      ? practiceTier >= 8
+        ? [
+            { f: root, t: 0.03, d: 0.15 },
+            { f: fifth, t: 0.13, d: 0.16 },
+            { f: root * 2, t: 0.24, d: 0.2 },
+            { f: thirdOrOctave * 2, t: 0.38, d: 0.46 },
+          ]
+        : practiceTier >= 4
+          ? [
+              { f: root, t: 0.04, d: 0.17 },
+              { f: fifth, t: 0.15, d: 0.21 },
+              { f: root * 2, t: 0.28, d: 0.45 },
+            ]
+          : [
+              { f: root, t: 0.04, d: 0.18 },
+              { f: fifth, t: 0.17, d: 0.38 },
+            ]
+      : tier >= 3
         ? [
             { f: root, t: 0.04, d: 0.18 },
             { f: fifth, t: 0.16, d: 0.22 },
@@ -1803,7 +1848,7 @@ class SoundEngine {
       hornB.type = 'triangle';
       hornA.frequency.setValueAtTime(note.f, t0);
       hornB.frequency.setValueAtTime(note.f * 1.003, t0);
-      const hornPeak = 0.095 + tier * 0.014;
+      const hornPeak = 0.09 + tier * 0.014;
       hg.gain.setValueAtTime(0.0008, t0);
       hg.gain.linearRampToValueAtTime(hornPeak, t0 + 0.035);
       hg.gain.exponentialRampToValueAtTime(0.0008, t0 + note.d);
@@ -1822,12 +1867,12 @@ class SoundEngine {
       ctx,
       out,
       now + (tier >= 3 ? 0.12 : 0.06),
-      0.42 + tier * 0.09,
+      0.38 + tier * 0.09,
       'highpass',
       3100,
       5400,
       1.1,
-      0.06 + tier * 0.026,
+      0.055 + tier * 0.026,
       1.4
     );
   }
