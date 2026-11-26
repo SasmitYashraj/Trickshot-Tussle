@@ -4784,8 +4784,14 @@ export class ArenaEngine {
                 '#FDE047',
                 0
               );
-              destroyed = true;
-              break;
+              // Despawn all existing bullets once a practice target is hit
+              for (const rem of this.bullets) {
+                if (rem !== b) {
+                  this.spawnParticles(rem.x, rem.y, rem.color, 4, 65, rem.floor ?? 0);
+                }
+              }
+              this.bullets.length = 0;
+              return;
             }
           }
           if (destroyed) break;
@@ -6523,45 +6529,60 @@ export class ArenaEngine {
     const clearR = PLAYER_RADIUS + 4;
     let bestAngle = Math.atan2(bot.y - monster.y, bot.x - monster.x);
     let bestScore = -Infinity;
+    let bestShortAngle = bestAngle;
+    let bestShortScore = -Infinity;
 
     const hasRagePath = monster.mode === 'rage' && dist(monster.x, monster.y, monster.targetX, monster.targetY) > 25;
-    const tDx = hasRagePath ? monster.targetX - monster.x : 0;
-    const tDy = hasRagePath ? monster.targetY - monster.y : 0;
+    const tDx = hasRagePath ? monster.targetX - monster.x : Math.cos(monster.angle) * 200;
+    const tDy = hasRagePath ? monster.targetY - monster.y : Math.sin(monster.angle) * 200;
     const tLen = Math.hypot(tDx, tDy) || 1;
     const tUx = tDx / tLen;
     const tUy = tDy / tLen;
 
-    for (let i = 0; i < 16; i++) {
-      const a = (i / 16) * Math.PI * 2;
-      const px = bot.x + Math.cos(a) * 110;
-      const py = bot.y + Math.sin(a) * 110;
+    for (let i = 0; i < 24; i++) {
+      const a = (i / 24) * Math.PI * 2;
+      const pxShort = bot.x + Math.cos(a) * 54;
+      const pyShort = bot.y + Math.sin(a) * 54;
+      const shortClear =
+        this.isPointWalkableOnFloor(pxShort, pyShort, clearR, floor) &&
+        this.isSegmentClearOnFloor(bot.x, bot.y, pxShort, pyShort, clearR - 2, floor);
+      if (!shortClear) continue;
+
+      const shortDist = dist(pxShort, pyShort, monster.x, monster.y);
+      const shortPerp = Math.abs((pxShort - monster.x) * tUy - (pyShort - monster.y) * tUx);
+      const shortScore = shortDist + shortPerp * 0.45;
+      if (shortScore > bestShortScore) {
+        bestShortScore = shortScore;
+        bestShortAngle = a;
+      }
+
+      const px = bot.x + Math.cos(a) * 105;
+      const py = bot.y + Math.sin(a) * 105;
       if (!this.isPointWalkableOnFloor(px, py, clearR, floor)) continue;
       if (!this.isSegmentClearOnFloor(bot.x, bot.y, px, py, clearR - 2, floor)) continue;
 
-      const pxFar = bot.x + Math.cos(a) * 215;
-      const pyFar = bot.y + Math.sin(a) * 215;
+      const pxFar = bot.x + Math.cos(a) * 205;
+      const pyFar = bot.y + Math.sin(a) * 205;
       const farClear =
         this.isPointWalkableOnFloor(pxFar, pyFar, clearR, floor) &&
         this.isSegmentClearOnFloor(bot.x, bot.y, pxFar, pyFar, clearR - 2, floor);
 
       const nextD = dist(px, py, monster.x, monster.y);
       const exits = this.countOpenExits(px, py, floor);
-      let score = nextD + (exits <= 2 ? -320 : exits * 34);
+      let score = nextD + (exits <= 2 ? -340 : exits * 36);
       if (farClear) {
-        score += 130;
+        score += 140;
         if (!this.hasLineOfSight(pxFar, pyFar, monster.x, monster.y, floor)) {
-          score += 290;
+          score += 310;
         }
       } else if (!this.hasLineOfSight(px, py, monster.x, monster.y, floor)) {
-        score += 220;
+        score += 240;
       }
 
-      // Bonus for stepping perpendicularly off Figure's active path toward its last heard sound
-      if (hasRagePath) {
-        const perpDist = Math.abs((px - monster.x) * tUy - (py - monster.y) * tUx);
-        const curPerp = Math.abs((bot.x - monster.x) * tUy - (bot.y - monster.y) * tUx);
-        if (perpDist > curPerp + 18) score += 195;
-      }
+      // Bonus for stepping perpendicularly off Figure's heading / active sound path (especially critical vs Calm Figure!)
+      const perpDist = Math.abs((px - monster.x) * tUy - (py - monster.y) * tUx);
+      const curPerp = Math.abs((bot.x - monster.x) * tUy - (bot.y - monster.y) * tUx);
+      if (perpDist > curPerp + 16) score += monster.mode === 'calm' ? 240 : 205;
 
       for (const p of this.pickups) {
         if (!sameFloor(p.floor, floor)) continue;
@@ -6581,8 +6602,8 @@ export class ArenaEngine {
             : st.upDir === 'up'
               ? st.y - 24
               : st.y + st.h + 24;
-        if (dist(px, py, entryX, entryY) < dist(bot.x, bot.y, entryX, entryY)) {
-          score += 60;
+        if (dist(px, py, entryX, entryY) < dist(bot.x, bot.y, entryX, entryY) && dist(entryX, entryY, monster.x, monster.y) > 220) {
+          score += 55;
         }
       }
       if (score > bestScore) {
@@ -6590,7 +6611,7 @@ export class ArenaEngine {
         bestAngle = a;
       }
     }
-    return bestAngle;
+    return bestScore > -Infinity ? bestAngle : bestShortAngle;
   }
 
   private pickLibraryEscapeTarget(
@@ -6606,10 +6627,10 @@ export class ArenaEngine {
     const botMonsterD = sameFlM ? dist(bot.x, bot.y, monster.x, monster.y) : 9999;
     const crossFloorBonus =
       figureProfile.stairClimbTime >= 0.9
-        ? 480
+        ? 440
         : figureProfile.stairClimbTime >= 0.5
-          ? 260
-          : 110;
+          ? 240
+          : 90;
     const isActivelyChased = monster.mode === 'rage' && this.monsterChasedPlayerId === bot.id;
 
     let bestPt: { x: number; y: number; floor: FloorLevel } | null = null;
@@ -6620,7 +6641,7 @@ export class ArenaEngine {
     for (let i = 0; i < this.botNavNodes.length; i += step) {
       const n = this.botNavNodes[i];
       if (n.isStair || n.neighbors.length < 3) continue;
-      if (n.floor === bFloor && dist(bot.x, bot.y, n.x, n.y) < 115) continue;
+      if (n.floor === bFloor && dist(bot.x, bot.y, n.x, n.y) < 120) continue;
 
       const exits = this.countOpenExits(n.x, n.y, n.floor);
       if (exits <= 1) continue;
@@ -6630,29 +6651,29 @@ export class ArenaEngine {
       const dTarget = dist(n.x, n.y, monster.targetX, monster.targetY);
 
       if (n.floor === monster.floor) {
-        score += Math.min(960, dM) * 0.78;
-        if (sameFlM && dM < botMonsterD - 25) {
-          score -= 820;
+        score += Math.min(960, dM) * 0.82;
+        if (sameFlM && dM < botMonsterD - 20) {
+          score -= 880;
         }
         // Huge bonus for turning behind bookshelves out of Figure's direct corridor/LOS!
         if (!this.hasLineOfSight(monster.x, monster.y, n.x, n.y, n.floor)) {
-          score += 460;
+          score += 500;
         }
       } else {
-        score += 460 + crossFloorBonus + Math.min(680, dM) * 0.42;
-        if (isActivelyChased && dM <= 560) {
+        score += 420 + crossFloorBonus + Math.min(680, dM) * 0.44;
+        if (isActivelyChased && dM <= 580) {
           // On another floor while actively chased, must get >520px away from Figure to break stair/floor lock
-          score -= 880;
+          score -= 920;
         }
       }
 
       // Strongly prefer getting clear of Figure's active sound target area!
       if (monster.mode === 'rage') {
-        if (dTarget < 180) score -= 620;
-        else if (dTarget > 280) score += 280;
+        if (dTarget < 210) score -= 680;
+        else if (dTarget > 320) score += 310;
       }
 
-      // If escaping across floors while Figure is on our floor, ensure at least one staircase isn't blocked right on Figure
+      // If escaping across floors while Figure is on our floor, require a genuinely reachable safe staircase!
       if (n.floor !== bFloor && sameFlM) {
         const hasSafeStair = (this.map.stairs ?? []).some((st) => {
           const cx = st.x + st.w * 0.5;
@@ -6664,9 +6685,11 @@ export class ArenaEngine {
               : st.upDir === 'up'
                 ? st.y - 26
                 : st.y + st.h + 26;
-          return dist(cx, entryY, monster.x, monster.y) > 205 || dist(bot.x, bot.y, cx, entryY) < dist(monster.x, monster.y, cx, entryY) - 65;
+          const dBotStair = dist(bot.x, bot.y, cx, entryY);
+          const dMonStair = dist(cx, entryY, monster.x, monster.y);
+          return dMonStair > 260 || dBotStair < dMonStair - 95;
         });
-        if (!hasSafeStair) score -= 720;
+        if (!hasSafeStair) score -= 950;
       }
 
       // Reject explosive hazards at escape point
@@ -6684,18 +6707,12 @@ export class ArenaEngine {
       }
       if (hazardBad) score -= 1200;
 
-      // Vet / Ruthless bonus: kite near Nitro when Figure is raging & bot has ammo (setup stun) or draw Figure near rivals!
-      if (diff === 'RUTHLESS' || diff === 'VETERAN') {
-        if (bot.ammo > 0 && n.floor === monster.floor) {
-          const hasStunNitro = this.pickups.some(
-            (p) => p.kind === 'nitro' && sameFloor(p.floor, n.floor) && dist(p.x, p.y, n.x, n.y) > 135 && dist(p.x, p.y, n.x, n.y) < 340
-          );
-          if (hasStunNitro) score += 95;
-        }
+      // Vet / Ruthless gentle preference for drawing Figure away near rivals only when far from Figure itself
+      if ((diff === 'RUTHLESS' || diff === 'VETERAN') && dM > 460) {
         for (const r of rivals) {
           if (sameFloor(r.floor, n.floor)) {
             const dr = dist(n.x, n.y, r.x, r.y);
-            if (dr > 220 && dr < 480) score += r.isHuman ? 125 : 70;
+            if (dr > 240 && dr < 480) score += r.isHuman ? 85 : 45;
           }
         }
       }
@@ -6833,17 +6850,17 @@ export class ArenaEngine {
         dist(bot.x, bot.y, b.x, b.y) < 235
     );
 
-    // 1. Realistic Book Collection Pause: Random 0.5s - 2.0s (aborts cleanly if Figure/rival threatens!)
+    // 1. Realistic Book Collection Pause: Random 0.5s - 2.0s (aborts immediately if Figure/rival threatens!)
     if (prog && prog.collectedCount < LIBRARY_BOOKS_PER_PLAYER) {
       const monsterImmediateThreat =
         m.stunTimer <= 0 &&
         ((sameFloorMonster &&
-          (monsterDist < (fastFigureMode ? 360 : 300) ||
-            (m.mode === 'rage' && monsterDist < 430 && dist(m.targetX, m.targetY, bot.x, bot.y) < 210))) ||
+          (monsterDist < (fastFigureMode ? 440 : 380) ||
+            (m.mode === 'rage' && monsterDist < 540 && dist(m.targetX, m.targetY, bot.x, bot.y) < 300))) ||
           (figureProfile.hearThroughFloors &&
             m.mode === 'rage' &&
-            totalMonsterDist < 340 &&
-            dist(m.targetX, m.targetY, bot.x, bot.y) < 250));
+            totalMonsterDist < 420 &&
+            dist(m.targetX, m.targetY, bot.x, bot.y) < 280));
       const closeHostileRival = visibleRivals.some(
         (e) => e.ammo > 0 && dist(bot.x, bot.y, e.x, e.y) < (diff === 'CHILL' ? 160 : 310)
       );
@@ -6880,12 +6897,14 @@ export class ArenaEngine {
       }
     }
 
-    // 2. Central Pillar Code Filling (respects 3s Door Jam lockout & retreats cleanly before Figure arrives!)
+    // 2. Central Pillar Code Filling (respects 3s Door Jam lockout & retreats cleanly whenever Figure approaches!)
     const doorDist = door ? dist(bot.x, bot.y, door.x, door.y) : Infinity;
+    const anyAlarmAtPillar = this.libraryState.doors.some((dd) => (dd.lockoutTimer ?? 0) > 0);
     if (
       prog &&
       door &&
       doorLockout <= 0 &&
+      !anyAlarmAtPillar &&
       prog.collectedCount >= LIBRARY_BOOKS_PER_PLAYER &&
       bFloor === 0 &&
       doorDist <= 145 &&
@@ -6894,8 +6913,8 @@ export class ArenaEngine {
       const figureTooClose =
         m.stunTimer <= 0 &&
         sameFloorMonster &&
-        (monsterDist < (fastFigureMode ? 405 : 340) ||
-          (m.mode === 'rage' && monsterDist < 480 && dist(m.targetX, m.targetY, bot.x, bot.y) < 230));
+        (monsterDist < (fastFigureMode ? 500 : 420) ||
+          (m.mode === 'rage' && monsterDist < 640));
       const closeThreatRival = visibleRivals.some(
         (e) => dist(bot.x, bot.y, e.x, e.y) < (diff === 'CHILL' ? 190 : 390)
       );
@@ -6935,69 +6954,73 @@ export class ArenaEngine {
       mem.dialTimer = Math.max(0, mem.dialTimer - dt * (doorLockout > 0 ? 1.2 : 0.5));
     }
 
-    // Stuck detector
-    if (dist(bot.x, bot.y, mem.lastProgressX, mem.lastProgressY) > 16) {
+    // Stuck detector (also recovers if wedged while evading Figure!)
+    if (dist(bot.x, bot.y, mem.lastProgressX, mem.lastProgressY) > 14) {
       mem.lastProgressX = bot.x;
       mem.lastProgressY = bot.y;
       mem.stuckTimer = 0;
-    } else if (bot.aiMoveRatio > 0.2 && mem.pendingShotAngle === null) {
+    } else if (bot.aiMoveRatio > 0.12) {
       mem.stuckTimer += dt;
-      if (mem.stuckTimer > 0.65) {
+      if (mem.stuckTimer > 0.55) {
         mem.stuckTimer = 0;
         bot.aiStrafeDir *= -1;
         mem.stairCommit = null;
+        mem.libEscapeGoalTimer = 0;
+        mem.libMonsterEscTimer = 0;
+        mem.pendingShotAngle = null;
         this.botPaths.delete(bot.id);
         const nearest = this.findClosestNavNodeOnGraph(this.botNavNodes, bot.x, bot.y, bFloor, true);
         if (nearest && dist(bot.x, bot.y, nearest.x, nearest.y) > 10) {
           mem.unstickAngle = Math.atan2(nearest.y - bot.y, nearest.x - bot.x);
         } else {
-          mem.unstickAngle = this.pickClearMoveAngle(bot, bot.angle + bot.aiStrafeDir * 1.5, 75, bot.aiStrafeDir);
+          mem.unstickAngle = this.pickClearMoveAngle(bot, bot.angle + bot.aiStrafeDir * 1.5, 65, bot.aiStrafeDir);
         }
-        mem.unstickTimer = 0.5;
+        mem.unstickTimer = 0.35;
       }
     }
 
-    // 3. Figure Threat Assessment & Intelligent Escape (silent sidestep vs timed corner burst-sprint!)
+    // 3. Figure Threat Assessment & Intelligent Escape (Survive silently first; only short burst sprint to break active LOS!)
     let evadeX = 0;
     let evadeY = 0;
     const figureClearLos =
-      sameFloorMonster && monsterDist < 480 && this.hasLineOfSight(bot.x, bot.y, m.x, m.y, bFloor);
+      sameFloorMonster && monsterDist < 520 && this.hasLineOfSight(bot.x, bot.y, m.x, m.y, bFloor);
     const figureClosingIn =
       sameFloorMonster &&
-      ((m.vx * (bot.x - m.x) + m.vy * (bot.y - m.y)) > 20 || monsterDist < 190);
+      ((m.vx * (bot.x - m.x) + m.vy * (bot.y - m.y)) > 20 || monsterDist < 195);
     const crossFloorThreat =
       m.mode === 'rage' &&
       !sameFloorMonster &&
       m.stunTimer <= 0 &&
-      ((this.monsterChasedPlayerId === bot.id && totalMonsterDist <= 560) ||
+      ((this.monsterChasedPlayerId === bot.id && totalMonsterDist <= 580) ||
         (figureProfile.hearThroughFloors &&
-          totalMonsterDist < 360 &&
+          totalMonsterDist < 390 &&
           dist(m.targetX, m.targetY, bot.x, bot.y) < 260));
 
     const figureChasingThisBot =
       m.stunTimer <= 0 &&
       m.mode === 'rage' &&
       (this.monsterChasedPlayerId === bot.id ||
-        (sameFloorMonster && dist(m.targetX, m.targetY, bot.x, bot.y) < 210 && monsterDist < 460));
+        (sameFloorMonster && dist(m.targetX, m.targetY, bot.x, bot.y) < 210 && monsterDist < 480));
 
     const monsterBeingTargeted =
       m.stunTimer <= 0 &&
       ((sameFloorMonster &&
-        (monsterDist < 235 ||
-          (figureClearLos && monsterDist < 340) ||
+        (monsterDist < 340 ||
+          (figureClearLos && monsterDist < 480) ||
+          (m.mode === 'rage' && dist(m.targetX, m.targetY, bot.x, bot.y) < 260 && monsterDist < 540) ||
           figureChasingThisBot)) ||
         crossFloorThreat);
 
     // Cancel burst sprint IMMEDIATELY upon rounding a corner out of LOS, entering stairs, or Figure calming!
     if (mem.libSprintBurstTimer > 0) {
-      const turnedCorner = mem.libWasVisibleToFigure && !figureClearLos && monsterDist > 125;
+      const turnedCorner = !figureClearLos && monsterDist > 130;
       if (turnedCorner || onStairsNow || m.mode !== 'rage' || m.stunTimer > 0) {
         mem.libSprintBurstTimer = 0;
-        mem.libSprintCooldown = Math.max(mem.libSprintCooldown, 1.55);
+        mem.libSprintCooldown = Math.max(mem.libSprintCooldown, 1.85);
       }
     }
 
-    // Trigger ONLY a short <=0.52s burst sprint when Figure is actively closing in fast; then go silent around the corner!
+    // Only burst sprint if Figure ALREADY sees & is actively closing on THIS bot (never break stealth when hidden!)
     if (
       mem.libSprintBurstTimer <= 0 &&
       mem.libSprintCooldown <= 0 &&
@@ -7005,17 +7028,22 @@ export class ArenaEngine {
       sameFloorMonster &&
       m.mode === 'rage' &&
       !onStairsNow &&
+      figureClearLos &&
       figureClosingIn &&
-      (this.monsterChasedPlayerId === bot.id || dist(m.targetX, m.targetY, bot.x, bot.y) < 165 || figureClearLos) &&
-      monsterDist < (fastFigureMode ? 285 : 235)
+      figureChasingThisBot &&
+      monsterDist < (fastFigureMode ? 225 : 195)
     ) {
-      mem.libSprintBurstTimer = 0.52;
-      mem.libSprintCooldown = 1.65;
-      mem.libWasVisibleToFigure = figureClearLos;
+      mem.libSprintBurstTimer = 0.42;
+      mem.libSprintCooldown = 2.0;
+      mem.libWasVisibleToFigure = true;
     }
 
     const imminentCollision =
-      m.stunTimer <= 0 && sameFloorMonster && monsterDist < 98 && (figureClearLos || figureClosingIn);
+      m.stunTimer <= 0 &&
+      sameFloorMonster &&
+      monsterDist < 125 &&
+      figureClearLos &&
+      figureClosingIn;
     const emergencySprintMonster = mem.libSprintBurstTimer > 0 || imminentCollision;
 
     if (monsterBeingTargeted && !mem.stairCommit) {
@@ -7140,6 +7168,20 @@ export class ArenaEngine {
     bot.aiHoldShotTimer -= dt;
 
     // 4. Smart Explosive, Figure-Slow, Door-Jam & Trickshot Tussle Combat Planning
+    // PRIORITY RULE: Surviving Figure ALWAYS beats provoking Figure or fighting rivals!
+    const survivalOverCombat =
+      monsterBeingTargeted ||
+      figureChasingThisBot ||
+      urgentLibTntEscape ||
+      (m.stunTimer <= 0 && sameFloorMonster && monsterDist < 380) ||
+      (m.stunTimer <= 0 && m.mode === 'rage' && totalMonsterDist < 540);
+
+    if (survivalOverCombat && mem.pendingShotTargetId !== null) {
+      mem.pendingShotAngle = null;
+      mem.pendingShotExpire = 0;
+      mem.pendingShotTargetId = null;
+    }
+
     if (bot.ammo > 0 && bot.aiHoldShotTimer <= 0 && mem.pendingShotAngle === null) {
       // Priority A: Shoot Nitro/TNT (direct or banked!) to STUN Figure when Figure is visible & inside blast radius!
       if (
@@ -7155,7 +7197,7 @@ export class ArenaEngine {
           const blastR = n.kind === 'tnt' ? TNT_BLAST_RADIUS : NITRO_BLAST_RADIUS;
           if (
             dist(n.x, n.y, m.x, m.y) <= blastR + m.radius + 10 &&
-            dist(n.x, n.y, bot.x, bot.y) > blastR + 34 &&
+            dist(n.x, n.y, bot.x, bot.y) > blastR + 40 &&
             this.canBotSeePoint(bot, n.x, n.y, bFloor, true)
           ) {
             const shotA = tryPlanPointShot(n.x, n.y, n.radius + 12, true, isVetPlus);
@@ -7170,7 +7212,7 @@ export class ArenaEngine {
         }
       }
 
-      // Priority A2: Shoot raging Figure (or close Figure) to slow it down for 5s!
+      // Priority A2: Shoot raging Figure (or close Figure) to slow it down for 5s (only if safely aligned or >175px away!)
       const slowRange = fastFigureMode
         ? isRuthless
           ? 540
@@ -7190,7 +7232,7 @@ export class ArenaEngine {
         (m.mode === 'rage' || monsterDist < 260) &&
         sameFloorMonster &&
         monsterDist < slowRange &&
-        (monsterDist >= 165 || figureNearAligned || m.mode !== 'rage') &&
+        (monsterDist >= 175 || figureNearAligned || m.mode !== 'rage') &&
         this.canBotSeePoint(bot, m.x, m.y, bFloor, false) &&
         this.isDirectShotClearAndSafe(bot, m.x, m.y, bFloor, null)
       ) {
@@ -7200,14 +7242,14 @@ export class ArenaEngine {
         mem.pendingShotIsTrick = false;
       }
 
-      // Priority A3: Explosive Distraction — blast a distant Nitro/TNT to pull raging Figure away when chased!
+      // Priority A3: Distraction Nitro — ONLY if Figure is ALREADY chasing this bot, blast is far from bot, & we don't stall!
       if (
         mem.pendingShotAngle === null &&
         isVetPlus &&
-        monsterBeingTargeted &&
-        m.mode === 'rage' &&
+        figureChasingThisBot &&
         m.stunTimer <= 0 &&
         bot.ammo >= 2 &&
+        monsterDist > 190 &&
         mem.distractCooldown <= 0
       ) {
         for (const n of this.pickups) {
@@ -7215,36 +7257,42 @@ export class ArenaEngine {
           if (n.kind !== 'nitro' && !(n.kind === 'tnt' && !n.armed)) continue;
           const blastR = n.kind === 'tnt' ? TNT_BLAST_RADIUS : NITRO_BLAST_RADIUS;
           if (
-            dist(n.x, n.y, bot.x, bot.y) > blastR + 48 &&
+            dist(n.x, n.y, bot.x, bot.y) > blastR + 180 &&
             dist(n.x, n.y, m.x, m.y) > 260 &&
             this.canBotSeePoint(bot, n.x, n.y, bFloor, true)
           ) {
             const shotA = tryPlanPointShot(n.x, n.y, n.radius + 12, true, isRuthless);
             if (shotA !== null) {
               mem.pendingShotAngle = shotA;
-              mem.pendingShotExpire = 0.45;
+              mem.pendingShotExpire = 0.4;
               mem.pendingShotTargetId = null;
               mem.pendingShotIsTrick = true;
-              mem.distractCooldown = 6.5;
+              mem.distractCooldown = 7.5;
               break;
             }
           }
         }
       }
 
-      // Don't provoke Figure via Door Jam or loud Nitro blasts if Figure is already dangerously close with no clean escape!
+      // Strict anti-provocation guard: NEVER provoke Figure via Door Jam or Nitro bait unless bot is clearly safe!
       const canSafelyProvoke = (targetX: number, targetY: number): boolean => {
+        if (survivalOverCombat || mem.rageBaitCooldown > 0) return false;
         if (m.stunTimer > 0) return true;
-        if (figureProfile.hearThroughFloors && totalMonsterDist < 370) return false;
-        if (!sameFloorMonster) return true;
-        const safeProvokeMargin = fastFigureMode || figureProfile.stairClimbTime <= 0.6 ? 480 : 370;
-        if (monsterDist >= safeProvokeMargin) return true;
-        // Safe to provoke if Figure is much closer to the blast/alarm than to this bot AND bot has cover
-        return !figureClearLos && monsterDist > dist(targetX, targetY, m.x, m.y) + 120;
+        if (m.mode === 'rage') return false; // Never add new rage provocation while Figure is already raging!
+        if (dist(bot.x, bot.y, targetX, targetY) < 240) return false;
+        if (figureProfile.hearThroughFloors && totalMonsterDist < 540) return false;
+        if (sameFloorMonster && monsterDist < 580) return false;
+        return !figureClearLos && this.countOpenExits(bot.x, bot.y, bFloor) >= 3;
       };
 
-      // Priority B1: Shoot a Rival's Central-Pillar Door (direct or banked Trickshot!) to Jam Code 3s & Summon Figure!
-      if (mem.pendingShotAngle === null && diff !== 'CHILL' && bFloor === 0 && bot.ammo >= (isRuthless ? 1 : 2)) {
+      // Priority B1: Shoot a Rival's Central-Pillar Door (direct or banked Trickshot!) when completely safe from Figure!
+      if (
+        mem.pendingShotAngle === null &&
+        !survivalOverCombat &&
+        diff !== 'CHILL' &&
+        bFloor === 0 &&
+        bot.ammo >= (isRuthless ? 1 : 2)
+      ) {
         const sortedDoorRivals = [...allRivals].sort((a, b) => {
           const ap = this.libraryState!.playerProgress.find((pp) => pp.playerId === a.id)?.collectedCount ?? 0;
           const bp = this.libraryState!.playerProgress.find((pp) => pp.playerId === b.id)?.collectedCount ?? 0;
@@ -7268,21 +7316,21 @@ export class ArenaEngine {
           const outX = rDoor.side === 'W' ? rDoor.x - 10 : rDoor.side === 'E' ? rDoor.x + 10 : rDoor.x;
           const outY = rDoor.side === 'N' ? rDoor.y - 10 : rDoor.side === 'S' ? rDoor.y + 10 : rDoor.y;
           if (!this.isPointWithinImmersiveBounds(bot, outX, outY, true, !isVetPlus)) continue;
-          if (dist(bot.x, bot.y, rDoor.x, rDoor.y) < 92) continue;
 
           const shotA = tryPlanPointShot(outX, outY, 26, false, isVetPlus);
           if (shotA !== null) {
             mem.pendingShotAngle = shotA;
-            mem.pendingShotExpire = 0.45;
+            mem.pendingShotExpire = 0.4;
             mem.pendingShotTargetId = null;
             mem.pendingShotIsTrick = true;
+            mem.rageBaitCooldown = 6.0;
             break;
           }
         }
       }
 
-      // Priority B2: Blast Nitro/TNT (direct or banked Trickshot!) near rivals to damage them & sic Figure on them!
-      if (mem.pendingShotAngle === null && diff !== 'CHILL') {
+      // Priority B2: Blast Nitro/TNT near rivals (only when survival is guaranteed & safe distance from Figure!)
+      if (mem.pendingShotAngle === null && !survivalOverCombat && diff !== 'CHILL') {
         const pc = this.map.pillarCenter ?? { x: this.map.width * 0.5, y: this.map.height * 0.5 };
         const leaderAtPillar = allRivals.some(
           (r) =>
@@ -7295,49 +7343,48 @@ export class ArenaEngine {
           if (n.kind !== 'nitro' && !(n.kind === 'tnt' && !n.armed)) continue;
           const blastR = n.kind === 'tnt' ? TNT_BLAST_RADIUS : NITRO_BLAST_RADIUS;
           const dBotN = dist(n.x, n.y, bot.x, bot.y);
-          if (dBotN <= blastR + 40) continue;
+          if (dBotN <= blastR + 65) continue;
           if (!this.canBotSeePoint(bot, n.x, n.y, bFloor, true)) continue;
 
           const rivalInBlast = visibleRivals.some((e) => dist(n.x, n.y, e.x, e.y) <= blastR + 34);
+          const safeToProvokeHere = canSafelyProvoke(n.x, n.y);
           const rivalNearbyForFigureBait =
+            safeToProvokeHere &&
             isVetPlus &&
-            m.stunTimer <= 0 &&
-            canSafelyProvoke(n.x, n.y) &&
             visibleRivals.some(
               (e) =>
-                dist(n.x, n.y, e.x, e.y) <= (e.isHuman ? 360 : 270) &&
-                (dBotN > dist(n.x, n.y, e.x, e.y) + 75 ||
-                  (sameFloorMonster && monsterDist > dist(n.x, n.y, e.x, e.y) + 90))
+                dist(n.x, n.y, e.x, e.y) <= (e.isHuman ? 340 : 250) &&
+                dBotN > dist(n.x, n.y, e.x, e.y) + 90
             );
           const pillarTrap =
+            safeToProvokeHere &&
             isRuthless &&
             bFloor === 0 &&
             leaderAtPillar &&
-            canSafelyProvoke(pc.x, pc.y) &&
-            dist(n.x, n.y, pc.x, pc.y) <= 300 &&
-            dBotN > blastR + 85;
+            dist(n.x, n.y, pc.x, pc.y) <= 300;
 
-          if (rivalInBlast || rivalNearbyForFigureBait || pillarTrap) {
+          if ((rivalInBlast && (m.stunTimer > 0 || !sameFloorMonster || monsterDist > 420)) || rivalNearbyForFigureBait || pillarTrap) {
             const shotA = tryPlanPointShot(n.x, n.y, n.radius + 14, true, isVetPlus);
             if (shotA !== null) {
               mem.pendingShotAngle = shotA;
-              mem.pendingShotExpire = 0.45;
+              mem.pendingShotExpire = 0.4;
               mem.pendingShotTargetId = null;
               mem.pendingShotIsTrick = true;
+              mem.rageBaitCooldown = 6.0;
               break;
             }
           }
         }
       }
 
-      // Priority C: Aggressively engage rivals (scaling sharply Chill -> Tactical -> Veteran -> Ruthless + Trickshot banks!)
+      // Priority C: Aggressively engage rivals (only when Figure isn't threatening this bot!)
       const candidateRivals = isVetPlus
         ? allRivals.filter(
             (e) => sameFloor(e.floor, bFloor) && this.isPointWithinImmersiveBounds(bot, e.x, e.y, false, false)
           )
         : visibleRivals;
 
-      if (mem.pendingShotAngle === null && candidateRivals.length > 0) {
+      if (mem.pendingShotAngle === null && !survivalOverCombat && candidateRivals.length > 0) {
         const sortedTargets = [...candidateRivals].sort((a, b) => {
           const scoreTarget = (e: Player) => {
             const shieldLeft = Math.max(e.spawnInvulnTimer, e.postStunGraceTimer ?? 0);
@@ -7367,7 +7414,7 @@ export class ArenaEngine {
         });
 
         const keepDefenseReserve =
-          diff !== 'CHILL' && sameFloorMonster && m.mode === 'rage' && monsterDist < 360 && bot.ammo === 1;
+          diff !== 'CHILL' && sameFloorMonster && m.mode === 'rage' && monsterDist < 420 && bot.ammo === 1;
 
         for (const target of sortedTargets) {
           const dT = dist(bot.x, bot.y, target.x, target.y);
@@ -7401,7 +7448,7 @@ export class ArenaEngine {
               const aimY = predSafe ? predY : target.y;
               mem.pendingShotAngle =
                 Math.atan2(aimY - bot.y, aimX - bot.x) + (Math.random() - 0.5) * aimSpread;
-              mem.pendingShotExpire = 0.45;
+              mem.pendingShotExpire = 0.4;
               mem.pendingShotTargetId = target.id;
               mem.pendingShotIsTrick = false;
               break;
@@ -7416,7 +7463,7 @@ export class ArenaEngine {
               const trickA = this.findTrickshotAngle(bot, target, isVetPlus);
               if (trickA !== null) {
                 mem.pendingShotAngle = trickA + (Math.random() - 0.5) * aimSpread * 0.25;
-                mem.pendingShotExpire = 0.45;
+                mem.pendingShotExpire = 0.4;
                 mem.pendingShotTargetId = target.id;
                 mem.pendingShotIsTrick = true;
                 break;
@@ -7429,16 +7476,16 @@ export class ArenaEngine {
 
     // Strict Every-Tick Stealth Discipline across BOTH floors within hearingRadius + 240px!
     const boostMult = Math.max(1, this.getSpawnBoostMultiplier(bot));
-    const rawStealthCap = Math.max(0.36, figureProfile.stealthThreshold - 0.16);
+    const rawStealthCap = Math.max(0.4, figureProfile.stealthThreshold - 0.08);
     const safeStealthRatio =
       onStairsNow || (m.mode === 'rage' && this.monsterChasedPlayerId === bot.id)
-        ? Math.min(0.47, rawStealthCap)
+        ? Math.min(0.49, Math.max(0.38, figureProfile.stealthThreshold - 0.12))
         : rawStealthCap;
     const inHearing =
       m.stunTimer <= 0 &&
       totalMonsterDist < figureProfile.hearingRadius + 240;
 
-    // 5. Committed Staircase Traversal (always climb slowly <0.55 so Figure doesn't track stairs!)
+    // 5. Committed Staircase Traversal (always climb <0.55 so Figure loses stair lock!)
     if (mem.stairCommit) {
       mem.stairCommit.timer -= dt;
       const st = (this.map.stairs ?? []).find((s) => s.id === mem.stairCommit!.stairId);
@@ -7447,23 +7494,30 @@ export class ArenaEngine {
         m.stunTimer <= 0 &&
         sameFloorMonster &&
         !onStairsNow &&
-        (monsterDist < 175 || dist(m.x, m.y, st.x + st.w * 0.5, st.y + st.h * 0.5) < 225) &&
+        (monsterDist < 190 || dist(m.x, m.y, st.x + st.w * 0.5, st.y + st.h * 0.5) < 235) &&
         Math.abs(m.x - (st.x + st.w * 0.5)) < 120;
       if (!st || mem.stairCommit.timer <= 0 || monsterBlockingStair) {
         mem.stairCommit = null;
+        mem.libEscapeGoalTimer = 0;
+        this.botPaths.delete(bot.id);
       } else {
         const cx = st.x + st.w * 0.5;
-        const groundOutY = st.upDir === 'up' ? st.y + st.h + 58 : st.y - 58;
-        const upperOutY = st.upDir === 'up' ? st.y - 58 : st.y + st.h + 58;
+        const groundOutY = st.upDir === 'up' ? st.y + st.h + 54 : st.y - 54;
+        const upperOutY = st.upDir === 'up' ? st.y - 54 : st.y + st.h + 54;
         const targetOutY = mem.stairCommit.targetFloor === 1 ? upperOutY : groundOutY;
 
-        if (bFloor === mem.stairCommit.targetFloor && Math.abs(bot.y - targetOutY) < 26) {
+        if (bFloor === mem.stairCommit.targetFloor && Math.abs(bot.y - targetOutY) < 28) {
           mem.stairCommit = null;
           this.botPaths.delete(bot.id);
         } else {
-          const insideStairX = Math.abs(bot.x - cx) < 16;
+          const onThisStair =
+            bot.x >= st.x - 6 &&
+            bot.x <= st.x + st.w + 6 &&
+            bot.y >= st.y - 18 &&
+            bot.y <= st.y + st.h + 18;
+          const alignedStairX = onThisStair || Math.abs(bot.x - cx) < 38;
           const stepGoalX = cx;
-          const stepGoalY = insideStairX
+          const stepGoalY = alignedStairX
             ? targetOutY
             : (bFloor === 0 ? groundOutY : upperOutY);
           const ang = Math.atan2(stepGoalY - bot.y, stepGoalX - bot.x);
@@ -7473,7 +7527,7 @@ export class ArenaEngine {
             : inHearing
               ? safeStealthRatio / boostMult
               : 0.9;
-          bot.aiMoveRatio = clamp(rawRatio, 0.1, 1.0);
+          bot.aiMoveRatio = clamp(rawRatio, 0.25, 1.0);
         }
       }
     }
@@ -7772,8 +7826,8 @@ export class ArenaEngine {
                   : st.y + st.h + 26;
             const figureAtMouth =
               m.stunTimer <= 0 && sameFloorMonster && dist(m.x, m.y, cx, entryY) < 190;
-            if (!figureAtMouth && dist(bot.x, bot.y, cx, entryY) < 76) {
-              mem.stairCommit = { stairId: st.id, targetFloor: goalFloor, timer: 4.0 };
+            if (!figureAtMouth && dist(bot.x, bot.y, cx, entryY) < 84) {
+              mem.stairCommit = { stairId: st.id, targetFloor: goalFloor, timer: 6.5 };
               break;
             }
           }
@@ -7843,6 +7897,10 @@ export class ArenaEngine {
                 break;
               }
             }
+            if (pathState.nodes.length === 0 && goalFloor !== bFloor) {
+              this.botPaths.delete(bot.id);
+              mem.patrolTimer = 0;
+            }
           }
         }
 
@@ -7852,12 +7910,21 @@ export class ArenaEngine {
       }
 
       // Per-Tick Smooth Steering, Obstacle & Bot-to-Bot Separation, and Stealth Speed Control!
-      if (mem.unstickTimer > 0 && !urgentLibTntEscape && !monsterBeingTargeted) {
+      if (mem.unstickTimer > 0 && !urgentLibTntEscape) {
         bot.aiTargetAngle = mem.unstickAngle;
-        bot.aiMoveRatio = inHearing ? safeStealthRatio / boostMult : 0.92;
+        bot.aiMoveRatio = emergencySprintMonster
+          ? 0.98
+          : inHearing
+            ? safeStealthRatio / boostMult
+            : 0.92;
       } else if (monsterBeingTargeted && diff !== 'CHILL') {
+        const escapeGoalUnsafe =
+          mem.libEscapeGoalTimer > 0 &&
+          ((mem.libEscapeGoalFloor === m.floor && dist(mem.libEscapeGoalX, mem.libEscapeGoalY, m.x, m.y) < 340) ||
+            (m.mode === 'rage' && mem.libEscapeGoalFloor === m.targetFloor && dist(mem.libEscapeGoalX, mem.libEscapeGoalY, m.targetX, m.targetY) < 210));
         if (
           mem.libEscapeGoalTimer <= 0 ||
+          escapeGoalUnsafe ||
           (mem.libEscapeGoalFloor === bFloor && dist(bot.x, bot.y, mem.libEscapeGoalX, mem.libEscapeGoalY) < 70)
         ) {
           const escTarget = this.pickLibraryEscapeTarget(bot, m, bFloor, figureProfile, visibleRivals, diff);
@@ -7865,7 +7932,7 @@ export class ArenaEngine {
             mem.libEscapeGoalX = escTarget.x;
             mem.libEscapeGoalY = escTarget.y;
             mem.libEscapeGoalFloor = escTarget.floor;
-            mem.libEscapeGoalTimer = 0.65;
+            mem.libEscapeGoalTimer = 1.25;
           }
         }
         if (mem.libEscapeGoalTimer > 0) {
@@ -7881,9 +7948,9 @@ export class ArenaEngine {
                     ? st.y - 26
                     : st.y + st.h + 26;
               const figureAtMouth =
-                m.stunTimer <= 0 && sameFloorMonster && dist(m.x, m.y, cx, entryY) < 190;
-              if (!figureAtMouth && dist(bot.x, bot.y, cx, entryY) < 76) {
-                mem.stairCommit = { stairId: st.id, targetFloor: mem.libEscapeGoalFloor, timer: 4.0 };
+                m.stunTimer <= 0 && sameFloorMonster && dist(m.x, m.y, cx, entryY) < 215;
+              if (!figureAtMouth && dist(bot.x, bot.y, cx, entryY) < 84) {
+                mem.stairCommit = { stairId: st.id, targetFloor: mem.libEscapeGoalFloor, timer: 6.5 };
                 break;
               }
             }
@@ -7898,37 +7965,41 @@ export class ArenaEngine {
             mem.libEscapeGoalFloor,
             {
               avoidHazards: true,
-              avoidThreats: [{ x: m.x, y: m.y, floor: m.floor, radius: 310, penalty: 2600 }],
+              avoidThreats: [{ x: m.x, y: m.y, floor: m.floor, radius: 340, penalty: 2800 }],
             }
           );
           let wpX = mem.libEscapeGoalX;
           let wpY = mem.libEscapeGoalY;
+          let foundStep = false;
           let useDirectEvade = false;
           if (escNodes.length > 0) {
             for (const n of escNodes) {
-              if (dist(bot.x, bot.y, n.x, n.y) > 38 || n.floor !== bFloor) {
+              if (dist(bot.x, bot.y, n.x, n.y) > 28 || n.floor !== bFloor) {
                 wpX = n.x;
                 wpY = n.y;
+                foundStep = true;
                 break;
               }
             }
-            if (sameFloorMonster && monsterDist < 220 && dist(wpX, wpY, m.x, m.y) < monsterDist - 15) {
+            if (!foundStep) {
+              useDirectEvade = true;
+            } else if (sameFloorMonster && monsterDist < 240 && dist(wpX, wpY, m.x, m.y) < monsterDist - 10) {
               useDirectEvade = true;
             }
             if (!useDirectEvade) {
               const rawEscA = Math.atan2(wpY - bot.y, wpX - bot.x);
-              bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawEscA, 64, bot.aiStrafeDir, true, true);
+              bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawEscA, 62, bot.aiStrafeDir, true, true);
             } else {
               const rawEvade = Math.atan2(evadeY, evadeX);
-              bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawEvade, 74, bot.aiStrafeDir, true, true);
+              bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawEvade, 66, bot.aiStrafeDir, true, true);
             }
           } else {
             const rawEvade = Math.atan2(evadeY, evadeX);
-            bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawEvade, 74, bot.aiStrafeDir, true, true);
+            bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawEvade, 66, bot.aiStrafeDir, true, true);
           }
         } else {
           const rawEvade = Math.atan2(evadeY, evadeX);
-          bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawEvade, 74, bot.aiStrafeDir, true, true);
+          bot.aiTargetAngle = this.pickClearMoveAngle(bot, rawEvade, 66, bot.aiStrafeDir, true, true);
         }
         bot.aiMoveRatio =
           emergencySprintMonster || urgentLibTntEscape
@@ -7941,7 +8012,7 @@ export class ArenaEngine {
         bot.aiTargetAngle = this.pickClearMoveAngle(
           bot,
           rawEvade,
-          74,
+          68,
           bot.aiStrafeDir,
           diff !== 'CHILL' && !urgentLibTntEscape,
           isVetPlus && !urgentLibTntEscape
@@ -7954,8 +8025,12 @@ export class ArenaEngine {
               : 0.9;
       } else {
         // Normal patrol / book / hunt steering computed EVERY TICK cleanly without sine-wave wobble
-        let dirX = Math.cos(Math.atan2(mem.patrolY - bot.y, mem.patrolX - bot.x));
-        let dirY = Math.sin(Math.atan2(mem.patrolY - bot.y, mem.patrolX - bot.x));
+        const dPatrol = dist(bot.x, bot.y, mem.patrolX, mem.patrolY);
+        if (dPatrol < 12) {
+          mem.patrolTimer = 0;
+        }
+        let dirX = dPatrol > 2 ? (mem.patrolX - bot.x) / dPatrol : Math.cos(bot.angle);
+        let dirY = dPatrol > 2 ? (mem.patrolY - bot.y) / dPatrol : Math.sin(bot.angle);
         if (!onStairsNow) {
           for (const other of this.players) {
             if (other.id === bot.id || !other.alive || !sameFloor(other.floor, bFloor)) continue;
@@ -7982,7 +8057,7 @@ export class ArenaEngine {
           const accidentalSlip = diff === 'CHILL' ? Math.random() < 0.015 : false;
           safeWalkRatio = accidentalSlip ? 0.98 : safeStealthRatio / boostMult;
         }
-        bot.aiMoveRatio = clamp(safeWalkRatio, 0.1, 1.0);
+        bot.aiMoveRatio = clamp(safeWalkRatio, 0.2, 1.0);
       }
     }
 
@@ -7997,14 +8072,14 @@ export class ArenaEngine {
       mem.pendingShotExpire = 0;
     } else if (mem.pendingShotAngle !== null) {
       const libFleeConflict =
-        ((urgentLibTntEscape || (emergencySprintMonster && monsterDist < 185)) &&
-          Math.abs(normalizeAngle(mem.pendingShotAngle - bot.aiTargetAngle)) > 0.95 &&
+        ((urgentLibTntEscape || (emergencySprintMonster && monsterDist < 200) || monsterBeingTargeted) &&
           mem.pendingShotTargetId !== null) ||
-        ((urgentLibTntEscape || (sameFloorMonster && monsterDist < 125)) &&
-          Math.abs(normalizeAngle(mem.pendingShotAngle - bot.angle)) > 0.6);
+        ((urgentLibTntEscape || (sameFloorMonster && monsterDist < 155)) &&
+          Math.abs(normalizeAngle(mem.pendingShotAngle - bot.angle)) > 0.5);
       if (libFleeConflict) {
         mem.pendingShotAngle = null;
         mem.pendingShotExpire = 0;
+        mem.pendingShotTargetId = null;
       }
     }
 
@@ -8015,20 +8090,22 @@ export class ArenaEngine {
       stickAngle = mem.pendingShotAngle;
       const turnDelta = Math.abs(normalizeAngle(mem.pendingShotAngle - bot.aiTargetAngle));
       if (inHearing && diff !== 'CHILL') {
-        // Hold near-still while firing in hearing range so 35 px/s gun recoil never trips Figure's stealth threshold
-        stickMagnitude = 0.03;
+        // Keep moving smoothly below recoil-safe threshold (never freeze at 0.03 while turning to aim!)
+        const recoilSafeCap = Math.max(0.22, (figureProfile.stealthThreshold - 0.2) / boostMult);
+        const flickRatio = clamp(Math.min(bot.aiMoveRatio, recoilSafeCap), 0.2, 1);
+        stickMagnitude = turnDelta <= 0.65 ? 0.08 + flickRatio * 0.92 : 0.26;
       } else if (turnDelta <= 0.55 && !urgentLibTntEscape && !emergencySprintMonster && bot.aiMoveRatio > 0.05) {
         const flickRatio = clamp(Math.min(bot.aiMoveRatio, 0.88), 0, 1);
         stickMagnitude = 0.08 + flickRatio * 0.92;
       } else {
-        stickMagnitude = 0.07;
+        stickMagnitude = 0.24;
       }
     }
 
-    // Physical inertia stealth brake: release stick if speed exceeds threshold (e.g. right after corner burst sprint)
-    if (inHearing && !emergencySprintMonster && !urgentLibTntEscape && diff !== 'CHILL') {
+    // Physical inertia stealth brake: release stick ONLY if residual sprint inertia still exceeds stealthThreshold - 0.02
+    if (inHearing && !emergencySprintMonster && !urgentLibTntEscape && diff !== 'CHILL' && monsterDist > 120) {
       const physRatio = Math.hypot(bot.vx, bot.vy) / Math.max(1, this.getPlayerMaxSpeed());
-      if (physRatio >= figureProfile.stealthThreshold - 0.05) {
+      if (physRatio >= figureProfile.stealthThreshold - 0.02) {
         stickMagnitude = 0;
       }
     }
@@ -8064,6 +8141,7 @@ export class ArenaEngine {
       }
       mem.pendingShotAngle = null;
       mem.pendingShotExpire = 0;
+      mem.pendingShotTargetId = null;
       if (canFireNow) {
         this.fireBullet(bot);
         bot.aiHoldShotTimer =
@@ -8078,6 +8156,9 @@ export class ArenaEngine {
               : diff === 'TACTICAL'
                 ? 0.82
                 : 1.25;
+      } else {
+        // Brief cooldown when a planned shot aborts so bots never freeze in a re-aim loop!
+        bot.aiHoldShotTimer = 0.25;
       }
     }
   }
