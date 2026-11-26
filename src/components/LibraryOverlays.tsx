@@ -169,6 +169,8 @@ export function LibraryOverlays({
   const monster = libraryState.monster;
   const monsterStunned = monster.stunTimer > 0;
   const monsterRaging = !monsterStunned && monster.mode === 'rage';
+  const myDoor = libraryState.doors.find((d) => d.playerId === localPlayerId);
+  const doorLockout = Math.max(0, myDoor?.lockoutTimer ?? 0);
 
   const handleStepWheel = (idx: number, delta: number) => {
     const cur = localDigits[idx] ?? 0;
@@ -341,16 +343,22 @@ export function LibraryOverlays({
               <span>Collect Book [E]</span>
             </button>
           )}
-          {canUnlockDoor && (
-            <button
-              type="button"
-              onClick={onOpenLock}
-              className="min-h-12 inline-flex items-center gap-2 rounded-xl border border-emerald-300/70 bg-emerald-500/95 hover:bg-emerald-400 active:scale-[0.98] px-5 py-2.5 text-sm font-extrabold text-slate-950 shadow-xl transition-all cursor-pointer whitespace-nowrap"
-            >
-              <KeyRound className="w-4 h-4 shrink-0" />
-              <span>Unlock Door [E]</span>
-            </button>
-          )}
+          {canUnlockDoor &&
+            (doorLockout > 0 ? (
+              <div className="min-h-12 inline-flex items-center gap-2 rounded-xl border border-rose-400/75 bg-rose-950/90 px-4 py-2.5 text-sm font-extrabold text-rose-200 shadow-xl whitespace-nowrap animate-pulse">
+                <Lock className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>Door Jammed ({doorLockout.toFixed(1)}s)</span>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={onOpenLock}
+                className="min-h-12 inline-flex items-center gap-2 rounded-xl border border-emerald-300/70 bg-emerald-500/95 hover:bg-emerald-400 active:scale-[0.98] px-5 py-2.5 text-sm font-extrabold text-slate-950 shadow-xl transition-all cursor-pointer whitespace-nowrap"
+              >
+                <KeyRound className="w-4 h-4 shrink-0" />
+                <span>Unlock Door [E]</span>
+              </button>
+            ))}
         </div>
       )}
 

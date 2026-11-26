@@ -92,6 +92,7 @@ export interface LibraryDoor {
   side: 'N' | 'E' | 'S' | 'W';
   x: number;
   y: number;
+  lockoutTimer?: number;
 }
 
 export interface LibraryClue {
@@ -551,7 +552,9 @@ export type EngineEventType =
   | 'monster_kill'
   | 'lock_dial'
   | 'lock_error'
-  | 'door_unlock';
+  | 'door_alarm'
+  | 'door_unlock'
+  | 'ice_slip';
 
 export interface EngineEvent {
   type: EngineEventType;

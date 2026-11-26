@@ -244,8 +244,14 @@ function playEngineEvents(
             onLocalLockError?.();
           }
           break;
+        case 'door_alarm':
+          sound.playDoorAlarm(spatial);
+          break;
         case 'door_unlock':
           sound.playDoorUnlock(spatial);
+          break;
+        case 'ice_slip':
+          sound.playIceSlip(spatial);
           break;
         case 'killstreak': {
           // Strictly private: audible and visible ONLY to local player(s) who scored the kill
@@ -741,6 +747,8 @@ export default function App() {
       requestLandscapeLock(true);
       if (!isPractice && nextCfg.mapId === 'library') {
         sound.preloadLibraryAudio();
+      } else if (!isPractice && nextCfg.mapId === 'winter_tussle') {
+        sound.preloadIceSlipAudio();
       } else if (!isPractice && mapDef.immersive) {
         sound.preloadImmersiveTrack(mapDef.floorTheme);
       }
@@ -967,6 +975,9 @@ export default function App() {
             return;
           }
           if (libUi.canUnlockDoor) {
+            const mySlot = isOnlineRef.current ? roomStateRef.current?.mySlot ?? 0 : 0;
+            const myDoor = libUi.state.doors.find((d) => d.playerId === mySlot);
+            if ((myDoor?.lockoutTimer ?? 0) > 0) return;
             setLibraryLockPlayerId(0);
             setLibraryLockOpen(true);
             return;
@@ -1311,9 +1322,10 @@ export default function App() {
           setSpectateTargetId(null);
         }
 
-        const lockOwnerAlive =
-          libraryLockPlayerIdRef.current === 1 ? p2Alive : pAlive;
-        if (!lockOwnerAlive && libraryLockOpenRef.current) {
+        const lockOwnerId = libraryLockPlayerIdRef.current;
+        const lockOwnerAlive = lockOwnerId === 1 ? p2Alive : pAlive;
+        const lockOwnerDoor = libState.doors.find((d) => d.playerId === lockOwnerId);
+        if ((!lockOwnerAlive || (lockOwnerDoor?.lockoutTimer ?? 0) > 0) && libraryLockOpenRef.current) {
           setLibraryLockOpen(false);
         }
 
@@ -1339,6 +1351,11 @@ export default function App() {
           PLAYER_SPEED_MULTS[activeCfgForSpeed?.modifiers?.playerSpeed ?? 'MEDIUM'] ?? 1;
         const effMaxSpeed = Math.max(1, PLAYER_MAX_SPEED * spdMult);
 
+        const prevDoorLockout = prevUi?.state.doors.find((d) => d.playerId === localId)?.lockoutTimer ?? 0;
+        const curDoorLockout = door?.lockoutTimer ?? 0;
+        const doorLockoutFlipped = (prevDoorLockout > 0) !== (curDoorLockout > 0);
+        const doorLockoutTicked = Math.ceil(prevDoorLockout * 10) !== Math.ceil(curDoorLockout * 10);
+
         libHudAccumulator += dt;
         const stateFlipped =
           !prevUi ||
@@ -1346,6 +1363,7 @@ export default function App() {
           prevUi.canUnlockDoor !== canUnlockDoor ||
           prevUi.canCollectBookP2 !== canCollectBookP2 ||
           prevUi.canUnlockDoorP2 !== canUnlockDoorP2 ||
+          doorLockoutFlipped ||
           (prevUi.state.introTimer > 0 && libState.introTimer <= 0) ||
           prevUi.state.playerProgress.find((pp) => pp.playerId === localId)?.collectedCount !==
             prog?.collectedCount ||
@@ -1364,7 +1382,11 @@ export default function App() {
         const introActive = libState.introTimer > 0;
 
         const hudInterval = introActive ? 0.1 : 0.08;
-        if (stateFlipped || (libHudAccumulator >= hudInterval && (introActive || speedPctChanged || stunSecChanged))) {
+        if (
+          stateFlipped ||
+          (libHudAccumulator >= hudInterval &&
+            (introActive || speedPctChanged || stunSecChanged || doorLockoutTicked))
+        ) {
           libHudAccumulator = 0;
           renderedLibraryUiRef.current = nextLibUi;
           setLibraryUi(nextLibUi);

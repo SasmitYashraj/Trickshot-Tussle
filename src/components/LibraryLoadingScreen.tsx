@@ -74,7 +74,7 @@ export function LibraryLoadingScreen({
             </svg>
           </div>
 
-          <ul className="space-y-1 sm:space-y-2 text-slate-200">
+          <ul className="space-y-1 sm:space-y-1.5 text-slate-200">
             <li className="flex items-center gap-1.5 sm:gap-2.5">
               <span className="h-1.5 w-1.5 sm:h-2 sm:w-2 rounded-full bg-amber-400 shrink-0" />
               <span className="font-display text-[11px] sm:text-sm md:text-base font-bold text-amber-100 leading-tight sm:leading-snug">
@@ -103,6 +103,13 @@ export function LibraryLoadingScreen({
               <span className="h-1.5 w-1.5 sm:h-2 sm:w-2 rounded-full bg-orange-500 shrink-0" />
               <span className="font-display text-[11px] sm:text-sm md:text-base font-bold text-orange-200 leading-tight sm:leading-snug">
                 Nitro or TNT blasts stun Figure for <span className="text-amber-300">{stunLabel}</span>
+              </span>
+            </li>
+
+            <li className="flex items-center gap-1.5 sm:gap-2.5">
+              <span className="h-1.5 w-1.5 sm:h-2 sm:w-2 rounded-full bg-red-400 shrink-0" />
+              <span className="font-display text-[11px] sm:text-sm md:text-base font-bold text-red-200 leading-tight sm:leading-snug">
+                Shoot a door to <span className="text-rose-300">jam code 3s</span> &amp; trigger a Figure alarm
               </span>
             </li>
 

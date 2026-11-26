@@ -3676,40 +3676,95 @@ function drawLibraryPillar(ctx: CanvasRenderingContext2D, wall: WallRect, world?
     { playerId: 3, side: 'S' as const, x: cx, y: wall.y + wall.h },
   ];
 
+  const pulseNow = world?.elapsedTime ?? (typeof performance !== 'undefined' ? performance.now() * 0.001 : 0);
+
   for (const door of doors) {
     const owner = world?.players.find((p) => p.id === door.playerId);
     const prog = libState?.playerProgress.find((pp) => pp.playerId === door.playerId);
     const trimColor = owner?.color ?? fallbackColors[door.playerId % fallbackColors.length];
     const unlocked = Boolean(prog?.unlocked);
+    const lockout = Math.max(0, door.lockoutTimer ?? 0);
+    const jammed = !unlocked && lockout > 0;
+    const alarmPulse = jammed ? 0.5 + 0.5 * Math.sin(pulseNow * 16) : 0;
 
     if (door.side === 'W' || door.side === 'E') {
       const dx = door.side === 'W' ? wall.x - 4 : wall.x + wall.w - 10;
-      ctx.fillStyle = unlocked ? '#10B981' : '#5C2912';
-      ctx.strokeStyle = trimColor;
-      ctx.lineWidth = 3;
+      ctx.fillStyle = unlocked ? '#10B981' : jammed ? (alarmPulse > 0.5 ? '#B91C1C' : '#7F1D1D') : '#5C2912';
+      ctx.strokeStyle = jammed ? '#F87171' : trimColor;
+      ctx.lineWidth = jammed ? 3.5 : 3;
       ctx.beginPath();
       ctx.roundRect(dx, cy - 34, 14, 68, 3);
       ctx.fill();
       ctx.stroke();
 
-      ctx.fillStyle = unlocked ? '#A7F3D0' : '#FBBF24';
-      ctx.beginPath();
-      ctx.arc(dx + 7, cy + 16, 3.2, 0, Math.PI * 2);
-      ctx.fill();
+      if (jammed) {
+        ctx.strokeStyle = '#FCA5A5';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(dx + 2, cy - 26);
+        ctx.lineTo(dx + 12, cy + 26);
+        ctx.moveTo(dx + 12, cy - 26);
+        ctx.lineTo(dx + 2, cy + 26);
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = unlocked ? '#A7F3D0' : '#FBBF24';
+        ctx.beginPath();
+        ctx.arc(dx + 7, cy + 16, 3.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
     } else {
       const dy = door.side === 'N' ? wall.y - 4 : wall.y + wall.h - 10;
-      ctx.fillStyle = unlocked ? '#10B981' : '#5C2912';
-      ctx.strokeStyle = trimColor;
-      ctx.lineWidth = 3;
+      ctx.fillStyle = unlocked ? '#10B981' : jammed ? (alarmPulse > 0.5 ? '#B91C1C' : '#7F1D1D') : '#5C2912';
+      ctx.strokeStyle = jammed ? '#F87171' : trimColor;
+      ctx.lineWidth = jammed ? 3.5 : 3;
       ctx.beginPath();
       ctx.roundRect(cx - 34, dy, 68, 14, 3);
       ctx.fill();
       ctx.stroke();
 
-      ctx.fillStyle = unlocked ? '#A7F3D0' : '#FBBF24';
+      if (jammed) {
+        ctx.strokeStyle = '#FCA5A5';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(cx - 26, dy + 2);
+        ctx.lineTo(cx + 26, dy + 12);
+        ctx.moveTo(cx + 26, dy + 2);
+        ctx.lineTo(cx - 26, dy + 12);
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = unlocked ? '#A7F3D0' : '#FBBF24';
+        ctx.beginPath();
+        ctx.arc(cx + 16, dy + 7, 3.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    if (jammed) {
+      const badgeX =
+        door.side === 'W' ? wall.x - 28 : door.side === 'E' ? wall.x + wall.w + 28 : cx;
+      const badgeY =
+        door.side === 'N' ? wall.y - 26 : door.side === 'S' ? wall.y + wall.h + 26 : cy;
+      ctx.save();
+      ctx.translate(badgeX, badgeY);
+      const beaconR = 26 + alarmPulse * 10;
+      const alarmGlow = ctx.createRadialGradient(0, 0, 2, 0, 0, beaconR);
+      alarmGlow.addColorStop(0, `rgba(239, 68, 68, ${0.42 + alarmPulse * 0.3})`);
+      alarmGlow.addColorStop(1, 'rgba(239, 68, 68, 0)');
+      ctx.fillStyle = alarmGlow;
       ctx.beginPath();
-      ctx.arc(cx + 16, dy + 7, 3.2, 0, Math.PI * 2);
+      ctx.arc(0, 0, beaconR, 0, Math.PI * 2);
       ctx.fill();
+
+      ctx.fillStyle = '#FECACA';
+      ctx.strokeStyle = '#450A0A';
+      ctx.lineWidth = 2.8;
+      ctx.font = '900 10px "JetBrains Mono", monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const label = `JAM ${lockout.toFixed(1)}s`;
+      ctx.strokeText(label, 0, 0);
+      ctx.fillText(label, 0, 0);
+      ctx.restore();
     }
 
     if (unlocked) {

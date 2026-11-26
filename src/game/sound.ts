@@ -63,6 +63,10 @@ class SoundEngine {
   private libraryPreloadStarted = false;
   private libraryRawCache = new Map<string, ArrayBuffer>();
   private libraryDecodeInFlight = new Set<string>();
+  private iceSlipBuffer: AudioBuffer | null = null;
+  private iceSlipRaw: ArrayBuffer | null = null;
+  private iceSlipLoading = false;
+  private iceSlipDecoding = false;
   private activeRoarSource: AudioBufferSourceNode | null = null;
   private activeStepSources = new Set<AudioBufferSourceNode>();
   private activeStepOscs = new Set<OscillatorNode>();
@@ -364,6 +368,7 @@ class SoundEngine {
   public unlock() {
     this.ensureCtx();
     this.preloadLibraryAudio();
+    this.preloadIceSlipAudio();
   }
 
   public setImmersiveAmbient(active: boolean, extraDark: boolean) {
@@ -2873,6 +2878,114 @@ class SoundEngine {
       osc.start(t0);
       osc.stop(t0 + 0.58);
     });
+  }
+
+  /** Preload & decode downloaded realistic ice-slipping SFX (/assets/sfx/ice_slip.mp3) */
+  public preloadIceSlipAudio() {
+    if (typeof window === 'undefined') return;
+    if (this.iceSlipBuffer) return;
+    const decodeRaw = () => {
+      if (this.iceSlipBuffer || !this.iceSlipRaw || this.iceSlipDecoding) return;
+      const ctx = this.ensureCtx();
+      if (!ctx) return;
+      this.iceSlipDecoding = true;
+      ctx
+        .decodeAudioData(this.iceSlipRaw.slice(0))
+        .then((decoded) => {
+          this.iceSlipBuffer = decoded;
+        })
+        .catch(() => {})
+        .finally(() => {
+          this.iceSlipDecoding = false;
+        });
+    };
+
+    if (this.iceSlipRaw) {
+      decodeRaw();
+      return;
+    }
+    if (this.iceSlipLoading) return;
+    this.iceSlipLoading = true;
+    fetch('/assets/sfx/ice_slip.mp3')
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.arrayBuffer();
+      })
+      .then((buf) => {
+        this.iceSlipRaw = buf;
+        decodeRaw();
+      })
+      .catch(() => {})
+      .finally(() => {
+        this.iceSlipLoading = false;
+      });
+  }
+
+  /** Realistic ice blade / foot slip & frost skid sound on Winter Tussle ice */
+  public playIceSlip(opts?: SpatialAudioOpts) {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    this.preloadIceSlipAudio();
+    if (!this.iceSlipBuffer) return;
+
+    const now = ctx.currentTime;
+    const { node: out } = this.createOutputNode(ctx, {
+      volume: Math.min(1.15, (opts?.volume ?? 1) * 0.85),
+      pan: opts?.pan ?? 0,
+    });
+    const src = ctx.createBufferSource();
+    src.buffer = this.iceSlipBuffer;
+    src.playbackRate.setValueAtTime(0.94 + Math.random() * 0.14, now);
+
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.001, now);
+    g.gain.linearRampToValueAtTime(0.9, now + 0.025);
+    g.gain.setValueAtTime(0.9, now + Math.max(0.06, this.iceSlipBuffer.duration - 0.28));
+    g.gain.exponentialRampToValueAtTime(0.001, now + this.iceSlipBuffer.duration);
+
+    src.connect(g);
+    g.connect(out);
+    src.start(now);
+  }
+
+  /** 3-second central pillar security klaxon alarm when a door is shot & jammed */
+  public playDoorAlarm(opts?: SpatialAudioOpts) {
+    const ctx = this.ensureCtx();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const { node: out } = this.createOutputNode(ctx, {
+      volume: Math.min(1.25, (opts?.volume ?? 1) * 0.92),
+      pan: opts?.pan ?? 0,
+    });
+
+    // Metallic bullet ricochet clang on the brass lock + 6 alternating alarm chirps over 3 seconds
+    this.spawnNoiseBurst(ctx, out, now, 0.065, 'bandpass', 2600, 1250, 2.4, 0.25, 2.0);
+    for (let i = 0; i < 6; i++) {
+      const t0 = now + i * 0.48;
+      const hi = i % 2 === 0 ? 960 : 720;
+      const lo = i % 2 === 0 ? 740 : 560;
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(hi, t0);
+      osc.frequency.exponentialRampToValueAtTime(lo, t0 + 0.24);
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(1250, t0);
+      filter.Q.setValueAtTime(1.6, t0);
+
+      const peak = 0.16 * (1 - i * 0.06);
+      g.gain.setValueAtTime(0.001, t0);
+      g.gain.linearRampToValueAtTime(peak, t0 + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0008, t0 + 0.28);
+
+      osc.connect(filter);
+      filter.connect(g);
+      g.connect(out);
+      osc.start(t0);
+      osc.stop(t0 + 0.3);
+    }
   }
 }
 
