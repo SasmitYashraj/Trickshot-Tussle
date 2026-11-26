@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, Crosshair, Eye, Pause, Play, RotateCw, Settings, Undo2, Volume2, VolumeX } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Crosshair, Eye, Pause, Play, Settings, ShieldAlert, Undo2, Volume2, VolumeX } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ColorSelectScreen } from './components/ColorSelectScreen';
 import { GameOverModal } from './components/GameOverModal';
@@ -29,6 +29,7 @@ import { sound } from './game/sound';
 import {
   type ControlScheme,
   DEFAULT_MATCH_MODIFIERS,
+  type DodgeWaveMode,
   type EngineEvent,
   type FloorLevel,
   type GameSnapshot,
@@ -101,7 +102,12 @@ function playEngineEvents(
   listenerX?: number,
   listenerY?: number,
   listenerIds: number[] = [0],
-  onLocalKillStreak?: (streak: number, mode: MatchMode | 'PRACTICE', playerId?: number) => void,
+  onLocalKillStreak?: (
+    streak: number,
+    mode: MatchMode | 'PRACTICE' | 'DODGE_PRACTICE',
+    playerId?: number,
+    closeDodge?: boolean
+  ) => void,
   onLocalSelfKill?: (playerId?: number) => void,
   listenerFloor: FloorLevel = 0,
   onLocalLockError?: () => void,
@@ -254,12 +260,14 @@ function playEngineEvents(
           sound.playIceSlip(spatial);
           break;
         case 'killstreak': {
-          // Strictly private: audible and visible ONLY to local player(s) who scored the kill
+          // Strictly private: audible and visible ONLY to local player(s) who scored the kill/dodge
           if (evt.playerId !== undefined && localSet.has(evt.playerId)) {
             const count = evt.value ?? 1;
-            const streakMode: MatchMode | 'PRACTICE' = evt.streakKind ?? evt.mode ?? 'BRAWL';
-            sound.playKillStreak(count, streakMode);
-            onLocalKillStreak?.(count, streakMode, evt.playerId);
+            const streakMode: MatchMode | 'PRACTICE' | 'DODGE_PRACTICE' =
+              evt.streakKind ?? evt.mode ?? 'BRAWL';
+            const closeDodge = Boolean(evt.closeDodge);
+            sound.playKillStreak(count, streakMode, closeDodge);
+            onLocalKillStreak?.(count, streakMode, evt.playerId, closeDodge);
           }
           break;
         }
@@ -321,7 +329,8 @@ function worldToSnapshot(world: WorldSyncState, localSlot: number): GameSnapshot
 function getHudSnapshotSignature(snap: GameSnapshot): string {
   const sec = Math.max(0, Math.floor(snap.elapsedTime));
   const pReload = snap.practiceReloadTimer ? Math.ceil(snap.practiceReloadTimer * 15) : 0;
-  let s = `${sec}|${snap.winnerId ?? 'n'}|${snap.winnerTeam ?? 'n'}|${snap.practiceTargetMode ?? ''}|${pReload}|${snap.practiceStreak ?? 0}|${snap.practiceLastSplitMs ?? ''}|${snap.practiceAvgSplitMs ?? ''}|${snap.practicePrevReactionMs ?? ''}`;
+  const dodgeBullets = snap.dodgePractice ? snap.activeBullets : 0;
+  let s = `${sec}|${snap.winnerId ?? 'n'}|${snap.winnerTeam ?? 'n'}|${snap.practiceTargetMode ?? ''}|${pReload}|${snap.practiceStreak ?? 0}|${snap.practiceLastSplitMs ?? ''}|${snap.practiceAvgSplitMs ?? ''}|${snap.practicePrevReactionMs ?? ''}|${snap.dodgePractice ? 1 : 0}|${snap.dodgeWaveMode ?? ''}|${snap.dodgeCount ?? 0}|${snap.dodgeStreak ?? 0}|${snap.dodgeBestStreak ?? 0}|${dodgeBullets}`;
   for (const p of snap.players) {
     const stun = p.stunTimer > 0 ? Math.ceil(p.stunTimer * 2) : 0;
     const resp = p.respawnTimer > 0 ? Math.ceil(p.respawnTimer * 2) : 0;
@@ -347,9 +356,6 @@ export default function App() {
     loadGeneralSettings()
   );
   const [pauseSettingsOpen, setPauseSettingsOpen] = useState(false);
-  const [isPortraitViewport, setIsPortraitViewport] = useState<boolean>(() =>
-    typeof window !== 'undefined' ? window.innerHeight > window.innerWidth : false
-  );
   const [muted, setMuted] = useState(false);
   const [hasUsedJoystick, setHasUsedJoystick] = useState(false);
   const [controlScheme, setControlScheme] = useState<ControlScheme>(() => {
@@ -370,9 +376,10 @@ export default function App() {
   const [killStreak, setKillStreak] = useState<{
     count: number;
     expiresAt: number;
-    mode: MatchMode | 'PRACTICE';
+    mode: MatchMode | 'PRACTICE' | 'DODGE_PRACTICE';
     durationMs: number;
     playerId?: number;
+    closeDodge?: boolean;
   } | null>(null);
   const [selfKillPopup, setSelfKillPopup] = useState<{ expiresAt: number; playerId?: number } | null>(null);
   const [streakNow, setStreakNow] = useState<number>(0);
@@ -442,10 +449,6 @@ export default function App() {
     }, 680);
   }, []);
 
-  const isLandscapeBlocked =
-    isPortraitViewport && (gameState === 'PLAYING' || gameState === 'PAUSED');
-  const isLandscapeBlockedRef = useRef<boolean>(isLandscapeBlocked);
-
   useEffect(() => {
     configRef.current = config;
     saveMatchConfig(config);
@@ -455,39 +458,6 @@ export default function App() {
     saveGeneralSettings(generalSettings);
     sound.setMusicEnabled(generalSettings.musicEnabled);
   }, [generalSettings]);
-
-  useEffect(() => {
-    isLandscapeBlockedRef.current = isLandscapeBlocked;
-    if (isLandscapeBlocked) {
-      pressedKeysRef.current.clear();
-      cursorScreenRef.current = null;
-      engineRef.current.releaseJoystick();
-      engineRef.current.releaseJoystick2();
-      engineRef.current.setHumanCursorInput(false, 0, 0);
-      engineRef.current.setPlayer2CursorInput(false, 0, 0);
-      onlineJoystickRef.current.active = false;
-      onlineJoystickRef.current.magnitude = 0;
-      if (isOnlineRef.current) {
-        clientRef.current?.sendJoystickInput(false, 0, 0);
-      }
-    }
-  }, [isLandscapeBlocked]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const syncOrientation = () => {
-      setIsPortraitViewport(window.innerHeight > window.innerWidth);
-    };
-    syncOrientation();
-    window.addEventListener('resize', syncOrientation);
-    window.addEventListener('orientationchange', syncOrientation);
-    window.screen?.orientation?.addEventListener?.('change', syncOrientation);
-    return () => {
-      window.removeEventListener('resize', syncOrientation);
-      window.removeEventListener('orientationchange', syncOrientation);
-      window.screen?.orientation?.removeEventListener?.('change', syncOrientation);
-    };
-  }, []);
 
   const requestLandscapeLock = useCallback((allowFullscreen = false) => {
     if (typeof window === 'undefined') return;
@@ -664,16 +634,25 @@ export default function App() {
             listenerP?.x,
             listenerP?.y,
             [mySlot],
-            (streak, streakMode, playerId) => {
+            (streak, streakMode, playerId, closeDodge) => {
               const nowMs = performance.now();
               const durationMs =
                 streakMode === 'ELIMINATION'
                   ? 3400
                   : streakMode === 'PRACTICE'
                     ? PRACTICE_STREAK_WINDOW * 1000
-                    : KILL_STREAK_WINDOW * 1000;
+                    : streakMode === 'DODGE_PRACTICE'
+                      ? 3600
+                      : KILL_STREAK_WINDOW * 1000;
               setStreakNow(nowMs);
-              setKillStreak({ count: streak, expiresAt: nowMs + durationMs, mode: streakMode, durationMs, playerId });
+              setKillStreak({
+                count: streak,
+                expiresAt: nowMs + durationMs,
+                mode: streakMode,
+                durationMs,
+                playerId,
+                closeDodge,
+              });
             },
             (playerId) => {
               setSelfKillPopup({ expiresAt: performance.now() + 2800, playerId });
@@ -727,29 +706,32 @@ export default function App() {
     (overrideConfig?: MatchConfig) => {
       const baseCfg = overrideConfig ?? config;
       const isPractice = Boolean(baseCfg.targetPractice);
+      const isDodge = !isPractice && Boolean(baseCfg.dodgePractice);
+      const isAnyPractice = isPractice || isDodge;
       const rawMapDef = ARENA_MAPS[baseCfg.mapId];
       const effectiveMapId =
-        (isPractice || baseCfg.local2P) && rawMapDef.immersive ? 'crossroads' : baseCfg.mapId;
+        (isAnyPractice || baseCfg.local2P) && rawMapDef.immersive ? 'crossroads' : baseCfg.mapId;
       const mapDef = ARENA_MAPS[effectiveMapId];
       const nextCfg: MatchConfig = {
         ...baseCfg,
         mapId: effectiveMapId,
-        local2P: isPractice ? false : baseCfg.local2P,
-        immersive: isPractice ? false : mapDef.immersive,
-        extraDark: isPractice ? false : mapDef.immersive ? Boolean(baseCfg.extraDark) : false,
+        local2P: isAnyPractice ? false : baseCfg.local2P,
+        immersive: isAnyPractice ? false : mapDef.immersive,
+        extraDark: isAnyPractice ? false : mapDef.immersive ? Boolean(baseCfg.extraDark) : false,
         targetPractice: isPractice,
+        dodgePractice: isDodge,
       };
-      if (!isPractice && effectiveMapId !== baseCfg.mapId) {
+      if (!isAnyPractice && effectiveMapId !== baseCfg.mapId) {
         setConfig(nextCfg);
       }
-      setSoloRunConfig(isPractice ? nextCfg : null);
+      setSoloRunConfig(isAnyPractice ? nextCfg : null);
       sound.unlock();
       requestLandscapeLock(true);
-      if (!isPractice && nextCfg.mapId === 'library') {
+      if (!isAnyPractice && nextCfg.mapId === 'library') {
         sound.preloadLibraryAudio();
-      } else if (!isPractice && nextCfg.mapId === 'winter_tussle') {
+      } else if (!isAnyPractice && nextCfg.mapId === 'winter_tussle') {
         sound.preloadIceSlipAudio();
-      } else if (!isPractice && mapDef.immersive) {
+      } else if (!isAnyPractice && mapDef.immersive) {
         sound.preloadImmersiveTrack(mapDef.floorTheme);
       }
       setIsOnline(false);
@@ -793,7 +775,27 @@ export default function App() {
         extraDark: false,
         teamMode: 'FFA',
         targetPractice: true,
+        dodgePractice: false,
         practiceTargetMode,
+      });
+    },
+    [config, startSoloMatch]
+  );
+
+  const startDodgePractice = useCallback(
+    (dodgeWaveMode: DodgeWaveMode, mapId: MatchConfig['mapId']) => {
+      setConfig((prev) => ({ ...prev, dodgeWaveMode }));
+      startSoloMatch({
+        ...config,
+        mapId,
+        difficulty: 'RUTHLESS',
+        local2P: false,
+        immersive: false,
+        extraDark: false,
+        teamMode: 'FFA',
+        targetPractice: false,
+        dodgePractice: true,
+        dodgeWaveMode,
       });
     },
     [config, startSoloMatch]
@@ -1146,7 +1148,7 @@ export default function App() {
       } else {
         const engine = engineRef.current;
         const isLocal2PTick = Boolean(engine.config.local2P);
-        if (gameStateRef.current === 'PLAYING' && !isLandscapeBlockedRef.current) {
+        if (gameStateRef.current === 'PLAYING') {
           engine.update(dt);
           const evts = engine.drainEvents();
           if (evts.length > 0) {
@@ -1180,14 +1182,16 @@ export default function App() {
               listenerX,
               listenerY,
               isLocal2PTick ? [0, 1] : [0],
-              (streak, streakMode, playerId) => {
+              (streak, streakMode, playerId, closeDodge) => {
                 const nowMs = performance.now();
                 const durationMs =
                   streakMode === 'ELIMINATION'
                     ? 3400
                     : streakMode === 'PRACTICE'
                       ? PRACTICE_STREAK_WINDOW * 1000
-                      : KILL_STREAK_WINDOW * 1000;
+                      : streakMode === 'DODGE_PRACTICE'
+                        ? 3600
+                        : KILL_STREAK_WINDOW * 1000;
                 setStreakNow(nowMs);
                 setKillStreak({
                   count: streak,
@@ -1195,6 +1199,7 @@ export default function App() {
                   mode: streakMode,
                   durationMs,
                   playerId,
+                  closeDodge,
                 });
               },
               (playerId) => {
@@ -1453,7 +1458,6 @@ export default function App() {
       const { width, height } = canvasSizeRef.current;
       if (
         gameStateRef.current === 'PLAYING' &&
-        !isLandscapeBlockedRef.current &&
         controlSchemeRef.current === 'CURSOR_SPACE' &&
         worldToRender
       ) {
@@ -1640,7 +1644,24 @@ export default function App() {
           const activeCfg = isOnlineRef.current
             ? roomStateRef.current?.config ?? DEFAULT_ONLINE_CONFIG
             : engineRef.current.config;
-          if (activeCfg.mode === 'ELIMINATION') {
+          if (!isOnlineRef.current && activeCfg.dodgePractice) {
+            const pSnap = engineRef.current.getSnapshot(0);
+            const dStreak = pSnap.dodgeStreak ?? 0;
+            const waveModeBoost =
+              activeCfg.dodgeWaveMode === 'THREE'
+                ? 0.22
+                : activeCfg.dodgeWaveMode === 'TWO'
+                  ? 0.14
+                  : 0.06;
+            const liveBulletBoost = worldToRender.bullets.length > 0 ? 0.16 : 0;
+            normalTension = Math.min(
+              1,
+              0.24 + waveModeBoost + Math.min(0.45, dStreak * 0.065) + liveBulletBoost
+            );
+          } else if (!isOnlineRef.current && activeCfg.targetPractice) {
+            const pSnap = engineRef.current.getSnapshot(0);
+            normalTension = Math.min(1, 0.18 + Math.min(0.68, (pSnap.practiceStreak ?? 0) * 0.075));
+          } else if (activeCfg.mode === 'ELIMINATION') {
             const showdownBoost = deadPlayers >= totalPlayers - 2 ? 0.14 : 0;
             normalTension = Math.min(1, Math.max(deadRatio * 0.78, timeBuild * 0.55) + deadRatio * 0.22 + showdownBoost);
           } else {
@@ -1827,8 +1848,9 @@ export default function App() {
           setColorSelectSlot(slot === 2 ? 2 : 1);
           setMenuStep('COLOR_SELECT');
         }}
-        onStartSolo={() => startSoloMatch({ ...config, targetPractice: false })}
+        onStartSolo={() => startSoloMatch({ ...config, targetPractice: false, dodgePractice: false })}
         onStartTargetPractice={startTargetPractice}
+        onStartDodgePractice={startDodgePractice}
         onCreateOnlineRoom={handleCreateOnlineRoom}
         onJoinOnlineRoom={handleJoinOnlineRoom}
       />
@@ -1856,16 +1878,24 @@ export default function App() {
 
   const activeConfig = isOnline && roomState ? roomState.config : soloRunConfig ?? config;
   const isTargetPractice = !isOnline && Boolean(activeConfig.targetPractice);
+  const isDodgePractice = !isOnline && !isTargetPractice && Boolean(activeConfig.dodgePractice);
+  const isAnyPractice = isTargetPractice || isDodgePractice;
   const practiceModeLabel =
     activeConfig.practiceTargetMode === 'STATIC'
       ? 'Static Targets'
       : activeConfig.practiceTargetMode === 'MOVING'
         ? 'Moving Targets'
         : 'Static & Moving';
+  const dodgeModeLabel =
+    activeConfig.dodgeWaveMode === 'THREE'
+      ? '3 at a Time'
+      : activeConfig.dodgeWaveMode === 'TWO'
+        ? '2 at a Time'
+        : '1 at a Time';
   const isRightStick = generalSettings.joystickPosition === 'RIGHT';
-  const isLocal2P = !isOnline && !isTargetPractice && Boolean(activeConfig.local2P);
+  const isLocal2P = !isOnline && !isAnyPractice && Boolean(activeConfig.local2P);
   const local2PBots = !isLocal2P || activeConfig.local2PIncludeBots !== false;
-  const is2v2 = ((activeConfig.teamMode ?? snapshot.teamMode ?? 'FFA') === '2V2') && local2PBots && !isTargetPractice;
+  const is2v2 = ((activeConfig.teamMode ?? snapshot.teamMode ?? 'FFA') === '2V2') && local2PBots && !isAnyPractice;
   const isHost = isOnline && roomState ? roomState.mySlot === roomState.hostSlot : true;
   const localSlot = isOnline && roomState ? roomState.mySlot : 0;
   const localSnap = snapshot.players.find((p) => p.id === localSlot);
@@ -1921,6 +1951,24 @@ export default function App() {
               <span aria-hidden="true">·</span>
               <span className="font-mono-tabular text-violet-300">
                 Prev Reaction {snapshot.practicePrevReactionMs != null ? `${snapshot.practicePrevReactionMs}ms` : '--'}
+              </span>
+            </>
+          ) : isDodgePractice ? (
+            <>
+              <span className="font-semibold text-sky-300">Dodging Practice</span>
+              <span aria-hidden="true">·</span>
+              <span>{dodgeModeLabel}</span>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono-tabular font-bold text-emerald-300">
+                {snapshot.dodgeCount ?? 0} Dodges
+              </span>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono-tabular font-bold text-amber-300">
+                Streak {snapshot.dodgeStreak ?? 0}x
+              </span>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono-tabular text-violet-300">
+                Best {snapshot.dodgeBestStreak ?? 0}x
               </span>
             </>
           ) : (
@@ -2069,7 +2117,15 @@ export default function App() {
                     Move with <span className="font-semibold text-slate-200">WASD</span> or Arrows (hold <span className="font-semibold text-slate-200">Shift</span> to creep).
                   </p>
                   <p className="leading-relaxed">
-                    Aim 360° with your cursor and press <span className="font-semibold text-slate-200">Spacebar</span> to shoot.
+                    {isDodgePractice ? (
+                      <>
+                        Dodge incoming waves cleanly until every bullet finishes bouncing.
+                      </>
+                    ) : (
+                      <>
+                        Aim 360° with your cursor and press <span className="font-semibold text-slate-200">Spacebar</span> to shoot.
+                      </>
+                    )}
                   </p>
                   {activeConfig.mapId === 'library' && (
                     <div className="pt-2 border-t border-slate-800/80 space-y-1.5">
@@ -2124,12 +2180,14 @@ export default function App() {
                   Use the stationary {isRightStick ? 'right' : 'left'} joystick to move &amp; aim. Speed scales smoothly by thumb distance.
                 </p>
                 <p className="leading-relaxed">
-                  Release the joystick to shoot.
+                  {isDodgePractice
+                    ? 'Release or weave continuously to survive each wave.'
+                    : 'Release the joystick to shoot.'}
                 </p>
               </>
             )}
           </div>
-          {p2 ? (
+          {p2 && !isAnyPractice ? (
             <PlayerHealthBar
               player={p2}
               mode={activeConfig.mode}
@@ -2325,6 +2383,43 @@ export default function App() {
                 </div>
               </div>
             </div>
+          ) : isDodgePractice ? (
+            <div
+              style={{
+                top: 'max(0.375rem, env(safe-area-inset-top))',
+                left: 'max(0.75rem, env(safe-area-inset-left))',
+                right: 'max(0.75rem, env(safe-area-inset-right))',
+              }}
+              className="pointer-events-none absolute flex items-start justify-between gap-2 lg:hidden z-10"
+            >
+              <div className="rounded-lg border border-slate-700/75 bg-slate-950/75 px-2.5 py-1.5 text-[11px] backdrop-blur-sm space-y-0.5">
+                <div className="flex items-center gap-2">
+                  <ShieldAlert className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                  <span className="font-display font-bold text-slate-100">
+                    {snapshot.dodgeCount ?? 0} Dodges
+                  </span>
+                  <span className="text-slate-500">·</span>
+                  <span className="font-mono-tabular font-bold text-amber-300">
+                    {snapshot.dodgeStreak ?? 0}x Streak
+                  </span>
+                </div>
+                <div className="text-[10px] font-medium text-slate-400">
+                  {dodgeModeLabel}
+                </div>
+              </div>
+              <div className="rounded-lg border border-slate-700/75 bg-slate-950/75 px-2.5 py-1.5 text-[10px] backdrop-blur-sm text-right space-y-0.5">
+                <div className="font-mono-tabular text-slate-300">
+                  Best <strong className="text-emerald-300">{snapshot.dodgeBestStreak ?? 0}x</strong>
+                </div>
+                <div className="font-mono-tabular text-slate-400">
+                  {snapshot.activeBullets > 0 ? (
+                    <span className="text-rose-300 font-bold">{snapshot.activeBullets} Live Bullets</span>
+                  ) : (
+                    <span className="text-sky-300">Next Wave Ready</span>
+                  )}
+                </div>
+              </div>
+            </div>
           ) : (
             <div
               style={{
@@ -2377,17 +2472,19 @@ export default function App() {
             </div>
           )}
 
-          {/* Transparent Side-Edge Kill Popup (Private to the player who scored the kill) */}
+          {/* Transparent Side-Edge Kill / Dodge Popup (Private to the local player) */}
           {killStreak &&
             (gameState === 'PLAYING' || (gameState === 'GAME_OVER' && killStreak.mode === 'ELIMINATION')) &&
             (() => {
               const remainingMs = Math.max(0, killStreak.expiresAt - streakNow);
               const isElimination = killStreak.mode === 'ELIMINATION';
               const isPracticeStreak = killStreak.mode === 'PRACTICE';
+              const isDodgeStreak = killStreak.mode === 'DODGE_PRACTICE';
+              const closeDodge = Boolean(killStreak.closeDodge);
               const pct = Math.max(0, Math.min(100, (remainingMs / killStreak.durationMs) * 100));
               const count = killStreak.count;
 
-              const fires = isPracticeStreak
+              const fires = isPracticeStreak || isDodgeStreak
                 ? count >= 10
                   ? '🔥🔥🔥🔥🔥👑'
                   : count >= 7
@@ -2396,7 +2493,9 @@ export default function App() {
                       ? '🔥🔥🔥'
                       : count >= 2
                         ? '🔥🔥'
-                        : '🔥'
+                        : isDodgeStreak && closeDodge
+                          ? '⚡🔥'
+                          : '🔥'
                 : isElimination
                   ? count >= 3
                     ? '🔥🔥🔥👑'
@@ -2409,57 +2508,102 @@ export default function App() {
                       ? '🔥🔥'
                       : '🔥';
 
-              const headlineText = isPracticeStreak
-                ? `${count}x KILL STREAK`
+              const dodgeHeadline =
+                count >= 10
+                  ? 'GOD OF DODGING!'
+                  : count === 9
+                    ? 'LIGHTNING REFLEX!'
+                    : count === 8
+                      ? 'BULLETPROOF!'
+                      : count === 7
+                        ? "HE CAN'T DIE!"
+                        : count === 6
+                          ? 'GHOST STEPS!'
+                          : count === 5
+                            ? 'DODGE MASTER!'
+                            : count === 4
+                              ? 'UNTOUCHABLE!'
+                              : count === 3
+                                ? closeDodge
+                                  ? 'MATRIX REFLEX!'
+                                  : 'BULLET DANCER!'
+                                : count === 2
+                                  ? closeDodge
+                                    ? 'RAZOR CLOSE!'
+                                    : 'SLICK EVADE!'
+                                  : closeDodge
+                                    ? 'CLOSE DODGE!'
+                                    : 'CLEAN DODGE!';
+
+              const headlineText = isDodgeStreak
+                ? dodgeHeadline
+                : isPracticeStreak
+                  ? `${count}x KILL STREAK`
+                  : isElimination
+                    ? count >= 3
+                      ? 'SOLO ACE!'
+                      : count === 2
+                        ? 'RAMPAGE!'
+                        : 'KILL!'
+                    : `${count}x ${
+                        count >= 6
+                          ? 'GODLIKE'
+                          : count === 5
+                            ? 'UNSTOPPABLE'
+                            : count === 4
+                              ? 'RAMPAGE'
+                              : count === 3
+                                ? 'TRIPLE STREAK'
+                                : 'DOUBLE KILL'
+                      }`;
+
+              const subCaption = isDodgeStreak
+                ? count >= 2
+                  ? `${closeDodge ? 'CLOSE DODGE · ' : ''}${count}x DODGE STREAK`
+                  : closeDodge
+                    ? 'RAZOR MARGIN'
+                    : 'WAVE CLEARED'
                 : isElimination
                   ? count >= 3
-                    ? 'SOLO ACE!'
+                    ? 'ALL 3 RIVALS ELIMINATED'
                     : count === 2
-                      ? 'RAMPAGE!'
-                      : 'KILL!'
-                  : `${count}x ${
-                      count >= 6
-                        ? 'GODLIKE'
-                        : count === 5
-                          ? 'UNSTOPPABLE'
-                          : count === 4
-                            ? 'RAMPAGE'
-                            : count === 3
-                              ? 'TRIPLE STREAK'
-                              : 'DOUBLE KILL'
-                    }`;
+                      ? '2 ELIMINATED'
+                      : '1 ELIMINATED'
+                  : null;
 
-              const subCaption = isElimination
-                ? count >= 3
-                  ? 'ALL 3 RIVALS ELIMINATED'
-                  : count === 2
-                    ? '2 ELIMINATED'
-                    : '1 ELIMINATED'
-                : null;
-
-              const tierColor = isPracticeStreak
+              const tierColor = isDodgeStreak
                 ? count >= 10
                   ? 'text-amber-200'
                   : count >= 7
                     ? 'text-rose-300'
                     : count >= 4
-                      ? 'text-orange-300'
-                      : count >= 2
-                        ? 'text-amber-300'
-                        : 'text-yellow-200'
-                : isElimination
-                  ? count >= 3
+                      ? 'text-amber-300'
+                      : closeDodge
+                        ? 'text-sky-300'
+                        : 'text-emerald-300'
+                : isPracticeStreak
+                  ? count >= 10
                     ? 'text-amber-200'
-                    : count === 2
-                      ? 'text-orange-300'
-                      : 'text-yellow-200'
-                  : count >= 5
-                    ? 'text-rose-300'
-                    : count >= 4
-                      ? 'text-orange-300'
-                      : count === 3
-                        ? 'text-amber-300'
-                        : 'text-yellow-200';
+                    : count >= 7
+                      ? 'text-rose-300'
+                      : count >= 4
+                        ? 'text-orange-300'
+                        : count >= 2
+                          ? 'text-amber-300'
+                          : 'text-yellow-200'
+                  : isElimination
+                    ? count >= 3
+                      ? 'text-amber-200'
+                      : count === 2
+                        ? 'text-orange-300'
+                        : 'text-yellow-200'
+                    : count >= 5
+                      ? 'text-rose-300'
+                      : count >= 4
+                        ? 'text-orange-300'
+                        : count === 3
+                          ? 'text-amber-300'
+                          : 'text-yellow-200';
 
               const actorPrefix =
                 isLocal2P && killStreak.playerId !== undefined
@@ -2482,7 +2626,7 @@ export default function App() {
                       {headlineText}
                     </span>
                   </div>
-                  {isElimination ? (
+                  {isElimination || isDodgeStreak ? (
                     <span className="mt-0.5 font-mono-tabular text-[10px] font-bold tracking-wider text-sky-200/90 drop-shadow-[0_1px_3px_rgba(0,0,0,0.95)]">
                       {subCaption}
                     </span>
@@ -2533,7 +2677,7 @@ export default function App() {
           )}
 
           {/* Stationary Joystick(s): Left or Right setting (plus diagonal P2 in Offline 2P) */}
-          {controlScheme === 'DRAG_STICK' && gameState === 'PLAYING' && !isLandscapeBlocked && (
+          {controlScheme === 'DRAG_STICK' && gameState === 'PLAYING' && (
             <>
               <TouchControls
                 position={isRightStick ? 'bottom-right' : 'bottom-left'}
@@ -2595,9 +2739,11 @@ export default function App() {
             <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 rounded-lg border border-slate-700/80 bg-slate-950/85 px-4 py-2 text-xs font-medium text-slate-200 whitespace-nowrap shadow-lg">
               {isLocal2P
                 ? 'P1: WASD + Space · P2: Arrows + Enter (or /)'
-                : activeConfig.mapId === 'library'
-                  ? 'WASD to move (Shift or <80% slider to sneak) · [E] Collect/Unlock · Spacebar to shoot'
-                  : 'WASD to move (Shift to creep) · Cursor to aim · Spacebar to shoot'}
+                : isDodgePractice
+                  ? 'WASD to move (Shift to creep) · Dodge every wave until all bounces end!'
+                  : activeConfig.mapId === 'library'
+                    ? 'WASD to move (Shift or <80% slider to sneak) · [E] Collect/Unlock · Spacebar to shoot'
+                    : 'WASD to move (Shift to creep) · Cursor to aim · Spacebar to shoot'}
             </div>
           )}
 
@@ -2779,13 +2925,49 @@ export default function App() {
 
         {/* Right Side Health Bars (Desktop) */}
         <aside className="hidden lg:flex w-56 shrink-0 flex-col justify-between gap-4 py-1">
-          {p1 ? (
+          {p1 && !isDodgePractice ? (
             <PlayerHealthBar
               player={p1}
               mode={activeConfig.mode}
               targetKills={activeConfig.targetKills}
               align="right"
             />
+          ) : isDodgePractice ? (
+            <div className="rounded-xl border border-sky-500/35 bg-[#0F172A]/90 p-3.5 text-xs space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-display font-bold text-sky-300 flex items-center gap-1.5">
+                  <ShieldAlert className="w-3.5 h-3.5" />
+                  Dodging Practice
+                </span>
+                <span className="font-mono-tabular font-bold text-emerald-300">
+                  {snapshot.dodgeCount ?? 0} Dodges
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-[11px] text-slate-300">
+                <span>Wave Mode</span>
+                <span className="font-semibold text-slate-100">{dodgeModeLabel}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5 pt-0.5 text-[11px]">
+                <div className="rounded-lg border border-slate-800 bg-slate-900/75 px-2 py-1.5">
+                  <div className="text-[10px] text-slate-400">Streak</div>
+                  <div className="font-mono-tabular font-bold text-amber-300">
+                    {snapshot.dodgeStreak ?? 0}x
+                  </div>
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/75 px-2 py-1.5">
+                  <div className="text-[10px] text-slate-400">Best Streak</div>
+                  <div className="font-mono-tabular font-bold text-violet-300">
+                    {snapshot.dodgeBestStreak ?? 0}x
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/75 px-2 py-1.5 text-[11px]">
+                <span className="text-[10px] text-slate-400">Wave Bullets</span>
+                <span className="font-mono-tabular font-bold text-sky-300">
+                  {snapshot.activeBullets > 0 ? `${snapshot.activeBullets} Bouncing` : 'Preparing...'}
+                </span>
+              </div>
+            </div>
           ) : isTargetPractice ? (
             <div className="rounded-xl border border-rose-500/35 bg-[#0F172A]/90 p-3.5 text-xs space-y-2.5">
               <div className="flex items-center justify-between gap-2">
@@ -2849,9 +3031,28 @@ export default function App() {
           )}
           <div className="rounded-xl border border-slate-800/80 bg-[#0F172A]/80 p-3.5 text-xs text-slate-400 space-y-2">
             <div className="font-semibold text-slate-200">
-              {isTargetPractice ? 'Practice Rules' : 'Arena Objects'}
+              {isAnyPractice ? 'Practice Rules' : 'Arena Objects'}
             </div>
-            {isTargetPractice ? (
+            {isDodgePractice ? (
+              <>
+                <div className="flex items-center justify-between">
+                  <span className="text-sky-300">Corner Bots</span>
+                  <span className="font-mono-tabular text-slate-300">Ruthless Aim</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-emerald-300">Wave Clear</span>
+                  <span className="font-mono-tabular text-slate-300">After All Bounces</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-amber-300">Next Wave</span>
+                  <span className="font-mono-tabular text-slate-300">Starts Once Clear</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-300">Pickups</span>
+                  <span className="font-mono-tabular text-slate-400">Disabled</span>
+                </div>
+              </>
+            ) : isTargetPractice ? (
               <>
                 <div className="flex items-center justify-between">
                   <span className="text-rose-300">Target Board</span>
@@ -2895,7 +3096,7 @@ export default function App() {
               </>
             )}
           </div>
-          {p3 ? (
+          {p3 && !isDodgePractice ? (
             <PlayerHealthBar
               player={p3}
               mode={activeConfig.mode}
@@ -2945,12 +3146,12 @@ export default function App() {
         </div>
       )}
 
-      {/* Pause Overlay (Solo / Target Practice only) */}
+      {/* Pause Overlay (Solo / Practice only) */}
       {gameState === 'PAUSED' && !isOnline && (
         <div className="fixed inset-0 z-20 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4">
           <div className="w-full max-w-sm rounded-2xl border border-slate-700/80 bg-[#111A2C] p-6 shadow-2xl">
             <h2 className="font-display text-2xl font-bold text-slate-50">
-              {isTargetPractice ? 'Practice Paused' : 'Match Paused'}
+              {isAnyPractice ? 'Practice Paused' : 'Match Paused'}
             </h2>
             <p className="mt-1 text-xs text-slate-400">
               {ARENA_MAPS[activeConfig.mapId].name} · {formatClock(snapshot.elapsedTime)} elapsed
@@ -2961,7 +3162,7 @@ export default function App() {
                 onClick={togglePause}
                 className="w-full rounded-xl bg-sky-400 hover:bg-sky-300 px-4 py-2.5 text-sm font-bold text-slate-950 transition-colors cursor-pointer"
               >
-                {isTargetPractice ? 'Resume Practice' : 'Resume Match'}
+                {isAnyPractice ? 'Resume Practice' : 'Resume Match'}
               </button>
               <button
                 type="button"
@@ -2976,7 +3177,7 @@ export default function App() {
                 onClick={() => startSoloMatch(activeConfig)}
                 className="w-full rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-100 transition-colors cursor-pointer"
               >
-                {isTargetPractice ? 'Reset Practice' : 'Restart Match'}
+                {isAnyPractice ? 'Reset Practice' : 'Restart Match'}
               </button>
               <button
                 type="button"
@@ -3028,46 +3229,6 @@ export default function App() {
           }}
           onReturnToLobby={isOnline ? () => clientRef.current?.returnToLobby() : undefined}
         />
-      )}
-
-      {/* Landscape-Only Enforcement Overlay During Gameplay */}
-      {isLandscapeBlocked && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-[#060A14]/95 backdrop-blur-md p-6">
-          <div className="w-full max-w-sm rounded-2xl border border-amber-500/40 bg-[#111A2C] p-6 text-center shadow-2xl">
-            <div className="mx-auto mb-4 h-14 w-14 rounded-2xl border border-amber-400/40 bg-amber-500/15 flex items-center justify-center">
-              <RotateCw className="w-7 h-7 text-amber-300 animate-spin" style={{ animationDuration: '3.2s' }} />
-            </div>
-            <h2 className="font-display text-xl font-extrabold text-slate-50">
-              Landscape Mode Only
-            </h2>
-            <p className="mt-2 text-xs text-slate-300 leading-relaxed">
-              This game runs exclusively in landscape orientation while playing. Rotate your device sideways (or widen your window) to continue.
-            </p>
-            <div className="mt-5 flex flex-col gap-2.5">
-              <button
-                type="button"
-                onClick={() => requestLandscapeLock(true)}
-                className="w-full rounded-xl bg-amber-400 hover:bg-amber-300 px-4 py-2.5 text-sm font-extrabold text-slate-950 transition-colors cursor-pointer"
-              >
-                Switch to Landscape
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (isOnline) {
-                    handleLeaveOnline();
-                  } else {
-                    setPauseSettingsOpen(false);
-                    setGameState('TITLE_MENU');
-                  }
-                }}
-                className="w-full rounded-xl border border-slate-700 bg-slate-900 hover:bg-slate-800 px-4 py-2.5 text-xs font-semibold text-slate-200 transition-colors cursor-pointer"
-              >
-                {isOnline ? 'Leave Online Room' : 'Back to Setup'}
-              </button>
-            </div>
-          </div>
-        </div>
       )}
     </div>
   );

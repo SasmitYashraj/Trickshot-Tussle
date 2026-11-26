@@ -5,6 +5,7 @@ import type { GeneralSettings } from '../game/settings';
 import {
   type BotDifficulty,
   DEFAULT_MATCH_MODIFIERS,
+  type DodgeWaveMode,
   type MapId,
   type MatchConfig,
   type MatchMode,
@@ -31,6 +32,7 @@ interface TitleScreenProps {
   onOpenColorSelect: (slot?: 1 | 2) => void;
   onStartSolo: () => void;
   onStartTargetPractice: (mode: PracticeTargetMode, mapId: MapId) => void;
+  onStartDodgePractice: (waveMode: DodgeWaveMode, mapId: MapId) => void;
   onCreateOnlineRoom: (name: string) => void;
   onJoinOnlineRoom: (code: string, name: string) => void;
 }
@@ -47,6 +49,7 @@ export function TitleScreen({
   onOpenColorSelect,
   onStartSolo,
   onStartTargetPractice,
+  onStartDodgePractice,
   onCreateOnlineRoom,
   onJoinOnlineRoom,
 }: TitleScreenProps) {
@@ -314,10 +317,10 @@ export function TitleScreen({
                     </div>
                     <div className="min-w-0">
                       <div className="font-display text-sm sm:text-base font-extrabold text-slate-100 group-hover:text-rose-200 transition-colors">
-                        Target Practice
+                        Practice
                       </div>
                       <div className="text-xs text-slate-400 truncate">
-                        Static &amp; moving bullseye targets · 0.5s refill · Warm up rebounds
+                        Target aim drills &amp; corner-bot dodge training · Uses modifiers
                       </div>
                     </div>
                   </div>
@@ -672,10 +675,15 @@ export function TitleScreen({
       {practiceOpen && (
         <TargetPracticeModal
           initialMode={config.practiceTargetMode ?? 'BOTH'}
+          initialDodgeMode={config.dodgeWaveMode ?? 'ONE'}
           initialMapId={config.mapId}
-          onStart={(mode, mapId) => {
+          onStartTarget={(mode, mapId) => {
             setPracticeOpen(false);
             onStartTargetPractice(mode, mapId);
+          }}
+          onStartDodge={(waveMode, mapId) => {
+            setPracticeOpen(false);
+            onStartDodgePractice(waveMode, mapId);
           }}
           onClose={() => setPracticeOpen(false)}
         />

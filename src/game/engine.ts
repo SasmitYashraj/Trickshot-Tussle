@@ -10,6 +10,7 @@ import {
   BULLET_SPEED,
   type BotDifficulty,
   type Bullet,
+  type DodgeWaveMode,
   CARDBOARD_FADE_IN,
   CARDBOARD_FADE_OUT,
   CARDBOARD_PUNCTURE_FRAME,
@@ -496,6 +497,15 @@ export class ArenaEngine {
   private practiceTargetSpawnedAt = 0;
   private practiceShotRecordedForTarget = false;
   private practicePrevReactionMs: number | null = null;
+  private dodgeCount = 0;
+  private dodgeStreak = 0;
+  private dodgeBestStreak = 0;
+  private dodgeWaveState: 'COOLDOWN' | 'AIMING' | 'ACTIVE_BULLETS' = 'COOLDOWN';
+  private dodgeWaveTimer = 0.65;
+  private dodgeWaveShooters: Array<{ botId: number; targetAngle: number; fired: boolean }> = [];
+  private dodgeWaveHitPlayer = false;
+  private dodgeWaveMinDist = Infinity;
+  private dodgeCornerAnchors = new Map<number, Vec2>();
   private rapidStreaks = new Map<number, { count: number; lastKillAt: number }>();
 
   private static arenaBotGraphCache = new Map<string, NavNode[]>();
@@ -602,6 +612,7 @@ export class ArenaEngine {
   public reset(config: MatchConfig, slots?: SlotSetup[]) {
     const requestedMap = ARENA_MAPS[config.mapId];
     const isPractice = !slots && Boolean(config.targetPractice);
+    const isDodgePractice = !slots && !isPractice && Boolean(config.dodgePractice);
     const sanitizedConfig: MatchConfig = isPractice
       ? {
           ...config,
@@ -611,11 +622,25 @@ export class ArenaEngine {
           local2P: false,
           teamMode: 'FFA',
           targetPractice: true,
+          dodgePractice: false,
           practiceTargetMode: config.practiceTargetMode ?? 'BOTH',
         }
-      : !slots && config.local2P && requestedMap?.immersive
-        ? { ...config, mapId: 'crossroads', immersive: false, extraDark: false }
-        : config;
+      : isDodgePractice
+        ? {
+            ...config,
+            mapId: requestedMap?.immersive ? 'crossroads' : config.mapId,
+            immersive: false,
+            extraDark: false,
+            local2P: false,
+            teamMode: 'FFA',
+            difficulty: 'RUTHLESS',
+            targetPractice: false,
+            dodgePractice: true,
+            dodgeWaveMode: config.dodgeWaveMode ?? 'ONE',
+          }
+        : !slots && config.local2P && requestedMap?.immersive
+          ? { ...config, mapId: 'crossroads', immersive: false, extraDark: false }
+          : config;
     this.config = sanitizedConfig;
     this.map = ARENA_MAPS[sanitizedConfig.mapId];
     this.bullets = [];
@@ -632,6 +657,15 @@ export class ArenaEngine {
     this.practiceTargetSpawnedAt = 0;
     this.practiceShotRecordedForTarget = false;
     this.practicePrevReactionMs = null;
+    this.dodgeCount = 0;
+    this.dodgeStreak = 0;
+    this.dodgeBestStreak = 0;
+    this.dodgeWaveState = 'COOLDOWN';
+    this.dodgeWaveTimer = 0.65;
+    this.dodgeWaveShooters = [];
+    this.dodgeWaveHitPlayer = false;
+    this.dodgeWaveMinDist = Infinity;
+    this.dodgeCornerAnchors.clear();
     this.icePits = (this.map.icePits ?? []).map((pit, idx) => ({
       id: idx + 1,
       x: pit.x,
@@ -716,7 +750,7 @@ export class ArenaEngine {
     this.cursorInput2.hasAim = false;
     this.cursorInput2.magnitude = 0;
 
-    const isLocal2P = !slots && !isPractice && Boolean(config.local2P);
+    const isLocal2P = !slots && !isPractice && !isDodgePractice && Boolean(config.local2P);
     const includeBots = isLocal2P ? config.local2PIncludeBots !== false : true;
     if (isLocal2P && !includeBots && this.config.teamMode === '2V2') {
       this.config = { ...this.config, teamMode: 'FFA' };
@@ -735,6 +769,21 @@ export class ArenaEngine {
               team: 0,
             },
           ]
+        : isDodgePractice
+          ? [
+              {
+                slot: 0,
+                name: 'You',
+                isHuman: true,
+                enabled: true,
+                colorId: config.playerColorId,
+                team: 0,
+              },
+              { slot: 1, name: 'Corner NW', isHuman: false, enabled: true, colorId: 'crimson', team: 1 },
+              { slot: 2, name: 'Corner NE', isHuman: false, enabled: true, colorId: 'volt', team: 1 },
+              { slot: 3, name: 'Corner SW', isHuman: false, enabled: true, colorId: 'jade', team: 1 },
+              { slot: 4, name: 'Corner SE', isHuman: false, enabled: true, colorId: 'ember', team: 1 },
+            ]
         : isLocal2P
           ? PLAYER_PRESETS.map((p, idx) => {
               const is2v2 = this.config.teamMode === '2V2';
@@ -777,13 +826,37 @@ export class ArenaEngine {
       assignedColors.set(s.slot, chosen);
     }
 
-    const maxAmmo = isPractice ? 1 : BULLET_CAP_VALUES[mods.bulletCapacity] ?? PLAYER_MAX_AMMO;
+    const maxAmmo = isPractice ? 1 : isDodgePractice ? 0 : BULLET_CAP_VALUES[mods.bulletCapacity] ?? PLAYER_MAX_AMMO;
+    const cornerMargin = 94;
+    const dodgeCornerCoords: Vec2[] = [
+      { x: cornerMargin, y: cornerMargin },
+      { x: this.map.width - cornerMargin, y: cornerMargin },
+      { x: cornerMargin, y: this.map.height - cornerMargin },
+      { x: this.map.width - cornerMargin, y: this.map.height - cornerMargin },
+    ];
 
     this.players = activeSlots.map((s) => {
       const palette = assignedColors.get(s.slot) ?? PLAYER_COLOR_PALETTE[s.slot % PLAYER_COLOR_PALETTE.length];
-      const spawn = this.map.spawns[s.slot];
+      let spawn: Vec2;
+      if (isDodgePractice) {
+        if (s.isHuman) {
+          spawn = this.findNearestWalkablePoint(
+            this.map.width * 0.5,
+            this.map.height * 0.5,
+            PLAYER_RADIUS + 8,
+            0
+          );
+        } else {
+          const rawCorner = dodgeCornerCoords[(s.slot - 1) % dodgeCornerCoords.length];
+          spawn = this.findNearestWalkablePoint(rawCorner.x, rawCorner.y, PLAYER_RADIUS + 4, 0);
+          this.dodgeCornerAnchors.set(s.slot, { x: spawn.x, y: spawn.y });
+        }
+      } else {
+        spawn = this.map.spawns[s.slot];
+      }
       const aimCenterAngle = Math.atan2(this.map.height / 2 - spawn.y, this.map.width / 2 - spawn.x);
       const team = s.team !== undefined ? s.team : s.slot === 0 || s.slot === 2 ? 0 : 1;
+      const playerMaxAmmo = isDodgePractice && !s.isHuman ? 1 : maxAmmo;
       return {
         id: s.slot,
         name: s.name,
@@ -803,7 +876,7 @@ export class ArenaEngine {
         hp: PLAYER_MAX_HP,
         maxHp: PLAYER_MAX_HP,
         ammo: isPractice ? 1 : 0,
-        maxAmmo,
+        maxAmmo: playerMaxAmmo,
         stunTimer: 0,
         hurtFlashTimer: 0,
         respawnTimer: 0,
@@ -821,7 +894,7 @@ export class ArenaEngine {
         remoteAimActive: false,
         remoteMagnitude: 0,
         aiStrafeDir: s.slot % 2 === 0 ? 1 : -1,
-        aiThinkTimer: 0.15 + s.slot * 0.1,
+        aiThinkTimer: isDodgePractice ? 0.25 + s.slot * 0.14 : 0.15 + s.slot * 0.1,
         aiTargetAngle: aimCenterAngle,
         aiMoveRatio: isLibrary ? 0.72 : 0.72,
         aiHoldShotTimer: 0.7,
@@ -830,6 +903,10 @@ export class ArenaEngine {
 
     if (isPractice) {
       this.spawnPracticeTarget();
+      return;
+    }
+
+    if (isDodgePractice) {
       return;
     }
 
@@ -1089,6 +1166,14 @@ export class ArenaEngine {
       return;
     }
 
+    if (this.config.dodgePractice) {
+      this.updateDodgePractice(dt);
+      this.updatePlayers(dt);
+      this.updateBullets(dt);
+      this.updateParticlesAndTexts(dt);
+      return;
+    }
+
     this.updateSpawners(dt);
     this.updatePlayers(dt);
     this.updateBoxes(dt);
@@ -1228,6 +1313,192 @@ export class ArenaEngine {
         t.x = clamp(t.x, ARENA_WALL_THICKNESS + t.radius, this.map.width - ARENA_WALL_THICKNESS - t.radius);
         t.y = clamp(t.y, ARENA_WALL_THICKNESS + t.radius, this.map.height - ARENA_WALL_THICKNESS - t.radius);
       }
+    }
+  }
+
+  private findNearestWalkablePoint(
+    targetX: number,
+    targetY: number,
+    radius: number,
+    floor: FloorLevel = 0
+  ): Vec2 {
+    if (this.isPointWalkableOnFloor(targetX, targetY, radius, floor)) {
+      return { x: targetX, y: targetY };
+    }
+    for (let ring = 24; ring <= 320; ring += 24) {
+      const steps = Math.max(8, Math.round((ring * 2 * Math.PI) / 28));
+      for (let i = 0; i < steps; i++) {
+        const ang = (i / steps) * Math.PI * 2;
+        const px = targetX + Math.cos(ang) * ring;
+        const py = targetY + Math.sin(ang) * ring;
+        if (this.isPointWalkableOnFloor(px, py, radius, floor)) {
+          return { x: px, y: py };
+        }
+      }
+    }
+    return { x: targetX, y: targetY };
+  }
+
+  private pickDodgeCornerShotAngle(bot: Player, player: Player | undefined): number {
+    const centerX = this.map.width * 0.5;
+    const centerY = this.map.height * 0.5;
+    const inwardAngle = Math.atan2(centerY - bot.y, centerX - bot.x);
+
+    // 55% Ruthless predictive / trickshot pressure mixed with variance, 45% sweeping random arena bank shots
+    if (player && Math.random() < 0.55) {
+      const ruthlessAngle = this.findTrickshotAngle(bot, player, true);
+      if (ruthlessAngle !== null) {
+        const jitter = (Math.random() - 0.5) * 0.34;
+        const candidate = normalizeAngle(ruthlessAngle + jitter);
+        const sim = this.simulateShotSafety(bot, candidate, 0, {
+          maxDist: 380,
+          maxCheckBounces: 2,
+          ignoreTargetPlayerId: player.id,
+        });
+        if (!sim.hitsSelf) {
+          return candidate;
+        }
+      }
+    }
+
+    for (let attempt = 0; attempt < 24; attempt++) {
+      const spread = (Math.random() - 0.5) * 1.5; // ~±43° fan into the open arena & side walls
+      const candidate = normalizeAngle(inwardAngle + spread);
+      const sim = this.simulateShotSafety(bot, candidate, 0, {
+        maxDist: 420,
+        maxCheckBounces: 2,
+        ignoreTargetPlayerId: player?.id ?? null,
+      });
+      if (!sim.hitsSelf) {
+        return candidate;
+      }
+    }
+    return inwardAngle;
+  }
+
+  private updateDodgePractice(dt: number) {
+    const player = this.players.find((p) => p.id === 0);
+    const bots = this.players.filter((p) => !p.isHuman && p.alive);
+    const centerX = this.map.width * 0.5;
+    const centerY = this.map.height * 0.5;
+    const shooterSet = new Set(this.dodgeWaveShooters.map((s) => s.botId));
+
+    // Continuously rotate idle corner bots randomly facing into the arena
+    for (const bot of bots) {
+      if (shooterSet.has(bot.id)) continue;
+      bot.aiThinkTimer -= dt;
+      if (bot.aiThinkTimer <= 0) {
+        bot.aiThinkTimer = 0.45 + Math.random() * 0.65;
+        const inward = Math.atan2(centerY - bot.y, centerX - bot.x);
+        bot.aiTargetAngle = normalizeAngle(inward + (Math.random() - 0.5) * 1.45);
+      }
+    }
+
+    if (this.dodgeWaveState === 'COOLDOWN') {
+      if (this.bullets.length > 0) return;
+      this.dodgeWaveTimer -= dt;
+      if (this.dodgeWaveTimer <= 0 && bots.length > 0) {
+        const mode = this.config.dodgeWaveMode ?? 'ONE';
+        const wanted = mode === 'THREE' ? 3 : mode === 'TWO' ? 2 : 1;
+        const pool = [...bots];
+        for (let i = pool.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          const tmp = pool[i];
+          pool[i] = pool[j];
+          pool[j] = tmp;
+        }
+        const chosen = pool.slice(0, Math.min(wanted, pool.length));
+        this.dodgeWaveShooters = chosen.map((bot) => {
+          const targetAngle = this.pickDodgeCornerShotAngle(bot, player);
+          bot.aiTargetAngle = targetAngle;
+          bot.ammo = 1;
+          return { botId: bot.id, targetAngle, fired: false };
+        });
+        this.dodgeWaveState = 'AIMING';
+        this.dodgeWaveTimer = 1.35;
+        this.dodgeWaveHitPlayer = false;
+        this.dodgeWaveMinDist = Infinity;
+      }
+      return;
+    }
+
+    if (this.dodgeWaveState === 'AIMING') {
+      this.dodgeWaveTimer -= dt;
+      let allAligned = true;
+      for (const s of this.dodgeWaveShooters) {
+        const bot = bots.find((b) => b.id === s.botId);
+        if (!bot) continue;
+        bot.aiTargetAngle = s.targetAngle;
+        const diff = Math.abs(normalizeAngle(s.targetAngle - bot.angle));
+        if (diff > 0.065) {
+          allAligned = false;
+        }
+      }
+
+      if (allAligned || this.dodgeWaveTimer <= 0) {
+        for (const s of this.dodgeWaveShooters) {
+          if (s.fired) continue;
+          const bot = bots.find((b) => b.id === s.botId);
+          if (bot && bot.ammo > 0) {
+            bot.angle = s.targetAngle;
+            this.fireBullet(bot);
+            s.fired = true;
+          }
+        }
+        this.dodgeWaveState = 'ACTIVE_BULLETS';
+      }
+      return;
+    }
+
+    // ACTIVE_BULLETS: strictly wait until EVERY bullet & all its bounces have ended!
+    if (player) {
+      for (const b of this.bullets) {
+        const clearance = dist(b.x, b.y, player.x, player.y) - b.radius - PLAYER_RADIUS;
+        if (clearance < this.dodgeWaveMinDist) {
+          this.dodgeWaveMinDist = clearance;
+        }
+      }
+    }
+
+    if (this.bullets.length === 0) {
+      if (!this.dodgeWaveHitPlayer && player) {
+        this.dodgeCount += 1;
+        this.dodgeStreak += 1;
+        if (this.dodgeStreak > this.dodgeBestStreak) {
+          this.dodgeBestStreak = this.dodgeStreak;
+        }
+        player.kills = this.dodgeCount;
+        const closeDodge = this.dodgeWaveMinDist <= 42;
+        this.events.push({
+          type: 'killstreak',
+          x: player.x,
+          y: player.y,
+          value: this.dodgeStreak,
+          playerId: 0,
+          floor: 0,
+          streakKind: 'DODGE_PRACTICE',
+          closeDodge,
+        });
+        const label = closeDodge
+          ? 'CLOSE DODGE!'
+          : this.dodgeStreak >= 7
+            ? "HE CAN'T DIE!"
+            : this.dodgeStreak >= 5
+              ? 'DODGE MASTER!'
+              : this.dodgeStreak > 1
+                ? `${this.dodgeStreak}x DODGED!`
+                : 'DODGED!';
+        this.addFloatingText(
+          player.x,
+          player.y - (PLAYER_RADIUS + 14),
+          label,
+          closeDodge ? '#38BDF8' : this.dodgeStreak >= 5 ? '#FDE047' : '#34D399',
+          0
+        );
+      }
+      this.dodgeWaveShooters = [];
+      this.dodgeWaveState = 'COOLDOWN';
+      this.dodgeWaveTimer = 0.4;
     }
   }
 
@@ -1814,13 +2085,38 @@ export class ArenaEngine {
               dt
             );
           }
+        } else if (this.config.dodgePractice) {
+          const anchor = this.dodgeCornerAnchors.get(player.id);
+          if (anchor) {
+            player.x = anchor.x;
+            player.y = anchor.y;
+          }
+          player.vx = 0;
+          player.vy = 0;
+          const turnStep = this.getPlayerTurnSpeed() * 1.15 * dt;
+          const diff = normalizeAngle(player.aiTargetAngle - player.angle);
+          if (Math.abs(diff) <= turnStep) {
+            player.angle = player.aiTargetAngle;
+          } else {
+            player.angle = normalizeAngle(player.angle + Math.sign(diff) * turnStep);
+          }
         } else {
           this.applyBotControls(player, dt);
         }
       }
 
-      player.x += player.vx * dt;
-      player.y += player.vy * dt;
+      if (this.config.dodgePractice && !player.isHuman) {
+        const anchor = this.dodgeCornerAnchors.get(player.id);
+        if (anchor) {
+          player.x = anchor.x;
+          player.y = anchor.y;
+        }
+        player.vx = 0;
+        player.vy = 0;
+      } else {
+        player.x += player.vx * dt;
+        player.y += player.vy * dt;
+      }
 
       // Push movable active cardboard boxes & movable TNT crates (with post-push wall resolution so corners never jam)
       for (const box of this.boxes) {
@@ -4504,6 +4800,10 @@ export class ArenaEngine {
   private fireBullet(player: Player) {
     player.ammo = Math.max(0, player.ammo - 1);
     if (this.config.targetPractice) {
+      for (const rem of this.bullets) {
+        this.spawnParticles(rem.x, rem.y, rem.color, 4, 65, rem.floor ?? 0);
+      }
+      this.bullets.length = 0;
       this.practiceReloadTimer = 0.5;
       if (!this.practiceShotRecordedForTarget && this.practiceTargets.length > 0) {
         this.practicePrevReactionMs = Math.max(
@@ -4541,8 +4841,10 @@ export class ArenaEngine {
     };
 
     this.bullets.push(bullet);
-    player.vx -= Math.cos(player.angle) * 35;
-    player.vy -= Math.sin(player.angle) * 35;
+    if (!this.config.dodgePractice || player.isHuman) {
+      player.vx -= Math.cos(player.angle) * 35;
+      player.vy -= Math.sin(player.angle) * 35;
+    }
 
     this.emitEvent('shoot', bx, by, undefined, undefined, pFloor);
     this.recentSoundCues.push({ x: player.x, y: player.y, floor: pFloor, ttl: 5.5, strength: 1 });
@@ -4799,6 +5101,7 @@ export class ArenaEngine {
 
         if (!this.config.targetPractice) {
           for (const player of this.players) {
+            if (this.config.dodgePractice && !player.isHuman) continue;
             if (!player.alive || player.spawnInvulnTimer > 0 || player.stunTimer > 0 || (player.postStunGraceTimer ?? 0) > 0 || !sameFloor(player.floor, bFloor)) continue;
             if (player.id === b.ownerId && b.age < BULLET_SELF_GRACE) continue;
             if (player.id !== b.ownerId && this.isTeammate(b.ownerId, player.id)) continue;
@@ -4809,7 +5112,26 @@ export class ArenaEngine {
               const owner = this.players.find((pl) => pl.id === b.ownerId);
               if (owner && owner.id !== player.id) owner.shotsHit += 1;
 
-              this.applyDamage(player, BULLET_DAMAGE, b.ownerId, knockX, knockY, true);
+              if (this.config.dodgePractice) {
+                this.dodgeWaveHitPlayer = true;
+                this.dodgeStreak = 0;
+                player.hurtFlashTimer = 0.28;
+                player.spawnInvulnTimer = 0.35;
+                player.vx = knockX;
+                player.vy = knockY;
+                player.deaths += 1;
+                this.screenShake = Math.min(10, this.screenShake + 6);
+                this.emitEvent('hit', player.x, player.y, 3);
+                this.addFloatingText(
+                  player.x,
+                  player.y - (PLAYER_RADIUS + 14),
+                  'HIT! STREAK RESET',
+                  '#FB7185',
+                  bFloor
+                );
+              } else {
+                this.applyDamage(player, BULLET_DAMAGE, b.ownerId, knockX, knockY, true);
+              }
               this.spawnParticles(b.x, b.y, b.color, 10, 150, bFloor);
               destroyed = true;
               break;
@@ -8206,6 +8528,11 @@ export class ArenaEngine {
           : null
         : undefined,
       practicePrevReactionMs: this.config.targetPractice ? this.practicePrevReactionMs : undefined,
+      dodgePractice: Boolean(this.config.dodgePractice),
+      dodgeWaveMode: this.config.dodgePractice ? (this.config.dodgeWaveMode ?? 'ONE') : undefined,
+      dodgeCount: this.config.dodgePractice ? this.dodgeCount : undefined,
+      dodgeStreak: this.config.dodgePractice ? this.dodgeStreak : undefined,
+      dodgeBestStreak: this.config.dodgePractice ? this.dodgeBestStreak : undefined,
     };
   }
 

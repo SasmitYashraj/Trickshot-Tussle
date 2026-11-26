@@ -6,6 +6,7 @@ export type TeamMode = 'FFA' | '2V2';
 
 export type BotDifficulty = 'CHILL' | 'TACTICAL' | 'VETERAN' | 'RUTHLESS';
 export type PracticeTargetMode = 'STATIC' | 'MOVING' | 'BOTH';
+export type DodgeWaveMode = 'ONE' | 'TWO' | 'THREE';
 
 export type ControlScheme = 'CURSOR_SPACE' | 'DRAG_STICK';
 
@@ -564,7 +565,8 @@ export interface EngineEvent {
   playerId?: number;
   floor?: FloorLevel;
   mode?: MatchMode;
-  streakKind?: 'BRAWL' | 'ELIMINATION' | 'PRACTICE';
+  streakKind?: 'BRAWL' | 'ELIMINATION' | 'PRACTICE' | 'DODGE_PRACTICE';
+  closeDodge?: boolean;
 }
 
 export interface JoystickState {
@@ -617,6 +619,8 @@ export interface MatchConfig {
   local2PIncludeBots?: boolean;
   targetPractice?: boolean;
   practiceTargetMode?: PracticeTargetMode;
+  dodgePractice?: boolean;
+  dodgeWaveMode?: DodgeWaveMode;
   playerColorId?: string;
   player2ColorId?: string;
   modifiers?: MatchModifiers;
@@ -636,6 +640,11 @@ export interface GameSnapshot {
   practiceLastSplitMs?: number | null;
   practiceAvgSplitMs?: number | null;
   practicePrevReactionMs?: number | null;
+  dodgePractice?: boolean;
+  dodgeWaveMode?: DodgeWaveMode;
+  dodgeCount?: number;
+  dodgeStreak?: number;
+  dodgeBestStreak?: number;
 }
 
 export interface OnlineLobbySlot {

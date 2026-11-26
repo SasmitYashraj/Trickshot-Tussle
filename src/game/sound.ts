@@ -1686,16 +1686,21 @@ class SoundEngine {
    * Dramatic ramping orchestral cue for:
    * - BRAWL: rapid consecutive kills under 3s (2x..6x+)
    * - ELIMINATION (Last Standing): non-time-dependent kill progression (1=Kill, 2=Rampage, 3=Solo Ace Climax)
-   * - PRACTICE: 10-step ramping progression for consecutive target hits under 4s (1x..10x+)
+   * - PRACTICE / DODGE_PRACTICE: 10-step ramping progression for consecutive target hits / dodged waves (1x..10x+)
    */
-  public playKillStreak(streak: number, mode: MatchMode | 'PRACTICE' = 'BRAWL') {
+  public playKillStreak(
+    streak: number,
+    mode: MatchMode | 'PRACTICE' | 'DODGE_PRACTICE' = 'BRAWL',
+    closeDodge = false
+  ) {
     const ctx = this.ensureCtx();
     if (!ctx) return;
     const now = ctx.currentTime;
-    const isPractice = mode === 'PRACTICE';
+    const isPractice = mode === 'PRACTICE' || mode === 'DODGE_PRACTICE';
+    const isDodge = mode === 'DODGE_PRACTICE';
     const practiceTier = isPractice ? Math.max(1, Math.min(10, streak)) : 0;
     const tier = isPractice
-      ? 0.85 + ((practiceTier - 1) / 9) * 4.65
+      ? 0.85 + ((practiceTier - 1) / 9) * 4.65 + (closeDodge ? 0.35 : 0)
       : mode === 'ELIMINATION'
         ? streak >= 3
           ? 5
@@ -1703,11 +1708,11 @@ class SoundEngine {
             ? 3
             : 1
         : Math.max(1, Math.min(5, streak - 1)); // 1=2x, 2=3x, 3=4x, 4=5x, 5=6x+
-    const { node: out } = this.createOutputNode(ctx, { volume: Math.min(1.14, 0.82 + tier * 0.058) });
+    const { node: out } = this.createOutputNode(ctx, { volume: Math.min(1.16, 0.82 + tier * 0.058) });
 
     // 1. Orchestral Timpani Impact (+ dramatic double/triple pre-roll at higher streaks)
     const hitOffsets = isPractice
-      ? practiceTier >= 7
+      ? practiceTier >= 7 || (isDodge && closeDodge && practiceTier >= 4)
         ? [0, 0.07, 0.14]
         : practiceTier >= 3
           ? [0, 0.08]
@@ -1865,6 +1870,25 @@ class SoundEngine {
       hornB.start(t0);
       hornA.stop(t0 + note.d + 0.02);
       hornB.stop(t0 + note.d + 0.02);
+    }
+
+    // Extra crisp celesta/bell arpeggio glint on Close Dodge!
+    if (isDodge && closeDodge) {
+      const glintNotes = [chord[1] * 2, (chord[2] ?? chord[1]) * 2];
+      glintNotes.forEach((hz, gi) => {
+        const gt = now + 0.08 + gi * 0.075;
+        const bell = ctx.createOscillator();
+        const bg = ctx.createGain();
+        bell.type = 'triangle';
+        bell.frequency.setValueAtTime(hz, gt);
+        bg.gain.setValueAtTime(0.0006, gt);
+        bg.gain.linearRampToValueAtTime(0.095, gt + 0.01);
+        bg.gain.exponentialRampToValueAtTime(0.0006, gt + 0.28);
+        bell.connect(bg);
+        bg.connect(out);
+        bell.start(gt);
+        bell.stop(gt + 0.3);
+      });
     }
 
     // 4. Orchestral Suspended Cymbal Shimmer (scales sharply with streak tension)

@@ -13,6 +13,7 @@ import {
   type ModifierLevel,
   type OptionalSpawnLevel,
   PLAYER_COLOR_PALETTE,
+  type DodgeWaveMode,
   type PracticeTargetMode,
   type TeamMode,
 } from './types';
@@ -199,6 +200,12 @@ export function loadSavedMatchConfig(fallback: MatchConfig): MatchConfig {
       parsed.practiceTargetMode === 'BOTH'
         ? parsed.practiceTargetMode
         : fallback.practiceTargetMode ?? 'BOTH';
+    const dodgeWaveMode: DodgeWaveMode =
+      parsed.dodgeWaveMode === 'ONE' ||
+      parsed.dodgeWaveMode === 'TWO' ||
+      parsed.dodgeWaveMode === 'THREE'
+        ? parsed.dodgeWaveMode
+        : fallback.dodgeWaveMode ?? 'ONE';
 
     const effectiveMap = local2P && validMap.immersive ? SOLO_MAP_LIST[0] : validMap;
 
@@ -229,6 +236,8 @@ export function loadSavedMatchConfig(fallback: MatchConfig): MatchConfig {
       local2PIncludeBots,
       targetPractice: false,
       practiceTargetMode,
+      dodgePractice: false,
+      dodgeWaveMode,
       playerColorId: p1ColorId,
       player2ColorId: p2ColorId,
       modifiers: sanitizeModifiers(parsed.modifiers),
@@ -243,7 +252,7 @@ export function saveMatchConfig(config: MatchConfig): void {
   try {
     window.localStorage.setItem(
       MATCH_CONFIG_STORAGE_KEY,
-      JSON.stringify({ ...config, targetPractice: false })
+      JSON.stringify({ ...config, targetPractice: false, dodgePractice: false })
     );
   } catch {
     // Ignore storage quota or private-mode restrictions
