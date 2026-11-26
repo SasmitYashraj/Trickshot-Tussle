@@ -60,6 +60,7 @@ export interface RenderPlayer {
   hp: number;
   maxHp: number;
   ammo: number;
+  maxAmmo?: number;
   stunTimer: number;
   postStunGraceTimer?: number;
   hurtFlashTimer: number;
@@ -4896,37 +4897,39 @@ export function renderArena(
       ctx.stroke();
     }
 
-    // Machined brushed-steel front cannon barrel (subtle bevel, no heavy cartoon line)
-    const barrelGrad = ctx.createLinearGradient(0, -8.5, 0, 8.5);
-    barrelGrad.addColorStop(0, '#64748B');
-    barrelGrad.addColorStop(0.32, '#334155');
-    barrelGrad.addColorStop(0.75, '#1E293B');
-    barrelGrad.addColorStop(1, '#090E1A');
-    ctx.fillStyle = barrelGrad;
-    ctx.beginPath();
-    ctx.roundRect(20, -8.5, 31, 17, 4.5);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(10, 15, 28, 0.48)';
-    ctx.lineWidth = 1.1;
-    ctx.stroke();
-
-    // Brushed top specular edge on barrel
-    ctx.fillStyle = 'rgba(241, 245, 249, 0.22)';
-    ctx.fillRect(22, -7.2, 27, 2);
-
-    ctx.fillStyle = '#FACC15';
-    ctx.fillRect(25, -6.2, 5, 4.2);
-    ctx.fillRect(35, -6.2, 5, 4.2);
-    ctx.fillRect(30, 2, 5, 4.2);
-    ctx.fillRect(40, 2, 5, 4.2);
-
-    ctx.fillStyle = player.ammo > 0 ? '#FDE047' : '#64748B';
-    ctx.fillRect(26, -2.2, 23, 4.4);
-    if (player.ammo > 0) {
-      ctx.fillStyle = '#FEF9C3';
+    if (player.maxAmmo !== 0) {
+      // Machined brushed-steel front cannon barrel (subtle bevel, no heavy cartoon line)
+      const barrelGrad = ctx.createLinearGradient(0, -8.5, 0, 8.5);
+      barrelGrad.addColorStop(0, '#64748B');
+      barrelGrad.addColorStop(0.32, '#334155');
+      barrelGrad.addColorStop(0.75, '#1E293B');
+      barrelGrad.addColorStop(1, '#090E1A');
+      ctx.fillStyle = barrelGrad;
       ctx.beginPath();
-      ctx.arc(50, 0, 4, 0, Math.PI * 2);
+      ctx.roundRect(20, -8.5, 31, 17, 4.5);
       ctx.fill();
+      ctx.strokeStyle = 'rgba(10, 15, 28, 0.48)';
+      ctx.lineWidth = 1.1;
+      ctx.stroke();
+
+      // Brushed top specular edge on barrel
+      ctx.fillStyle = 'rgba(241, 245, 249, 0.22)';
+      ctx.fillRect(22, -7.2, 27, 2);
+
+      ctx.fillStyle = '#FACC15';
+      ctx.fillRect(25, -6.2, 5, 4.2);
+      ctx.fillRect(35, -6.2, 5, 4.2);
+      ctx.fillRect(30, 2, 5, 4.2);
+      ctx.fillRect(40, 2, 5, 4.2);
+
+      ctx.fillStyle = player.ammo > 0 ? '#FDE047' : '#64748B';
+      ctx.fillRect(26, -2.2, 23, 4.4);
+      if (player.ammo > 0) {
+        ctx.fillStyle = '#FEF9C3';
+        ctx.beginPath();
+        ctx.arc(50, 0, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
 
     const bodyR = 30.5;
@@ -6685,6 +6688,7 @@ export function renderArena(
     cursorOverlay?.controlScheme === 'CURSOR_SPACE' &&
     cursorOverlay.cursorScreen &&
     localPlayer?.alive &&
+    localPlayer.maxAmmo !== 0 &&
     (!cursorOverlay.localPlayerIds || cursorOverlay.localPlayerIds.length <= 1)
   ) {
     const px = worldTx + localPlayer.x * scale;

@@ -498,11 +498,20 @@ export class ArenaEngine {
   private practiceShotRecordedForTarget = false;
   private practicePrevReactionMs: number | null = null;
   private dodgeCount = 0;
+  private dodgeHits = 0;
   private dodgeStreak = 0;
   private dodgeBestStreak = 0;
-  private dodgeWaveState: 'COOLDOWN' | 'AIMING' | 'ACTIVE_BULLETS' = 'COOLDOWN';
+  private dodgeWaveState: 'COOLDOWN' | 'ACTIVE_WAVE' = 'COOLDOWN';
   private dodgeWaveTimer = 0.65;
-  private dodgeWaveShooters: Array<{ botId: number; targetAngle: number; fired: boolean }> = [];
+  private dodgeWaveShooters: Array<{
+    botId: number;
+    targetAngle: number;
+    fireDelay: number;
+    reaimTimer: number;
+    aimLeadScale: number;
+    preferTrick: boolean;
+    fired: boolean;
+  }> = [];
   private dodgeWaveHitPlayer = false;
   private dodgeWaveMinDist = Infinity;
   private dodgeCornerAnchors = new Map<number, Vec2>();
@@ -658,10 +667,11 @@ export class ArenaEngine {
     this.practiceShotRecordedForTarget = false;
     this.practicePrevReactionMs = null;
     this.dodgeCount = 0;
+    this.dodgeHits = 0;
     this.dodgeStreak = 0;
     this.dodgeBestStreak = 0;
     this.dodgeWaveState = 'COOLDOWN';
-    this.dodgeWaveTimer = 0.65;
+    this.dodgeWaveTimer = 0.25 + Math.random() * 0.55;
     this.dodgeWaveShooters = [];
     this.dodgeWaveHitPlayer = false;
     this.dodgeWaveMinDist = Infinity;
@@ -1339,41 +1349,216 @@ export class ArenaEngine {
     return { x: targetX, y: targetY };
   }
 
-  private pickDodgeCornerShotAngle(bot: Player, player: Player | undefined): number {
-    const centerX = this.map.width * 0.5;
-    const centerY = this.map.height * 0.5;
-    const inwardAngle = Math.atan2(centerY - bot.y, centerX - bot.x);
+  private findEliteTrickshotAngle(
+    shooter: Player,
+    tx: number,
+    ty: number,
+    avoidAngles: number[] = []
+  ): number | null {
+    const allowedBounces = this.getBulletMaxBounces();
+    if (allowedBounces < 1) return null;
+    const floor: FloorLevel = 0;
+    const floorWalls = this.wallsByFloor[floor];
+    const maxRayDist = 1950;
+    const candidates: number[] = [];
+    const seenBuckets = new Set<number>();
+    const addCand = (ang: number) => {
+      const na = normalizeAngle(ang);
+      const bucket = Math.round(na * 90);
+      if (!seenBuckets.has(bucket)) {
+        seenBuckets.add(bucket);
+        candidates.push(na);
+      }
+    };
 
-    // 55% Ruthless predictive / trickshot pressure mixed with variance, 45% sweeping random arena bank shots
-    if (player && Math.random() < 0.55) {
-      const ruthlessAngle = this.findTrickshotAngle(bot, player, true);
-      if (ruthlessAngle !== null) {
-        const jitter = (Math.random() - 0.5) * 0.34;
-        const candidate = normalizeAngle(ruthlessAngle + jitter);
-        const sim = this.simulateShotSafety(bot, candidate, 0, {
-          maxDist: 380,
-          maxCheckBounces: 2,
-          ignoreTargetPlayerId: player.id,
-        });
-        if (!sim.hitsSelf) {
-          return candidate;
+    // 1-bounce analytic mirror reflections off perimeter and interior walls
+    const xMirrors: number[] = [ARENA_WALL_THICKNESS, this.map.width - ARENA_WALL_THICKNESS];
+    const yMirrors: number[] = [ARENA_WALL_THICKNESS, this.map.height - ARENA_WALL_THICKNESS];
+    for (const wall of floorWalls) {
+      if (wall.x > ARENA_WALL_THICKNESS && wall.x < this.map.width - ARENA_WALL_THICKNESS) {
+        xMirrors.push(wall.x, wall.x + wall.w);
+      }
+      if (wall.y > ARENA_WALL_THICKNESS && wall.y < this.map.height - ARENA_WALL_THICKNESS) {
+        yMirrors.push(wall.y, wall.y + wall.h);
+      }
+    }
+
+    for (const xm of xMirrors) {
+      addCand(Math.atan2(ty - shooter.y, 2 * xm - tx - shooter.x));
+    }
+    for (const ym of yMirrors) {
+      addCand(Math.atan2(2 * ym - ty - shooter.y, tx - shooter.x));
+    }
+
+    // 2-bounce corner & double-wall mirror reflections when >= 2 bounces allowed
+    if (allowedBounces >= 2) {
+      const xOuter = [ARENA_WALL_THICKNESS, this.map.width - ARENA_WALL_THICKNESS];
+      const yOuter = [ARENA_WALL_THICKNESS, this.map.height - ARENA_WALL_THICKNESS];
+      for (const xm of xMirrors.slice(0, 6)) {
+        const mx = 2 * xm - tx;
+        for (const ym of yOuter) {
+          addCand(Math.atan2(2 * ym - ty - shooter.y, mx - shooter.x));
+        }
+        for (const xm2 of xOuter) {
+          if (Math.abs(xm2 - xm) > 40) {
+            addCand(Math.atan2(ty - shooter.y, 2 * xm2 - mx - shooter.x));
+          }
+        }
+      }
+      for (const ym of yMirrors.slice(0, 6)) {
+        const my = 2 * ym - ty;
+        for (const xm of xOuter) {
+          addCand(Math.atan2(my - shooter.y, 2 * xm - tx - shooter.x));
+        }
+        for (const ym2 of yOuter) {
+          if (Math.abs(ym2 - ym) > 40) {
+            addCand(Math.atan2(2 * ym2 - my - shooter.y, tx - shooter.x));
+          }
         }
       }
     }
 
-    for (let attempt = 0; attempt < 24; attempt++) {
-      const spread = (Math.random() - 0.5) * 1.5; // ~±43° fan into the open arena & side walls
-      const candidate = normalizeAngle(inwardAngle + spread);
-      const sim = this.simulateShotSafety(bot, candidate, 0, {
-        maxDist: 420,
-        maxCheckBounces: 2,
-        ignoreTargetPlayerId: player?.id ?? null,
+    // Dense 144-ray sweep (2.5° spacing) so even complex multi-wall bank channels are found
+    for (let i = 0; i < 144; i++) {
+      addCand((i / 144) * Math.PI * 2);
+    }
+
+    const coarseHits: Array<{ angle: number; score: number }> = [];
+    for (const a of candidates) {
+      const sim = this.simulateShotSafety(shooter, a, floor, {
+        maxDist: maxRayDist,
+        maxCheckBounces: allowedBounces,
+        targetPoint: { x: tx, y: ty },
+        targetHitRadius: PLAYER_RADIUS + 14,
+        allowExplosiveDetonation: false,
       });
-      if (!sim.hitsSelf) {
-        return candidate;
+      if (sim.safe && !sim.hitsSelf && sim.reachedTarget && sim.bouncesAtTarget >= 1) {
+        const dupPenalty = avoidAngles.some((prevA) => Math.abs(normalizeAngle(a - prevA)) < 0.16)
+          ? 240
+          : 0;
+        const score = sim.bouncesAtTarget * 55 + sim.stepsAtTarget + dupPenalty;
+        coarseHits.push({ angle: a, score });
       }
     }
-    return inwardAngle;
+
+    if (coarseHits.length === 0) return null;
+    coarseHits.sort((u, v) => u.score - v.score);
+
+    // Fine-polish the top 4 trickshot lines down to sub-degree precision (tight center hit)
+    let bestAngle: number | null = coarseHits[0].angle;
+    let bestTightScore = Infinity;
+    for (const seed of coarseHits.slice(0, 4)) {
+      for (let off = -0.042; off <= 0.0421; off += 0.006) {
+        const refined = normalizeAngle(seed.angle + off);
+        const sim = this.simulateShotSafety(shooter, refined, floor, {
+          maxDist: maxRayDist,
+          maxCheckBounces: allowedBounces,
+          targetPoint: { x: tx, y: ty },
+          targetHitRadius: PLAYER_RADIUS + 3,
+          allowExplosiveDetonation: false,
+        });
+        if (sim.safe && !sim.hitsSelf && sim.reachedTarget && sim.bouncesAtTarget >= 1) {
+          const dupPenalty = avoidAngles.some((prevA) => Math.abs(normalizeAngle(refined - prevA)) < 0.16)
+            ? 240
+            : 0;
+          const score = sim.bouncesAtTarget * 55 + sim.stepsAtTarget + dupPenalty;
+          if (score < bestTightScore) {
+            bestTightScore = score;
+            bestAngle = refined;
+          }
+        }
+      }
+    }
+    return bestAngle;
+  }
+
+  private pickDodgeCornerShotAngle(
+    bot: Player,
+    player: Player | undefined,
+    leadScale = 0.98,
+    preferTrick = false,
+    avoidAngles: number[] = []
+  ): number {
+    const centerX = this.map.width * 0.5;
+    const centerY = this.map.height * 0.5;
+    const inwardAngle = Math.atan2(centerY - bot.y, centerX - bot.x);
+    if (!player) return inwardAngle;
+
+    // 3-pass iterative velocity-lead prediction (Ruthless intercept precision)
+    const bSpeed = this.getBulletSpeed();
+    let predX = player.x;
+    let predY = player.y;
+    for (let it = 0; it < 3; it++) {
+      const tHit = dist(bot.x, bot.y, predX, predY) / bSpeed;
+      const nx = clamp(
+        player.x + player.vx * tHit * leadScale,
+        ARENA_WALL_THICKNESS + PLAYER_RADIUS + 4,
+        this.map.width - ARENA_WALL_THICKNESS - PLAYER_RADIUS - 4
+      );
+      const ny = clamp(
+        player.y + player.vy * tHit * leadScale,
+        ARENA_WALL_THICKNESS + PLAYER_RADIUS + 4,
+        this.map.height - ARENA_WALL_THICKNESS - PLAYER_RADIUS - 4
+      );
+      if (this.isPointWalkableOnFloor(nx, ny, PLAYER_RADIUS, 0)) {
+        predX = nx;
+        predY = ny;
+      } else {
+        const clampedPt = this.findNearestWalkablePoint(nx, ny, PLAYER_RADIUS, 0);
+        predX = clampedPt.x;
+        predY = clampedPt.y;
+      }
+    }
+
+    const predClear =
+      this.hasLineOfSight(bot.x, bot.y, predX, predY, 0) &&
+      this.isDirectShotClearAndSafe(bot, predX, predY, 0, player.id);
+    const directClear =
+      predClear ||
+      (this.hasLineOfSight(bot.x, bot.y, player.x, player.y, 0) &&
+        this.isDirectShotClearAndSafe(bot, player.x, player.y, 0, player.id));
+
+    const directAimX = predClear ? predX : player.x;
+    const directAimY = predClear ? predY : player.y;
+    const directAngle = normalizeAngle(Math.atan2(directAimY - bot.y, directAimX - bot.x));
+
+    // If direct line is clear and this shot wants direct intercept (or no bounces exist), fire razor-sharp intercept
+    if (directClear && (!preferTrick || this.getBulletMaxBounces() < 1)) {
+      return normalizeAngle(directAngle + (Math.random() - 0.5) * 0.032);
+    }
+
+    // Elite multi-bounce trickshot calculation (predicted intercept first, current position fallback)
+    const trickAngle =
+      this.findEliteTrickshotAngle(bot, predX, predY, avoidAngles) ??
+      this.findEliteTrickshotAngle(bot, player.x, player.y, avoidAngles);
+    if (trickAngle !== null) {
+      return trickAngle;
+    }
+
+    if (directClear) {
+      return normalizeAngle(directAngle + (Math.random() - 0.5) * 0.032);
+    }
+
+    // Fallback when zero bounces allowed & completely walled off: pressure clearest corridor toward player
+    const baseToPlayer = Math.atan2(predY - bot.y, predX - bot.x);
+    let bestPressure = inwardAngle;
+    let bestDiff = Infinity;
+    for (let off = -1.35; off <= 1.351; off += 0.15) {
+      const cand = normalizeAngle(baseToPlayer + off);
+      const sim = this.simulateShotSafety(bot, cand, 0, {
+        maxDist: 520,
+        maxCheckBounces: this.getBulletMaxBounces(),
+        ignoreTargetPlayerId: player.id,
+      });
+      if (!sim.hitsSelf) {
+        const dAng = Math.abs(normalizeAngle(cand - baseToPlayer));
+        if (dAng < bestDiff) {
+          bestDiff = dAng;
+          bestPressure = cand;
+        }
+      }
+    }
+    return bestPressure;
   }
 
   private updateDodgePractice(dt: number) {
@@ -1388,9 +1573,9 @@ export class ArenaEngine {
       if (shooterSet.has(bot.id)) continue;
       bot.aiThinkTimer -= dt;
       if (bot.aiThinkTimer <= 0) {
-        bot.aiThinkTimer = 0.45 + Math.random() * 0.65;
+        bot.aiThinkTimer = 0.28 + Math.random() * 0.68;
         const inward = Math.atan2(centerY - bot.y, centerX - bot.x);
-        bot.aiTargetAngle = normalizeAngle(inward + (Math.random() - 0.5) * 1.45);
+        bot.aiTargetAngle = normalizeAngle(inward + (Math.random() - 0.5) * 1.65);
       }
     }
 
@@ -1408,49 +1593,81 @@ export class ArenaEngine {
           pool[j] = tmp;
         }
         const chosen = pool.slice(0, Math.min(wanted, pool.length));
-        this.dodgeWaveShooters = chosen.map((bot) => {
-          const targetAngle = this.pickDodgeCornerShotAngle(bot, player);
+        const leadShooterIdx = Math.floor(Math.random() * chosen.length);
+        const chosenAngles: number[] = [];
+
+        this.dodgeWaveShooters = chosen.map((bot, idx) => {
+          // Mix razor-sharp direct intercepts and elite multi-bounce trickshots, plus varied lead scales on multi-waves
+          const aimLeadScale = idx === leadShooterIdx ? 0.98 : 0.65 + Math.random() * 0.45;
+          const preferTrick = Math.random() < 0.48;
+          const targetAngle = this.pickDodgeCornerShotAngle(
+            bot,
+            player,
+            aimLeadScale,
+            preferTrick,
+            chosenAngles
+          );
+          chosenAngles.push(targetAngle);
           bot.aiTargetAngle = targetAngle;
           bot.ammo = 1;
-          return { botId: bot.id, targetAngle, fired: false };
+          const fireDelay =
+            idx === leadShooterIdx
+              ? Math.random() * 0.16
+              : Math.random() * 0.62;
+          return {
+            botId: bot.id,
+            targetAngle,
+            fireDelay,
+            reaimTimer: 0.08 + Math.random() * 0.06,
+            aimLeadScale,
+            preferTrick,
+            fired: false,
+          };
         });
-        this.dodgeWaveState = 'AIMING';
-        this.dodgeWaveTimer = 1.35;
+        this.dodgeWaveState = 'ACTIVE_WAVE';
+        this.dodgeWaveTimer = 0;
         this.dodgeWaveHitPlayer = false;
         this.dodgeWaveMinDist = Infinity;
       }
       return;
     }
 
-    if (this.dodgeWaveState === 'AIMING') {
-      this.dodgeWaveTimer -= dt;
-      let allAligned = true;
-      for (const s of this.dodgeWaveShooters) {
-        const bot = bots.find((b) => b.id === s.botId);
-        if (!bot) continue;
-        bot.aiTargetAngle = s.targetAngle;
-        const diff = Math.abs(normalizeAngle(s.targetAngle - bot.angle));
-        if (diff > 0.065) {
-          allAligned = false;
-        }
+    // ACTIVE_WAVE: staggered random firing with continuous Ruthless re-aiming, then wait until EVERY bullet & bounce dies!
+    const activeWaveAngles = this.dodgeWaveShooters.map((s) => s.targetAngle);
+    for (const s of this.dodgeWaveShooters) {
+      if (s.fired) continue;
+      const bot = bots.find((b) => b.id === s.botId);
+      if (!bot) {
+        s.fired = true;
+        continue;
+      }
+      s.fireDelay -= dt;
+      s.reaimTimer -= dt;
+
+      // Track live player movement/trickshot path right up until just before pulling trigger
+      if (s.reaimTimer <= 0 && (s.fireDelay > 0.06 || Math.abs(normalizeAngle(s.targetAngle - bot.angle)) > 0.16)) {
+        const otherAngles = activeWaveAngles.filter((a) => a !== s.targetAngle);
+        s.targetAngle = this.pickDodgeCornerShotAngle(
+          bot,
+          player,
+          s.aimLeadScale,
+          s.preferTrick,
+          otherAngles
+        );
+        s.reaimTimer = 0.11;
       }
 
-      if (allAligned || this.dodgeWaveTimer <= 0) {
-        for (const s of this.dodgeWaveShooters) {
-          if (s.fired) continue;
-          const bot = bots.find((b) => b.id === s.botId);
-          if (bot && bot.ammo > 0) {
-            bot.angle = s.targetAngle;
-            this.fireBullet(bot);
-            s.fired = true;
-          }
+      bot.aiTargetAngle = s.targetAngle;
+      const aligned = Math.abs(normalizeAngle(s.targetAngle - bot.angle)) <= 0.065;
+      if (s.fireDelay <= 0 && (aligned || s.fireDelay <= -0.9)) {
+        if (bot.ammo > 0) {
+          if (aligned) bot.angle = s.targetAngle;
+          this.fireBullet(bot);
         }
-        this.dodgeWaveState = 'ACTIVE_BULLETS';
+        s.fired = true;
       }
-      return;
     }
 
-    // ACTIVE_BULLETS: strictly wait until EVERY bullet & all its bounces have ended!
     if (player) {
       for (const b of this.bullets) {
         const clearance = dist(b.x, b.y, player.x, player.y) - b.radius - PLAYER_RADIUS;
@@ -1460,7 +1677,8 @@ export class ArenaEngine {
       }
     }
 
-    if (this.bullets.length === 0) {
+    const allFired = this.dodgeWaveShooters.every((s) => s.fired);
+    if (allFired && this.bullets.length === 0) {
       if (!this.dodgeWaveHitPlayer && player) {
         this.dodgeCount += 1;
         this.dodgeStreak += 1;
@@ -1498,7 +1716,8 @@ export class ArenaEngine {
       }
       this.dodgeWaveShooters = [];
       this.dodgeWaveState = 'COOLDOWN';
-      this.dodgeWaveTimer = 0.4;
+      // Completely random short delay after all wave bullets finish bouncing
+      this.dodgeWaveTimer = 0.12 + Math.random() * 0.78;
     }
   }
 
@@ -5114,6 +5333,7 @@ export class ArenaEngine {
 
               if (this.config.dodgePractice) {
                 this.dodgeWaveHitPlayer = true;
+                this.dodgeHits += 1;
                 this.dodgeStreak = 0;
                 player.hurtFlashTimer = 0.28;
                 player.spawnInvulnTimer = 0.35;
@@ -8531,6 +8751,7 @@ export class ArenaEngine {
       dodgePractice: Boolean(this.config.dodgePractice),
       dodgeWaveMode: this.config.dodgePractice ? (this.config.dodgeWaveMode ?? 'ONE') : undefined,
       dodgeCount: this.config.dodgePractice ? this.dodgeCount : undefined,
+      dodgeHits: this.config.dodgePractice ? this.dodgeHits : undefined,
       dodgeStreak: this.config.dodgePractice ? this.dodgeStreak : undefined,
       dodgeBestStreak: this.config.dodgePractice ? this.dodgeBestStreak : undefined,
     };

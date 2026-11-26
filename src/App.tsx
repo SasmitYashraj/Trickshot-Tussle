@@ -330,7 +330,7 @@ function getHudSnapshotSignature(snap: GameSnapshot): string {
   const sec = Math.max(0, Math.floor(snap.elapsedTime));
   const pReload = snap.practiceReloadTimer ? Math.ceil(snap.practiceReloadTimer * 15) : 0;
   const dodgeBullets = snap.dodgePractice ? snap.activeBullets : 0;
-  let s = `${sec}|${snap.winnerId ?? 'n'}|${snap.winnerTeam ?? 'n'}|${snap.practiceTargetMode ?? ''}|${pReload}|${snap.practiceStreak ?? 0}|${snap.practiceLastSplitMs ?? ''}|${snap.practiceAvgSplitMs ?? ''}|${snap.practicePrevReactionMs ?? ''}|${snap.dodgePractice ? 1 : 0}|${snap.dodgeWaveMode ?? ''}|${snap.dodgeCount ?? 0}|${snap.dodgeStreak ?? 0}|${snap.dodgeBestStreak ?? 0}|${dodgeBullets}`;
+  let s = `${sec}|${snap.winnerId ?? 'n'}|${snap.winnerTeam ?? 'n'}|${snap.practiceTargetMode ?? ''}|${pReload}|${snap.practiceStreak ?? 0}|${snap.practiceLastSplitMs ?? ''}|${snap.practiceAvgSplitMs ?? ''}|${snap.practicePrevReactionMs ?? ''}|${snap.dodgePractice ? 1 : 0}|${snap.dodgeWaveMode ?? ''}|${snap.dodgeCount ?? 0}|${snap.dodgeHits ?? 0}|${snap.dodgeStreak ?? 0}|${snap.dodgeBestStreak ?? 0}|${dodgeBullets}`;
   for (const p of snap.players) {
     const stun = p.stunTimer > 0 ? Math.ceil(p.stunTimer * 2) : 0;
     const resp = p.respawnTimer > 0 ? Math.ceil(p.respawnTimer * 2) : 0;
@@ -1963,6 +1963,10 @@ export default function App() {
                 {snapshot.dodgeCount ?? 0} Dodges
               </span>
               <span aria-hidden="true">·</span>
+              <span className="font-mono-tabular font-bold text-rose-300">
+                {snapshot.dodgeHits ?? 0} Hits
+              </span>
+              <span aria-hidden="true">·</span>
               <span className="font-mono-tabular font-bold text-amber-300">
                 Streak {snapshot.dodgeStreak ?? 0}x
               </span>
@@ -2395,12 +2399,12 @@ export default function App() {
               <div className="rounded-lg border border-slate-700/75 bg-slate-950/75 px-2.5 py-1.5 text-[11px] backdrop-blur-sm space-y-0.5">
                 <div className="flex items-center gap-2">
                   <ShieldAlert className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-                  <span className="font-display font-bold text-slate-100">
+                  <span className="font-display font-bold text-emerald-300">
                     {snapshot.dodgeCount ?? 0} Dodges
                   </span>
                   <span className="text-slate-500">·</span>
-                  <span className="font-mono-tabular font-bold text-amber-300">
-                    {snapshot.dodgeStreak ?? 0}x Streak
+                  <span className="font-mono-tabular font-bold text-rose-300">
+                    {snapshot.dodgeHits ?? 0} Hits
                   </span>
                 </div>
                 <div className="text-[10px] font-medium text-slate-400">
@@ -2409,7 +2413,9 @@ export default function App() {
               </div>
               <div className="rounded-lg border border-slate-700/75 bg-slate-950/75 px-2.5 py-1.5 text-[10px] backdrop-blur-sm text-right space-y-0.5">
                 <div className="font-mono-tabular text-slate-300">
-                  Best <strong className="text-emerald-300">{snapshot.dodgeBestStreak ?? 0}x</strong>
+                  Streak <strong className="text-amber-300">{snapshot.dodgeStreak ?? 0}x</strong>{' '}
+                  <span className="text-slate-600">·</span> Best{' '}
+                  <strong className="text-violet-300">{snapshot.dodgeBestStreak ?? 0}x</strong>
                 </div>
                 <div className="font-mono-tabular text-slate-400">
                   {snapshot.activeBullets > 0 ? (
@@ -2939,15 +2945,21 @@ export default function App() {
                   <ShieldAlert className="w-3.5 h-3.5" />
                   Dodging Practice
                 </span>
-                <span className="font-mono-tabular font-bold text-emerald-300">
-                  {snapshot.dodgeCount ?? 0} Dodges
-                </span>
-              </div>
-              <div className="flex items-center justify-between text-[11px] text-slate-300">
-                <span>Wave Mode</span>
-                <span className="font-semibold text-slate-100">{dodgeModeLabel}</span>
+                <span className="font-mono-tabular font-bold text-slate-200">{dodgeModeLabel}</span>
               </div>
               <div className="grid grid-cols-2 gap-1.5 pt-0.5 text-[11px]">
+                <div className="rounded-lg border border-slate-800 bg-slate-900/75 px-2 py-1.5">
+                  <div className="text-[10px] text-slate-400">Dodges</div>
+                  <div className="font-mono-tabular font-bold text-emerald-300">
+                    {snapshot.dodgeCount ?? 0}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-900/75 px-2 py-1.5">
+                  <div className="text-[10px] text-slate-400">Hits</div>
+                  <div className="font-mono-tabular font-bold text-rose-300">
+                    {snapshot.dodgeHits ?? 0}
+                  </div>
+                </div>
                 <div className="rounded-lg border border-slate-800 bg-slate-900/75 px-2 py-1.5">
                   <div className="text-[10px] text-slate-400">Streak</div>
                   <div className="font-mono-tabular font-bold text-amber-300">

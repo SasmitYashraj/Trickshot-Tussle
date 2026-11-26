@@ -643,6 +643,7 @@ export interface GameSnapshot {
   dodgePractice?: boolean;
   dodgeWaveMode?: DodgeWaveMode;
   dodgeCount?: number;
+  dodgeHits?: number;
   dodgeStreak?: number;
   dodgeBestStreak?: number;
 }
