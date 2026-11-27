@@ -1,4 +1,4 @@
-import { ARENA_MAPS } from './maps.ts';
+import { ARENA_MAPS, getWallCircleHitbox } from './maps.ts';
 import {
   ARENA_WALL_THICKNESS,
   type ArenaMap,
@@ -61,6 +61,7 @@ import {
   PLAYER_MAX_HP,
   PLAYER_MAX_SPEED,
   PLAYER_RADIUS,
+  PLAYER_SIZE_MULTS,
   PLAYER_SPEED_MULTS,
   PLAYER_TURN_SPEED,
   PLAYER_COLOR_PALETTE,
@@ -206,7 +207,7 @@ export function canCollectBookSpot(
 ): boolean {
   const pFloor = player.floor ?? 0;
   if (book.collected || book.floor !== pFloor) return false;
-  if (Math.hypot(book.x - player.x, book.y - player.y) > 88) return false;
+  if (Math.hypot(book.x - player.x, book.y - player.y) > 44) return false;
 
   if (book.face === 'W' && player.x > book.x + 12) return false;
   if (book.face === 'E' && player.x < book.x - 12) return false;
@@ -363,6 +364,59 @@ function circleIntersectsRect(cx: number, cy: number, r: number, rect: WallRect)
   return dx * dx + dy * dy < r * r;
 }
 
+function circleIntersectsWall(cx: number, cy: number, r: number, wall: WallRect): boolean {
+  const circ = getWallCircleHitbox(wall);
+  if (circ) {
+    const dx = cx - circ.cx;
+    const dy = cy - circ.cy;
+    const sumR = r + circ.r;
+    return dx * dx + dy * dy < sumR * sumR;
+  }
+  return circleIntersectsRect(cx, cy, r, wall);
+}
+
+function resolveCircleAgainstWall(
+  cx: number,
+  cy: number,
+  r: number,
+  wall: WallRect
+): { hit: boolean; nx: number; ny: number; overlap: number } {
+  const circ = getWallCircleHitbox(wall);
+  if (circ) {
+    const dx = cx - circ.cx;
+    const dy = cy - circ.cy;
+    const d2 = dx * dx + dy * dy;
+    const sumR = r + circ.r;
+    if (d2 >= sumR * sumR) return { hit: false, nx: 0, ny: 0, overlap: 0 };
+    const d = Math.sqrt(d2);
+    return {
+      hit: true,
+      nx: d > 0.0001 ? dx / d : 1,
+      ny: d > 0.0001 ? dy / d : 0,
+      overlap: sumR - d,
+    };
+  }
+  const closestX = clamp(cx, wall.x, wall.x + wall.w);
+  const closestY = clamp(cy, wall.y, wall.y + wall.h);
+  const dx = cx - closestX;
+  const dy = cy - closestY;
+  const d2 = dx * dx + dy * dy;
+  if (d2 >= r * r) return { hit: false, nx: 0, ny: 0, overlap: 0 };
+  const d = Math.sqrt(d2);
+  if (d > 0.0001) {
+    return { hit: true, nx: dx / d, ny: dy / d, overlap: r - d };
+  }
+  const leftPen = cx - wall.x;
+  const rightPen = wall.x + wall.w - cx;
+  const topPen = cy - wall.y;
+  const bottomPen = wall.y + wall.h - cy;
+  const minPen = Math.min(leftPen, rightPen, topPen, bottomPen);
+  if (minPen === leftPen) return { hit: true, nx: -1, ny: 0, overlap: r + leftPen };
+  if (minPen === rightPen) return { hit: true, nx: 1, ny: 0, overlap: r + rightPen };
+  if (minPen === topPen) return { hit: true, nx: 0, ny: -1, overlap: r + topPen };
+  return { hit: true, nx: 0, ny: 1, overlap: r + bottomPen };
+}
+
 function segmentIntersectsRect(x1: number, y1: number, x2: number, y2: number, rect: WallRect): boolean {
   const steps = Math.max(2, Math.ceil(dist(x1, y1, x2, y2) / 18));
   for (let i = 1; i < steps; i++) {
@@ -374,6 +428,28 @@ function segmentIntersectsRect(x1: number, y1: number, x2: number, y2: number, r
     }
   }
   return false;
+}
+
+function segmentIntersectsWall(x1: number, y1: number, x2: number, y2: number, wall: WallRect): boolean {
+  const circ = getWallCircleHitbox(wall);
+  if (circ) {
+    const vx = x2 - x1;
+    const vy = y2 - y1;
+    const lenSq = vx * vx + vy * vy;
+    const padR = circ.r + 3;
+    if (lenSq < 1e-6) {
+      const dx = circ.cx - x1;
+      const dy = circ.cy - y1;
+      return dx * dx + dy * dy < padR * padR;
+    }
+    const t = clamp(((circ.cx - x1) * vx + (circ.cy - y1) * vy) / lenSq, 0, 1);
+    const px = x1 + vx * t;
+    const py = y1 + vy * t;
+    const dx = px - circ.cx;
+    const dy = py - circ.cy;
+    return dx * dx + dy * dy < padR * padR;
+  }
+  return segmentIntersectsRect(x1, y1, x2, y2, wall);
 }
 
 function isPointInEllipse(px: number, py: number, ex: number, ey: number, rx: number, ry: number): boolean {
@@ -566,7 +642,7 @@ export class ArenaEngine {
   private playerOnIceLastTick = new Set<number>();
   private playerIceSfxCooldown = new Map<number, number>();
 
-  private getModifiers(): MatchModifiers {
+  public getModifiers(): MatchModifiers {
     return this.config.modifiers ?? DEFAULT_MATCH_MODIFIERS;
   }
 
@@ -576,6 +652,10 @@ export class ArenaEngine {
 
   private getPlayerTurnSpeed(): number {
     return PLAYER_TURN_SPEED * (TURN_SPEED_MULTS[this.getModifiers().turnSpeed] ?? 1.0);
+  }
+  private getPlayerRadius(): number {
+    if (this.isImmersiveMode()) return PLAYER_RADIUS;
+    return Math.round(PLAYER_RADIUS * (PLAYER_SIZE_MULTS[this.getModifiers().playerSize ?? 'MEDIUM'] ?? 1.0));
   }
 
   private getBulletSpeed(): number {
@@ -855,6 +935,7 @@ export class ArenaEngine {
       { x: this.map.width - cornerMargin, y: this.map.height - cornerMargin },
     ];
 
+    const pR = this.getPlayerRadius();
     this.players = activeSlots.map((s) => {
       const palette = assignedColors.get(s.slot) ?? PLAYER_COLOR_PALETTE[s.slot % PLAYER_COLOR_PALETTE.length];
       let spawn: Vec2;
@@ -863,12 +944,12 @@ export class ArenaEngine {
           spawn = this.findNearestWalkablePoint(
             this.map.width * 0.5,
             this.map.height * 0.5,
-            PLAYER_RADIUS + 8,
+            pR + 8,
             0
           );
         } else {
           const rawCorner = dodgeCornerCoords[(s.slot - 1) % dodgeCornerCoords.length];
-          spawn = this.findNearestWalkablePoint(rawCorner.x, rawCorner.y, PLAYER_RADIUS + 4, 0);
+          spawn = this.findNearestWalkablePoint(rawCorner.x, rawCorner.y, pR + 4, 0);
           this.dodgeCornerAnchors.set(s.slot, { x: spawn.x, y: spawn.y });
         }
       } else {
@@ -934,10 +1015,10 @@ export class ArenaEngine {
       this.buildLibraryNavGraph();
       this.initLibraryMatchState();
     } else {
-      const cacheKey = `${this.map.id}:bot32`;
+      const cacheKey = `${this.map.id}:bot32:r${pR}`;
       let cached = ArenaEngine.arenaBotGraphCache.get(cacheKey);
       if (!cached) {
-        cached = this.buildGridNavGraph(32, PLAYER_RADIUS + 2);
+        cached = this.buildGridNavGraph(32, pR + 2);
         ArenaEngine.arenaBotGraphCache.set(cacheKey, cached);
       }
       this.botNavNodes = cached;
@@ -1216,7 +1297,8 @@ export class ArenaEngine {
     const mode = this.config.practiceTargetMode ?? 'BOTH';
     const evasive = mode === 'EVASIVE';
     const moving = evasive ? true : mode === 'MOVING' ? true : mode === 'STATIC' ? false : Math.random() < 0.5;
-    const margin = ARENA_WALL_THICKNESS + PLAYER_RADIUS + 8;
+    const pR = this.getPlayerRadius();
+    const margin = ARENA_WALL_THICKNESS + pR + 8;
     const player = this.players[0];
     let spawnX = this.map.width * 0.5;
     let spawnY = this.map.height * 0.5;
@@ -1227,7 +1309,7 @@ export class ArenaEngine {
       for (let tries = 0; tries < 140; tries++) {
         const px = margin + Math.random() * (this.map.width - margin * 2);
         const py = margin + Math.random() * (this.map.height - margin * 2);
-        if (!this.isPointWalkableOnFloor(px, py, PLAYER_RADIUS + 6, 0)) continue;
+        if (!this.isPointWalkableOnFloor(px, py, pR + 6, 0)) continue;
         if (player && dist(px, py, player.x, player.y) < minPlayerDist) continue;
         spawnX = px;
         spawnY = py;
@@ -1260,7 +1342,7 @@ export class ArenaEngine {
       y: spawnY,
       vx: Math.cos(ang) * speed,
       vy: Math.sin(ang) * speed,
-      radius: PLAYER_RADIUS,
+      radius: pR,
       moving,
       age: 0,
       moveTimer: 1.2 + Math.random() * 1.4,
@@ -1425,36 +1507,15 @@ export class ArenaEngine {
         t.x += t.vx * subDt;
         t.y += t.vy * subDt;
         for (const w of walls) {
-          const cx = clamp(t.x, w.x, w.x + w.w);
-          const cy = clamp(t.y, w.y, w.y + w.h);
-          const dx = t.x - cx;
-          const dy = t.y - cy;
-          const d2 = dx * dx + dy * dy;
-          if (d2 < t.radius * t.radius) {
-            const d = Math.sqrt(d2);
-            let nx = 0;
-            let ny = 0;
-            if (d > 0.0001) {
-              nx = dx / d;
-              ny = dy / d;
-            } else {
-              const lp = t.x - w.x;
-              const rp = w.x + w.w - t.x;
-              const tp = t.y - w.y;
-              const bp = w.y + w.h - t.y;
-              const m = Math.min(lp, rp, tp, bp);
-              if (m === lp) nx = -1;
-              else if (m === rp) nx = 1;
-              else if (m === tp) ny = -1;
-              else ny = 1;
-            }
-            const overlap = t.radius - d + 0.5;
-            t.x += nx * overlap;
-            t.y += ny * overlap;
-            const dot = t.vx * nx + t.vy * ny;
+          const hit = resolveCircleAgainstWall(t.x, t.y, t.radius, w);
+          if (hit.hit) {
+            const overlap = hit.overlap + 0.5;
+            t.x += hit.nx * overlap;
+            t.y += hit.ny * overlap;
+            const dot = t.vx * hit.nx + t.vy * hit.ny;
             if (dot < 0) {
-              t.vx -= 2 * dot * nx;
-              t.vy -= 2 * dot * ny;
+              t.vx -= 2 * dot * hit.nx;
+              t.vy -= 2 * dot * hit.ny;
               const mag = Math.hypot(t.vx, t.vy) || 1;
               t.vx = (t.vx / mag) * targetSpeed;
               t.vy = (t.vy / mag) * targetSpeed;
@@ -1516,6 +1577,16 @@ export class ArenaEngine {
     const xMirrors: number[] = [ARENA_WALL_THICKNESS, this.map.width - ARENA_WALL_THICKNESS];
     const yMirrors: number[] = [ARENA_WALL_THICKNESS, this.map.height - ARENA_WALL_THICKNESS];
     for (const wall of floorWalls) {
+      const circ = getWallCircleHitbox(wall);
+      if (circ) {
+        const midA = Math.atan2((shooter.y + ty) * 0.5 - circ.cy, (shooter.x + tx) * 0.5 - circ.cx);
+        for (const off of [-0.65, -0.32, 0, 0.32, 0.65]) {
+          const rimX = circ.cx + Math.cos(midA + off) * (circ.r + BULLET_RADIUS + 1);
+          const rimY = circ.cy + Math.sin(midA + off) * (circ.r + BULLET_RADIUS + 1);
+          addCand(Math.atan2(rimY - shooter.y, rimX - shooter.x));
+        }
+        continue;
+      }
       if (wall.x > ARENA_WALL_THICKNESS && wall.x < this.map.width - ARENA_WALL_THICKNESS) {
         xMirrors.push(wall.x, wall.x + wall.w);
       }
@@ -1564,13 +1635,14 @@ export class ArenaEngine {
       addCand((i / 144) * Math.PI * 2);
     }
 
+    const pR = this.getPlayerRadius();
     const coarseHits: Array<{ angle: number; score: number }> = [];
     for (const a of candidates) {
       const sim = this.simulateShotSafety(shooter, a, floor, {
         maxDist: maxRayDist,
         maxCheckBounces: allowedBounces,
         targetPoint: { x: tx, y: ty },
-        targetHitRadius: PLAYER_RADIUS + 14,
+        targetHitRadius: pR + 14,
         allowExplosiveDetonation: false,
       });
       if (sim.safe && !sim.hitsSelf && sim.reachedTarget && sim.bouncesAtTarget >= 1) {
@@ -1595,7 +1667,7 @@ export class ArenaEngine {
           maxDist: maxRayDist,
           maxCheckBounces: allowedBounces,
           targetPoint: { x: tx, y: ty },
-          targetHitRadius: PLAYER_RADIUS + 3,
+          targetHitRadius: pR + 3,
           allowExplosiveDetonation: false,
         });
         if (sim.safe && !sim.hitsSelf && sim.reachedTarget && sim.bouncesAtTarget >= 1) {
@@ -1626,6 +1698,7 @@ export class ArenaEngine {
     if (!player) return inwardAngle;
 
     // 3-pass iterative velocity-lead prediction (Ruthless intercept precision)
+    const pR = this.getPlayerRadius();
     const bSpeed = this.getBulletSpeed();
     let predX = player.x;
     let predY = player.y;
@@ -1633,19 +1706,19 @@ export class ArenaEngine {
       const tHit = dist(bot.x, bot.y, predX, predY) / bSpeed;
       const nx = clamp(
         player.x + player.vx * tHit * leadScale,
-        ARENA_WALL_THICKNESS + PLAYER_RADIUS + 4,
-        this.map.width - ARENA_WALL_THICKNESS - PLAYER_RADIUS - 4
+        ARENA_WALL_THICKNESS + pR + 4,
+        this.map.width - ARENA_WALL_THICKNESS - pR - 4
       );
       const ny = clamp(
         player.y + player.vy * tHit * leadScale,
-        ARENA_WALL_THICKNESS + PLAYER_RADIUS + 4,
-        this.map.height - ARENA_WALL_THICKNESS - PLAYER_RADIUS - 4
+        ARENA_WALL_THICKNESS + pR + 4,
+        this.map.height - ARENA_WALL_THICKNESS - pR - 4
       );
-      if (this.isPointWalkableOnFloor(nx, ny, PLAYER_RADIUS, 0)) {
+      if (this.isPointWalkableOnFloor(nx, ny, pR, 0)) {
         predX = nx;
         predY = ny;
       } else {
-        const clampedPt = this.findNearestWalkablePoint(nx, ny, PLAYER_RADIUS, 0);
+        const clampedPt = this.findNearestWalkablePoint(nx, ny, pR, 0);
         predX = clampedPt.x;
         predY = clampedPt.y;
       }
@@ -1733,7 +1806,7 @@ export class ArenaEngine {
             : 'DODGED!';
     this.addFloatingText(
       player.x,
-      player.y - (PLAYER_RADIUS + 14),
+      player.y - (this.getPlayerRadius() + 14),
       label,
       closeDodge ? '#38BDF8' : this.dodgeStreak >= 5 ? '#FDE047' : '#34D399',
       0
@@ -1762,10 +1835,11 @@ export class ArenaEngine {
     if (mode === 'RANDOM') {
       // Update min clearance for every tracked bot bullet flying in the arena
       if (player) {
+        const pR = this.getPlayerRadius();
         for (const b of this.bullets) {
           const tr = this.dodgeBulletTrack.get(b.id);
           if (!tr) continue;
-          const clearance = dist(b.x, b.y, player.x, player.y) - b.radius - PLAYER_RADIUS;
+          const clearance = dist(b.x, b.y, player.x, player.y) - b.radius - pR;
           if (clearance < tr.minDist) tr.minDist = clearance;
         }
       }
@@ -1977,8 +2051,9 @@ export class ArenaEngine {
     }
 
     if (player) {
+      const pR = this.getPlayerRadius();
       for (const b of this.bullets) {
-        const clearance = dist(b.x, b.y, player.x, player.y) - b.radius - PLAYER_RADIUS;
+        const clearance = dist(b.x, b.y, player.x, player.y) - b.radius - pR;
         if (clearance < this.dodgeWaveMinDist) {
           this.dodgeWaveMinDist = clearance;
         }
@@ -2077,7 +2152,7 @@ export class ArenaEngine {
       if (!inUpper && !onStair) return false;
     }
     for (const wall of this.wallsByFloor[floor]) {
-      if (circleIntersectsRect(x, y, radius, wall)) return false;
+      if (circleIntersectsWall(x, y, radius, wall)) return false;
     }
     return true;
   }
@@ -2102,6 +2177,7 @@ export class ArenaEngine {
   }
 
   private findFreeSpot(radius: number, targetFloor?: FloorLevel): (Vec2 & { floor: FloorLevel }) | null {
+    const pR = this.getPlayerRadius();
     const pad = ARENA_WALL_THICKNESS + radius + 24;
     const isLibrary = this.map.id === 'library';
     for (let attempt = 0; attempt < 96; attempt++) {
@@ -2124,7 +2200,7 @@ export class ArenaEngine {
 
       let blocked = false;
       for (const p of this.players) {
-        if (p.alive && sameFloor(p.floor, floor) && dist(x, y, p.x, p.y) < radius + PLAYER_RADIUS + 48) {
+        if (p.alive && sameFloor(p.floor, floor) && dist(x, y, p.x, p.y) < radius + pR + 48) {
           blocked = true;
           break;
         }
@@ -2229,29 +2305,8 @@ export class ArenaEngine {
         }
       }
 
-      // Resolve pushed cardboard boxes against solid arena walls
-      const halfW = box.w * 0.5;
-      const halfH = box.h * 0.5;
-      const boxFloor = box.floor ?? 0;
-      for (const wall of this.wallsByFloor[boxFloor]) {
-        const boxLeft = box.x - halfW;
-        const boxRight = box.x + halfW;
-        const boxTop = box.y - halfH;
-        const boxBottom = box.y + halfH;
-        const overlapX = Math.min(boxRight, wall.x + wall.w) - Math.max(boxLeft, wall.x);
-        const overlapY = Math.min(boxBottom, wall.y + wall.h) - Math.max(boxTop, wall.y);
-        if (overlapX > 0 && overlapY > 0) {
-          if (overlapX < overlapY) {
-            const sign = box.x < wall.x + wall.w * 0.5 ? -1 : 1;
-            box.x += sign * overlapX;
-            if ((sign < 0 && box.vx > 0) || (sign > 0 && box.vx < 0)) box.vx = 0;
-          } else {
-            const sign = box.y < wall.y + wall.h * 0.5 ? -1 : 1;
-            box.y += sign * overlapY;
-            if ((sign < 0 && box.vy > 0) || (sign > 0 && box.vy < 0)) box.vy = 0;
-          }
-        }
-      }
+      // Resolve pushed cardboard boxes against solid arena walls (including circular trees/rocks)
+      this.resolveRectAgainstWalls(box, box.w * 0.5, box.h * 0.5);
 
       // Boxes pushed deep into broken winter water sink with a splash
       if (box.state === 'active') {
@@ -2327,6 +2382,38 @@ export class ArenaEngine {
   ) {
     const floor = item.floor ?? 0;
     for (const wall of this.wallsByFloor[floor]) {
+      const circ = getWallCircleHitbox(wall);
+      if (circ) {
+        const cx = clamp(circ.cx, item.x - halfW, item.x + halfW);
+        const cy = clamp(circ.cy, item.y - halfH, item.y + halfH);
+        const dx = cx - circ.cx;
+        const dy = cy - circ.cy;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < circ.r * circ.r) {
+          const d = Math.sqrt(d2);
+          let nx = 0;
+          let ny = 0;
+          if (d > 0.0001) {
+            nx = dx / d;
+            ny = dy / d;
+          } else {
+            const ddx = item.x - circ.cx;
+            const ddy = item.y - circ.cy;
+            const dd = Math.hypot(ddx, ddy) || 1;
+            nx = ddx / dd;
+            ny = ddy / dd;
+          }
+          const overlap = circ.r - d;
+          item.x += nx * overlap;
+          item.y += ny * overlap;
+          const vDot = item.vx * nx + item.vy * ny;
+          if (vDot < 0) {
+            item.vx -= vDot * nx;
+            item.vy -= vDot * ny;
+          }
+        }
+        continue;
+      }
       const overlapX = Math.min(item.x + halfW, wall.x + wall.w) - Math.max(item.x - halfW, wall.x);
       const overlapY = Math.min(item.y + halfH, wall.y + wall.h) - Math.max(item.y - halfH, wall.y);
       if (overlapX > 0 && overlapY > 0) {
@@ -2641,33 +2728,16 @@ export class ArenaEngine {
         }
       }
 
+      this.updateEntityFloorAndBlend(player);
+      const pR = this.getPlayerRadius();
       const pFloor = player.floor ?? 0;
       const floorWalls = this.wallsByFloor[pFloor];
       for (let pass = 0; pass < 2; pass++) {
         for (const wall of floorWalls) {
-          const closestX = clamp(player.x, wall.x, wall.x + wall.w);
-          const closestY = clamp(player.y, wall.y, wall.y + wall.h);
-          const dx = player.x - closestX;
-          const dy = player.y - closestY;
-          const d2 = dx * dx + dy * dy;
-
-          if (d2 < PLAYER_RADIUS * PLAYER_RADIUS) {
-            const d = Math.sqrt(d2);
-            if (d > 0.0001) {
-              const overlap = PLAYER_RADIUS - d;
-              player.x += (dx / d) * overlap;
-              player.y += (dy / d) * overlap;
-            } else {
-              const leftPen = player.x - wall.x;
-              const rightPen = wall.x + wall.w - player.x;
-              const topPen = player.y - wall.y;
-              const bottomPen = wall.y + wall.h - player.y;
-              const minPen = Math.min(leftPen, rightPen, topPen, bottomPen);
-              if (minPen === leftPen) player.x = wall.x - PLAYER_RADIUS;
-              else if (minPen === rightPen) player.x = wall.x + wall.w + PLAYER_RADIUS;
-              else if (minPen === topPen) player.y = wall.y - PLAYER_RADIUS;
-              else player.y = wall.y + wall.h + PLAYER_RADIUS;
-            }
+          const hit = resolveCircleAgainstWall(player.x, player.y, pR, wall);
+          if (hit.hit) {
+            player.x += hit.nx * hit.overlap;
+            player.y += hit.ny * hit.overlap;
           }
         }
       }
@@ -2699,6 +2769,7 @@ export class ArenaEngine {
       }
     }
 
+    const pRadius = this.getPlayerRadius();
     for (let i = 0; i < this.players.length; i++) {
       const a = this.players[i];
       if (!a.alive) continue;
@@ -2708,7 +2779,7 @@ export class ArenaEngine {
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const d = Math.hypot(dx, dy);
-        const minD = PLAYER_RADIUS * 2;
+        const minD = pRadius * 2;
         if (d < minD && d > 0.001) {
           const overlap = (minD - d) * 0.5;
           const nx = dx / d;
@@ -2726,7 +2797,7 @@ export class ArenaEngine {
       for (let i = this.pickups.length - 1; i >= 0; i--) {
         const item = this.pickups[i];
         if (!item || !sameFloor(item.floor, player.floor)) continue;
-        const hitDist = PLAYER_RADIUS + item.radius - 2;
+        const hitDist = pRadius + item.radius - 2;
         if (dist(player.x, player.y, item.x, item.y) <= hitDist) {
           if (item.kind === 'bullet') {
             if (player.ammo < player.maxAmmo) {
@@ -2734,7 +2805,7 @@ export class ArenaEngine {
               this.pickups.splice(i, 1);
               this.emitEvent('pickup', item.x, item.y, player.id, undefined, item.floor ?? 0);
               this.spawnParticles(item.x, item.y, '#FACC15', 8, 95, item.floor ?? 0);
-              this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 8), '+1 AMMO', '#FDE047', item.floor ?? 0);
+              this.addFloatingText(player.x, player.y - (pRadius + 8), '+1 AMMO', '#FDE047', item.floor ?? 0);
             }
           } else if (item.kind === 'medkit') {
             if (player.hp < player.maxHp) {
@@ -2743,7 +2814,7 @@ export class ArenaEngine {
               this.pickups.splice(i, 1);
               this.emitEvent('heal', item.x, item.y, undefined, undefined, item.floor ?? 0);
               this.spawnParticles(item.x, item.y, '#34D399', 12, 110, item.floor ?? 0);
-              this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 8), `+${healed} HP`, '#34D399', item.floor ?? 0);
+              this.addFloatingText(player.x, player.y - (pRadius + 8), `+${healed} HP`, '#34D399', item.floor ?? 0);
             }
           } else if (item.kind === 'nitro') {
             this.detonatePickup(item, player.id);
@@ -2847,6 +2918,7 @@ export class ArenaEngine {
     const tol = 7;
 
     for (const wall of this.wallsByFloor[floor]) {
+      if (getWallCircleHitbox(wall)) continue;
       const overlapY = Math.min(cy + halfH, wall.y + wall.h) - Math.max(cy - halfH, wall.y);
       if (overlapY > 3) {
         if (Math.abs(cx - halfW - (wall.x + wall.w)) <= tol) pinX = -1;
@@ -2867,6 +2939,7 @@ export class ArenaEngine {
     halfW: number,
     halfH: number
   ): boolean {
+    const pR = this.getPlayerRadius();
     const bx = crate.x - halfW;
     const by = crate.y - halfH;
     const bw = halfW * 2;
@@ -2876,7 +2949,7 @@ export class ArenaEngine {
     const dx = player.x - closestX;
     const dy = player.y - closestY;
     const d2 = dx * dx + dy * dy;
-    if (d2 >= PLAYER_RADIUS * PLAYER_RADIUS) return false;
+    if (d2 >= pR * pR) return false;
 
     const d = Math.sqrt(d2);
     let nx = 0;
@@ -2885,7 +2958,7 @@ export class ArenaEngine {
     if (d > 0.0001) {
       nx = dx / d;
       ny = dy / d;
-      overlap = PLAYER_RADIUS - d;
+      overlap = pR - d;
     } else {
       const leftPen = player.x - bx;
       const rightPen = bx + bw - player.x;
@@ -2896,7 +2969,7 @@ export class ArenaEngine {
       else if (m === rightPen) nx = 1;
       else if (m === topPen) ny = -1;
       else ny = 1;
-      overlap = PLAYER_RADIUS + m;
+      overlap = pR + m;
     }
 
     const pins = this.detectWallPins(crate.x, crate.y, halfW, halfH, crate.floor ?? 0);
@@ -3189,13 +3262,14 @@ export class ArenaEngine {
     avoidBoxes = false
   ): number {
     const bFloor = bot.floor ?? 0;
-    const clearR = PLAYER_RADIUS + 4;
+    const pR = this.getPlayerRadius();
+    const clearR = pR + 4;
     const directX = bot.x + Math.cos(desiredAngle) * probeDist;
     const directY = bot.y + Math.sin(desiredAngle) * probeDist;
     const isDirectOk =
       this.isSegmentClearOnFloor(bot.x, bot.y, directX, directY, clearR, bFloor) &&
       (!avoidHazards || !this.segmentHitsHazardOnFloor(bot.x, bot.y, directX, directY, bFloor)) &&
-      (!avoidBoxes || !this.segmentHitsBoxOnFloor(bot.x, bot.y, directX, directY, PLAYER_RADIUS * 0.65, bFloor));
+      (!avoidBoxes || !this.segmentHitsBoxOnFloor(bot.x, bot.y, directX, directY, pR * 0.65, bFloor));
     if (isDirectOk) {
       return desiredAngle;
     }
@@ -3219,7 +3293,7 @@ export class ArenaEngine {
           bestWallAngle = cand;
         }
         if (avoidHazards && this.segmentHitsHazardOnFloor(bot.x, bot.y, px, py, bFloor)) continue;
-        if (avoidBoxes && this.segmentHitsBoxOnFloor(bot.x, bot.y, px, py, PLAYER_RADIUS * 0.65, bFloor)) continue;
+        if (avoidBoxes && this.segmentHitsBoxOnFloor(bot.x, bot.y, px, py, pR * 0.65, bFloor)) continue;
         if (align > bestSafeScore) {
           bestSafeScore = align;
           bestSafeAngle = cand;
@@ -3242,6 +3316,7 @@ export class ArenaEngine {
     y2: number,
     floor: FloorLevel = 0
   ): boolean {
+    const pR = this.getPlayerRadius();
     const segLen = dist(x1, y1, x2, y2);
     if (segLen < 8) return false;
     const dx = x2 - x1;
@@ -3251,7 +3326,7 @@ export class ArenaEngine {
     for (const p of this.pickups) {
       if (!sameFloor(p.floor, floor)) continue;
       if (p.kind !== 'nitro' && !(p.kind === 'tnt' && p.armed)) continue;
-      const rad = p.kind === 'nitro' ? NITRO_RADIUS + PLAYER_RADIUS + 32 : TNT_BLAST_RADIUS + 24;
+      const rad = p.kind === 'nitro' ? NITRO_RADIUS + pR + 32 : TNT_BLAST_RADIUS + 24;
       const t = clamp(((p.x - x1) * dx + (p.y - y1) * dy) / lenSq, 0, 1);
       const px = x1 + dx * t;
       const py = y1 + dy * t;
@@ -3263,7 +3338,7 @@ export class ArenaEngine {
       const steps = Math.max(2, Math.ceil(segLen / 34));
       for (let i = 1; i < steps; i++) {
         const t = i / steps;
-        if (isPointInIcePit(x1 + dx * t, y1 + dy * t, pit, PLAYER_RADIUS + 24)) {
+        if (isPointInIcePit(x1 + dx * t, y1 + dy * t, pit, pR + 24)) {
           return true;
         }
       }
@@ -3273,7 +3348,7 @@ export class ArenaEngine {
 
   private countOpenExits(x: number, y: number, floor: FloorLevel = 0): number {
     let exits = 0;
-    const checkR = PLAYER_RADIUS + 2;
+    const checkR = this.getPlayerRadius() + 2;
     for (let i = 0; i < 8; i++) {
       const a = (i / 8) * Math.PI * 2;
       const px = x + Math.cos(a) * 145;
@@ -3299,7 +3374,8 @@ export class ArenaEngine {
     );
     if (armedTnts.length === 0) return null;
 
-    const clearR = PLAYER_RADIUS + 4;
+    const pR = this.getPlayerRadius();
+    const clearR = pR + 4;
     let bestAngle = Math.atan2(bot.y - armedTnts[0].y, bot.x - armedTnts[0].x);
     let bestScore = -Infinity;
 
@@ -3333,12 +3409,12 @@ export class ArenaEngine {
 
         for (const p of this.pickups) {
           if (!sameFloor(p.floor, floor)) continue;
-          if (p.kind === 'nitro' && dist(px, py, p.x, p.y) < NITRO_RADIUS + PLAYER_RADIUS + 42) {
+          if (p.kind === 'nitro' && dist(px, py, p.x, p.y) < NITRO_RADIUS + pR + 42) {
             score -= 800;
           }
         }
         for (const pit of this.icePits) {
-          if (pit.broken && isPointInIcePit(px, py, pit, PLAYER_RADIUS + 26)) {
+          if (pit.broken && isPointInIcePit(px, py, pit, pR + 26)) {
             score -= 850;
           }
         }
@@ -3362,7 +3438,8 @@ export class ArenaEngine {
 
   private pickArenaPatrolPoint(bot: Player): Vec2 {
     const mem = this.getBotMemory(bot);
-    const pad = ARENA_WALL_THICKNESS + PLAYER_RADIUS + 68;
+    const pR = this.getPlayerRadius();
+    const pad = ARENA_WALL_THICKNESS + pR + 68;
     const minDist = this.isImmersiveMode() ? Math.max(680, this.map.width * 0.36) : 340;
     const botSector = this.getMapSector(bot.x, bot.y);
     const bFloor = bot.floor ?? 0;
@@ -3375,7 +3452,7 @@ export class ArenaEngine {
       const dSelf = dist(bot.x, bot.y, x, y);
       if (
         dSelf >= (tries < 20 ? minDist : minDist * 0.55) &&
-        this.isPointWalkableOnFloor(x, y, PLAYER_RADIUS + 14, bFloor)
+        this.isPointWalkableOnFloor(x, y, pR + 14, bFloor)
       ) {
         const sec = this.getMapSector(x, y);
         const exits = this.countOpenExits(x, y, bFloor);
@@ -3438,8 +3515,9 @@ export class ArenaEngine {
     bouncesAtTarget: number;
     stepsAtTarget: number;
   } {
+    const pR = this.getPlayerRadius();
     const bSpeed = this.getBulletSpeed();
-    const muzzleDist = PLAYER_RADIUS + BULLET_RADIUS + 3;
+    const muzzleDist = pR + BULLET_RADIUS + 3;
     let x = shooter.x + Math.cos(angle) * muzzleDist;
     let y = shooter.y + Math.sin(angle) * muzzleDist;
     let vx = Math.cos(angle) * bSpeed;
@@ -3454,7 +3532,7 @@ export class ArenaEngine {
 
     // Reject if muzzle spawns already inside a wall or explosive
     for (const wall of floorWalls) {
-      if (circleIntersectsRect(x, y, BULLET_RADIUS, wall)) {
+      if (circleIntersectsWall(x, y, BULLET_RADIUS, wall)) {
         return {
           safe: false,
           hitsSelf: true,
@@ -3479,36 +3557,15 @@ export class ArenaEngine {
 
       // Wall collision & exact push-out reflection matching updateBullets()
       for (const wall of floorWalls) {
-        const cx = clamp(x, wall.x, wall.x + wall.w);
-        const cy = clamp(y, wall.y, wall.y + wall.h);
-        const dx = x - cx;
-        const dy = y - cy;
-        const d2 = dx * dx + dy * dy;
-        if (d2 < BULLET_RADIUS * BULLET_RADIUS) {
-          const d = Math.sqrt(d2);
-          let nx = 0;
-          let ny = 0;
-          if (d > 0.0001) {
-            nx = dx / d;
-            ny = dy / d;
-          } else {
-            const lp = x - wall.x;
-            const rp = wall.x + wall.w - x;
-            const tp = y - wall.y;
-            const bp = wall.y + wall.h - y;
-            const m = Math.min(lp, rp, tp, bp);
-            if (m === lp) nx = -1;
-            else if (m === rp) nx = 1;
-            else if (m === tp) ny = -1;
-            else ny = 1;
-          }
-          const overlap = BULLET_RADIUS - d + 0.5;
-          x += nx * overlap;
-          y += ny * overlap;
-          const dot = vx * nx + vy * ny;
+        const hit = resolveCircleAgainstWall(x, y, BULLET_RADIUS, wall);
+        if (hit.hit) {
+          const overlap = hit.overlap + 0.5;
+          x += hit.nx * overlap;
+          y += hit.ny * overlap;
+          const dot = vx * hit.nx + vy * hit.ny;
           if (dot < 0) {
-            vx -= 2 * dot * nx;
-            vy -= 2 * dot * ny;
+            vx -= 2 * dot * hit.nx;
+            vy -= 2 * dot * hit.ny;
           }
           if (bounces === 0) firstWallDist = step * stepLen;
           bounces++;
@@ -3562,15 +3619,15 @@ export class ArenaEngine {
           const predSelfX = shooter.x + shooter.vx * Math.min(elapsed + 0.2, 0.5);
           const predSelfY = shooter.y + shooter.vy * Math.min(elapsed + 0.2, 0.5);
           const selfInBlast =
-            dist(p.x, p.y, shooter.x, shooter.y) <= blastR + PLAYER_RADIUS + 20 ||
-            dist(p.x, p.y, predSelfX, predSelfY) <= blastR + PLAYER_RADIUS + 16;
+            dist(p.x, p.y, shooter.x, shooter.y) <= blastR + pR + 20 ||
+            dist(p.x, p.y, predSelfX, predSelfY) <= blastR + pR + 16;
           const mateInBlast = this.players.some(
             (tm) =>
               tm.id !== shooter.id &&
               tm.alive &&
               this.isTeammate(shooter.id, tm.id) &&
               sameFloor(tm.floor, floor) &&
-              dist(p.x, p.y, tm.x, tm.y) <= blastR + PLAYER_RADIUS + 14
+              dist(p.x, p.y, tm.x, tm.y) <= blastR + pR + 14
           );
           if (selfInBlast || mateInBlast || !opts?.allowExplosiveDetonation) {
             return {
@@ -3602,7 +3659,7 @@ export class ArenaEngine {
         if (tm.id === shooter.id || !tm.alive || !this.isTeammate(shooter.id, tm.id) || !sameFloor(tm.floor, floor)) {
           continue;
         }
-        if (dist(x, y, tm.x, tm.y) <= PLAYER_RADIUS + BULLET_RADIUS + 8) {
+        if (dist(x, y, tm.x, tm.y) <= pR + BULLET_RADIUS + 8) {
           return {
             safe: false,
             hitsSelf: false,
@@ -3621,7 +3678,7 @@ export class ArenaEngine {
         const predT = Math.min(elapsed, 0.58);
         const predSx = shooter.x + shooter.vx * predT;
         const predSy = shooter.y + shooter.vy * predT;
-        const selfMargin = PLAYER_RADIUS + BULLET_RADIUS + (bounces === 1 ? 30 : 22);
+        const selfMargin = pR + BULLET_RADIUS + (bounces === 1 ? 30 : 22);
         if (
           dist(x, y, shooter.x, shooter.y) < selfMargin ||
           dist(x, y, predSx, predSy) < selfMargin
@@ -3641,7 +3698,7 @@ export class ArenaEngine {
 
       // Check if we reached intended target point before any bad outcome
       if (opts?.targetPoint) {
-        const hitR = opts.targetHitRadius ?? PLAYER_RADIUS + 10;
+        const hitR = opts.targetHitRadius ?? pR + 10;
         if (dist(x, y, opts.targetPoint.x, opts.targetPoint.y) <= hitR) {
           return {
             safe: true,
@@ -3659,7 +3716,7 @@ export class ArenaEngine {
       // For direct shots without an explicit targetPoint, also check if any non-teammate alive enemy was hit cleanly
       if (!opts?.targetPoint && opts?.ignoreTargetPlayerId !== undefined && opts.ignoreTargetPlayerId !== null) {
         const tgt = this.players.find((pl) => pl.id === opts.ignoreTargetPlayerId && pl.alive && sameFloor(pl.floor, floor));
-        if (tgt && dist(x, y, tgt.x, tgt.y) <= PLAYER_RADIUS + BULLET_RADIUS + 2) {
+        if (tgt && dist(x, y, tgt.x, tgt.y) <= pR + BULLET_RADIUS + 2) {
           return {
             safe: true,
             hitsSelf: false,
@@ -3704,11 +3761,12 @@ export class ArenaEngine {
     shooter: Player,
     tx: number,
     ty: number,
-    hitRadius = PLAYER_RADIUS + 14,
+    hitRadius?: number,
     numRays = 20,
     maxBounces = 2,
     allowExplosiveDetonation = false
   ): number | null {
+    const resolvedHitRadius = hitRadius ?? this.getPlayerRadius() + 14;
     const allowedBounces = Math.min(maxBounces, this.getBulletMaxBounces());
     if (allowedBounces < 1) return null;
     const floor = shooter.floor ?? 0;
@@ -3728,8 +3786,18 @@ export class ArenaEngine {
       }
     };
 
-    // Analytic reflection angles off interior & perimeter walls
+    // Analytic reflection angles off interior & perimeter walls (and circular tangent banks)
     for (const wall of floorWalls) {
+      const circ = getWallCircleHitbox(wall);
+      if (circ) {
+        const midA = Math.atan2((shooter.y + ty) * 0.5 - circ.cy, (shooter.x + tx) * 0.5 - circ.cx);
+        for (const off of [-0.65, -0.32, 0, 0.32, 0.65]) {
+          const rimX = circ.cx + Math.cos(midA + off) * (circ.r + BULLET_RADIUS + 1);
+          const rimY = circ.cy + Math.sin(midA + off) * (circ.r + BULLET_RADIUS + 1);
+          addCand(Math.atan2(rimY - shooter.y, rimX - shooter.x));
+        }
+        continue;
+      }
       if (wall.x > ARENA_WALL_THICKNESS && wall.x < this.map.width - ARENA_WALL_THICKNESS) {
         addCand(Math.atan2(ty - shooter.y, 2 * wall.x - tx - shooter.x));
         addCand(Math.atan2(ty - shooter.y, 2 * (wall.x + wall.w) - tx - shooter.x));
@@ -3756,7 +3824,7 @@ export class ArenaEngine {
         maxDist: maxRayDist,
         maxCheckBounces: maxBounces,
         targetPoint: { x: tx, y: ty },
-        targetHitRadius: hitRadius,
+        targetHitRadius: resolvedHitRadius,
         allowExplosiveDetonation,
       });
       if (sim.safe && sim.reachedTarget && sim.bouncesAtTarget >= 1) {
@@ -3780,7 +3848,7 @@ export class ArenaEngine {
     const dy = ty - shooter.y;
     const lenSq = dx * dx + dy * dy;
     if (lenSq < 16) return false;
-    const blockR = PLAYER_RADIUS + BULLET_RADIUS + 4;
+    const blockR = this.getPlayerRadius() + BULLET_RADIUS + 4;
     for (const tm of this.players) {
       if (tm.id === shooter.id || !tm.alive || !this.isTeammate(shooter.id, tm.id) || !sameFloor(tm.floor, floor)) {
         continue;
@@ -3809,7 +3877,7 @@ export class ArenaEngine {
       maxDist: Math.min(720, dist(shooter.x, shooter.y, tx, ty) + 260),
       maxCheckBounces: 2,
       targetPoint: { x: tx, y: ty },
-      targetHitRadius: PLAYER_RADIUS + 8,
+      targetHitRadius: this.getPlayerRadius() + 8,
       allowExplosiveDetonation: false,
       ignoreTargetPlayerId: targetId,
     });
@@ -3839,6 +3907,7 @@ export class ArenaEngine {
     floor: FloorLevel,
     diff: BotDifficulty
   ): { x: number; y: number } {
+    const pR = this.getPlayerRadius();
     let evadeX = 0;
     let evadeY = 0;
     const bulletLookDist =
@@ -3862,7 +3931,7 @@ export class ArenaEngine {
 
       if (d < bulletLookDist && dot > -15 && dot < bulletLookDist) {
         const perp = Math.abs((relX * b.vy - relY * b.vx) / bSpeed);
-        if (perp < PLAYER_RADIUS + 42) {
+        if (perp < pR + 42) {
           const losClear = diff === 'CHILL' || this.hasLineOfSight(b.x, b.y, bot.x, bot.y, floor);
           if (losClear) {
             directThreat = true;
@@ -3911,36 +3980,15 @@ export class ArenaEngine {
 
           let bouncedNow = false;
           for (const w of floorWalls) {
-            const cx = clamp(px, w.x, w.x + w.w);
-            const cy = clamp(py, w.y, w.y + w.h);
-            const dx = px - cx;
-            const dy = py - cy;
-            const d2 = dx * dx + dy * dy;
-            if (d2 < (b.radius + 1) * (b.radius + 1)) {
-              const dw = Math.sqrt(d2);
-              let nx = 0;
-              let ny = 0;
-              if (dw > 0.0001) {
-                nx = dx / dw;
-                ny = dy / dw;
-              } else {
-                const lp = px - w.x;
-                const rp = w.x + w.w - px;
-                const tp = py - w.y;
-                const bp = w.y + w.h - py;
-                const m = Math.min(lp, rp, tp, bp);
-                if (m === lp) nx = -1;
-                else if (m === rp) nx = 1;
-                else if (m === tp) ny = -1;
-                else ny = 1;
-              }
-              const overlap = b.radius + 1 - dw + 0.5;
-              px += nx * overlap;
-              py += ny * overlap;
-              const vDotN = ux * nx + uy * ny;
+            const hit = resolveCircleAgainstWall(px, py, b.radius + 1, w);
+            if (hit.hit) {
+              const overlap = hit.overlap + 0.5;
+              px += hit.nx * overlap;
+              py += hit.ny * overlap;
+              const vDotN = ux * hit.nx + uy * hit.ny;
               if (vDotN < 0) {
-                ux -= 2 * vDotN * nx;
-                uy -= 2 * vDotN * ny;
+                ux -= 2 * vDotN * hit.nx;
+                uy -= 2 * vDotN * hit.ny;
               }
               bouncesChecked++;
               bouncedNow = true;
@@ -3954,7 +4002,7 @@ export class ArenaEngine {
             const rDot = rRelX * ux + rRelY * uy;
             if (rDot > -12 && rDot < bounceRange) {
               const rPerp = Math.abs(rRelX * uy - rRelY * ux);
-              if (rPerp < PLAYER_RADIUS + 38 && this.hasLineOfSight(px, py, bot.x, bot.y, floor)) {
+              if (rPerp < pR + 38 && this.hasLineOfSight(px, py, bot.x, bot.y, floor)) {
                 const side = rRelX * uy - rRelY * ux >= 0 ? 1 : -1;
                 const bounceWeight = ((bounceRange - Math.max(0, rDot)) / bounceRange) * bounceWeightMax;
                 evadeX += uy * side * bounceWeight;
@@ -3977,7 +4025,7 @@ export class ArenaEngine {
   ): { x: number; y: number } {
     let evadeX = 0;
     let evadeY = 0;
-    const clearR = PLAYER_RADIUS + 4;
+    const clearR = this.getPlayerRadius() + 4;
     for (const e of visibleEnemies) {
       if (e.ammo <= 0 || e.stunTimer > 0) continue;
       const d = dist(bot.x, bot.y, e.x, e.y);
@@ -4023,6 +4071,7 @@ export class ArenaEngine {
     visibleEnemies: Player[],
     floor: FloorLevel
   ): { safe: boolean; beaten: boolean; score: number } {
+    const pR = this.getPlayerRadius();
     const botDist = dist(bot.x, bot.y, p.x, p.y);
     const botBoost = (bot.postStunGraceTimer ?? 0) > 0 || bot.spawnInvulnTimer > 0;
     const botDirect = this.hasLineOfSight(bot.x, bot.y, p.x, p.y, floor);
@@ -4062,7 +4111,7 @@ export class ArenaEngine {
           const proj = (e.x - bot.x) * ux + (e.y - bot.y) * uy;
           if (proj > 0 && proj < botDist) {
             const perp = Math.abs((e.x - bot.x) * uy - (e.y - bot.y) * ux);
-            if (perp < PLAYER_RADIUS * 1.85 && eDist < 170) beaten = true;
+            if (perp < pR * 1.85 && eDist < 170) beaten = true;
           }
         }
         if (eDist < 320) {
@@ -4086,8 +4135,9 @@ export class ArenaEngine {
     safeBullet: Pickup | null,
     prevGoal: Vec2 | null = null
   ): Vec2 {
-    const clearR = PLAYER_RADIUS + 4;
-    const pad = ARENA_WALL_THICKNESS + PLAYER_RADIUS + 48;
+    const pR = this.getPlayerRadius();
+    const clearR = pR + 4;
+    const pad = ARENA_WALL_THICKNESS + pR + 48;
     const centerX = this.map.width * 0.5;
     const centerY = this.map.height * 0.5;
     const candidates: Vec2[] = [];
@@ -4156,7 +4206,7 @@ export class ArenaEngine {
             nearHazard = true;
           }
         } else if (p.kind === 'nitro') {
-          if (dist(pt.x, pt.y, p.x, p.y) < NITRO_RADIUS + PLAYER_RADIUS + 46) {
+          if (dist(pt.x, pt.y, p.x, p.y) < NITRO_RADIUS + pR + 46) {
             score -= 1050;
             nearHazard = true;
           }
@@ -4164,7 +4214,7 @@ export class ArenaEngine {
       }
       if (!nearHazard) {
         for (const pit of this.icePits) {
-          if (pit.broken && isPointInIcePit(pt.x, pt.y, pit, PLAYER_RADIUS + 34)) {
+          if (pit.broken && isPointInIcePit(pt.x, pt.y, pit, pR + 34)) {
             score -= 1100;
             break;
           }
@@ -4251,8 +4301,9 @@ export class ArenaEngine {
     floor: FloorLevel,
     keepDistance: number
   ): Vec2 | null {
-    const clearR = PLAYER_RADIUS + 4;
-    const pad = ARENA_WALL_THICKNESS + PLAYER_RADIUS + 36;
+    const pR = this.getPlayerRadius();
+    const clearR = pR + 4;
+    const pad = ARENA_WALL_THICKNESS + pR + 36;
     const targetProtected =
       target.spawnInvulnTimer > 0 || target.stunTimer > 0 || (target.postStunGraceTimer ?? 0) > 0;
     const wantCoverFromTarget = bot.aiHoldShotTimer > 0.1 || targetProtected;
@@ -4440,12 +4491,13 @@ export class ArenaEngine {
         }
       } else if (p.kind === 'nitro' && diff !== 'CHILL') {
         const d = dist(bot.x, bot.y, p.x, p.y);
+        const pR = this.getPlayerRadius();
         const safeDist =
           diff === 'RUTHLESS'
-            ? NITRO_RADIUS + PLAYER_RADIUS + 42
+            ? NITRO_RADIUS + pR + 42
             : diff === 'VETERAN'
-              ? NITRO_RADIUS + PLAYER_RADIUS + 32
-              : NITRO_RADIUS + PLAYER_RADIUS + 20;
+              ? NITRO_RADIUS + pR + 32
+              : NITRO_RADIUS + pR + 20;
         if (d < safeDist) {
           const away = Math.atan2(bot.y - p.y, bot.x - p.x);
           evadeX += Math.cos(away) * 2.4;
@@ -4455,8 +4507,9 @@ export class ArenaEngine {
     }
 
     // 3. Broken ice pit evasion
+    const pR = this.getPlayerRadius();
     for (const pit of this.icePits) {
-      const margin = diff === 'CHILL' ? PLAYER_RADIUS + 14 : PLAYER_RADIUS + 44;
+      const margin = diff === 'CHILL' ? pR + 14 : pR + 44;
       if (pit.broken && isPointInIcePit(bot.x, bot.y, pit, margin)) {
         const away = Math.atan2(bot.y - pit.y, bot.x - pit.x);
         evadeX += Math.cos(away) * 3.2;
@@ -4468,6 +4521,7 @@ export class ArenaEngine {
     // 4. Bot-to-bot soft separation (kept separate from hardEvading so bots pass smoothly without cancelling combat!)
     let sepX = 0;
     let sepY = 0;
+    const softSepDist = pR * 1.85;
     for (const other of this.players) {
       if (other.id === bot.id || !other.alive || !sameFloor(other.floor, bFloor)) continue;
       const dO = dist(bot.x, bot.y, other.x, other.y);
@@ -4477,9 +4531,9 @@ export class ArenaEngine {
         const push = ((360 - dO) / 360) * 1.8;
         evadeX += Math.cos(away) * push;
         evadeY += Math.sin(away) * push;
-      } else if (!other.isHuman && dO < 78 && dO > 1) {
+      } else if (!other.isHuman && dO < softSepDist && dO > 1) {
         const away = Math.atan2(bot.y - other.y, bot.x - other.x);
-        const rep = ((78 - dO) / 78) * 0.85;
+        const rep = ((softSepDist - dO) / softSepDist) * 0.85;
         sepX += Math.cos(away) * rep;
         sepY += Math.sin(away) * rep;
       }
@@ -4650,7 +4704,7 @@ export class ArenaEngine {
       const shieldLeft = Math.max(tgt.spawnInvulnTimer, tgt.postStunGraceTimer ?? 0);
       const bSpeed = this.getBulletSpeed();
       const dTgt = dist(bot.x, bot.y, tgt.x, tgt.y);
-      const travelT = Math.max(0, (dTgt - PLAYER_RADIUS - BULLET_RADIUS) / bSpeed);
+      const travelT = Math.max(0, (dTgt - pR - BULLET_RADIUS) / bSpeed);
       const shieldAnticipation = diff === 'RUTHLESS' ? 0.88 : diff === 'VETERAN' ? 0.55 : 0;
       const tgtShootable =
         shieldLeft <= 0 ||
@@ -4665,7 +4719,7 @@ export class ArenaEngine {
           const tHit = dist(bot.x, bot.y, predX, predY) / bSpeed;
           const nx = tgt.x + tgt.vx * tHit * leadScale;
           const ny = tgt.y + tgt.vy * tHit * leadScale;
-          if (this.isPointWalkableOnFloor(nx, ny, PLAYER_RADIUS, bFloor)) {
+          if (this.isPointWalkableOnFloor(nx, ny, pR, bFloor)) {
             predX = nx;
             predY = ny;
           }
@@ -5007,8 +5061,8 @@ export class ArenaEngine {
           const elapsed = Math.max(0, maxWindow - mem.lastSeenTimer);
           const estX = clamp(mem.lastSeenX + mem.lastSeenVx * elapsed * 0.65, ARENA_WALL_THICKNESS + 45, this.map.width - ARENA_WALL_THICKNESS - 45);
           const estY = clamp(mem.lastSeenY + mem.lastSeenVy * elapsed * 0.65, ARENA_WALL_THICKNESS + 45, this.map.height - ARENA_WALL_THICKNESS - 45);
-          const useX = this.isPointWalkableOnFloor(estX, estY, PLAYER_RADIUS, bFloor) ? estX : mem.lastSeenX;
-          const useY = this.isPointWalkableOnFloor(estX, estY, PLAYER_RADIUS, bFloor) ? estY : mem.lastSeenY;
+          const useX = this.isPointWalkableOnFloor(estX, estY, pR, bFloor) ? estX : mem.lastSeenX;
+          const useY = this.isPointWalkableOnFloor(estX, estY, pR, bFloor) ? estY : mem.lastSeenY;
           if (isVetPlus && nearestMedkit && bot.hp <= 68) {
             goalX = nearestMedkit.p.x;
             goalY = nearestMedkit.p.y;
@@ -5024,7 +5078,7 @@ export class ArenaEngine {
             !isImmersive || (mem.lastSeenTimer > 1.3 && this.isPointWithinImmersiveBounds(bot, useX, useY, false, true));
           const blindTrickProb = diff === 'RUTHLESS' ? 0.62 : diff === 'VETERAN' ? 0.34 : 0;
           if (blindTrickProb > 0 && fairLastSeen && bot.aiHoldShotTimer <= 0 && mem.lastSeenTimer > 0.35 && Math.random() < blindTrickProb) {
-            const predTrick = this.findTrickshotToPoint(bot, useX, useY, PLAYER_RADIUS + 20, isRuthless ? 40 : 28, isRuthless ? 3 : 2);
+            const predTrick = this.findTrickshotToPoint(bot, useX, useY, pR + 20, isRuthless ? 40 : 28, isRuthless ? 3 : 2);
             if (predTrick !== null) {
               mem.pendingShotAngle = predTrick;
               mem.pendingShotExpire = 0.45;
@@ -5088,7 +5142,7 @@ export class ArenaEngine {
       // Use cached hazard-aware & threat-flanking A* path whenever direct segment hits walls, Nitros/TNTs, or enemy firing lanes!
       let wpX = goalX;
       let wpY = goalY;
-      const directWallClear = this.isSegmentClearOnFloor(bot.x, bot.y, goalX, goalY, PLAYER_RADIUS + 2, bFloor);
+      const directWallClear = this.isSegmentClearOnFloor(bot.x, bot.y, goalX, goalY, pR + 2, bFloor);
       const directHazardHit =
         diff !== 'CHILL' && this.segmentHitsHazardOnFloor(bot.x, bot.y, goalX, goalY, bFloor);
       const directThreatCross =
@@ -5273,7 +5327,7 @@ export class ArenaEngine {
     floor: FloorLevel = 0
   ): boolean {
     for (const wall of this.wallsByFloor[floor]) {
-      if (segmentIntersectsRect(x1, y1, x2, y2, wall)) return false;
+      if (segmentIntersectsWall(x1, y1, x2, y2, wall)) return false;
     }
     return true;
   }
@@ -5287,7 +5341,7 @@ export class ArenaEngine {
       shooter,
       tx,
       ty,
-      PLAYER_RADIUS + 18,
+      this.getPlayerRadius() + 18,
       proMode ? 48 : 20,
       proMode ? 4 : 2
     );
@@ -5312,7 +5366,8 @@ export class ArenaEngine {
     player.shotsFired += 1;
 
     const pFloor = player.floor ?? 0;
-    const muzzleDist = PLAYER_RADIUS + BULLET_RADIUS + 3;
+    const pR = this.getPlayerRadius();
+    const muzzleDist = pR + BULLET_RADIUS + 3;
     const bx = player.x + Math.cos(player.angle) * muzzleDist;
     const by = player.y + Math.sin(player.angle) * muzzleDist;
 
@@ -5339,7 +5394,7 @@ export class ArenaEngine {
     this.bullets.push(bullet);
     if (this.config.dodgePractice && !player.isHuman) {
       const p0 = this.players.find((pl) => pl.id === 0);
-      const initClear = p0 ? dist(bx, by, p0.x, p0.y) - bullet.radius - PLAYER_RADIUS : Infinity;
+      const initClear = p0 ? dist(bx, by, p0.x, p0.y) - bullet.radius - pR : Infinity;
       this.dodgeBulletTrack.set(bullet.id, { hitPlayer: false, minDist: initClear });
       this.dodgeNoShotTimer = 0;
     }
@@ -5388,34 +5443,11 @@ export class ArenaEngine {
         let hitWall = false;
         const bFloor = b.floor ?? 0;
         for (const wall of this.wallsByFloor[bFloor]) {
-          const cx = clamp(b.x, wall.x, wall.x + wall.w);
-          const cy = clamp(b.y, wall.y, wall.y + wall.h);
-          const dx = b.x - cx;
-          const dy = b.y - cy;
-          const d2 = dx * dx + dy * dy;
-
-          if (d2 < b.radius * b.radius) {
-            const d = Math.sqrt(d2);
-            let nx = 0;
-            let ny = 0;
-            if (d > 0.0001) {
-              nx = dx / d;
-              ny = dy / d;
-            } else {
-              const leftPen = b.x - wall.x;
-              const rightPen = wall.x + wall.w - b.x;
-              const topPen = b.y - wall.y;
-              const bottomPen = wall.y + wall.h - b.y;
-              const m = Math.min(leftPen, rightPen, topPen, bottomPen);
-              if (m === leftPen) nx = -1;
-              else if (m === rightPen) nx = 1;
-              else if (m === topPen) ny = -1;
-              else ny = 1;
-            }
-
-            const overlap = b.radius - d + 0.5;
-            b.x += nx * overlap;
-            b.y += ny * overlap;
+          const hit = resolveCircleAgainstWall(b.x, b.y, b.radius, wall);
+          if (hit.hit) {
+            const { nx, ny, overlap } = hit;
+            b.x += nx * (overlap + 0.5);
+            b.y += ny * (overlap + 0.5);
 
             const dot = b.vx * nx + b.vy * ny;
             if (dot < 0) {
@@ -5613,12 +5645,13 @@ export class ArenaEngine {
         }
 
         if (!this.config.targetPractice) {
+          const pR = this.getPlayerRadius();
           for (const player of this.players) {
             if (this.config.dodgePractice && !player.isHuman) continue;
             if (!player.alive || player.spawnInvulnTimer > 0 || player.stunTimer > 0 || (player.postStunGraceTimer ?? 0) > 0 || !sameFloor(player.floor, bFloor)) continue;
             if (player.id === b.ownerId && b.age < BULLET_SELF_GRACE) continue;
             if (player.id !== b.ownerId && this.isTeammate(b.ownerId, player.id)) continue;
-            if (dist(b.x, b.y, player.x, player.y) <= b.radius + PLAYER_RADIUS) {
+            if (dist(b.x, b.y, player.x, player.y) <= b.radius + pR) {
               const speed = Math.hypot(b.vx, b.vy) || 1;
               const knockX = (b.vx / speed) * 220;
               const knockY = (b.vy / speed) * 220;
@@ -5640,7 +5673,7 @@ export class ArenaEngine {
                 this.emitEvent('hit', player.x, player.y, 3);
                 this.addFloatingText(
                   player.x,
-                  player.y - (PLAYER_RADIUS + 14),
+                  player.y - (pR + 14),
                   'HIT! STREAK RESET',
                   '#FB7185',
                   bFloor
@@ -5752,6 +5785,7 @@ export class ArenaEngine {
         }
       }
 
+      const pR = this.getPlayerRadius();
       for (const player of this.players) {
         if (!player.alive || !sameFloor(player.floor, blastFloor)) continue;
         if (
@@ -5762,7 +5796,7 @@ export class ArenaEngine {
           continue;
         }
         const d = dist(current.item.x, current.item.y, player.x, player.y);
-        if (d <= blastRadius + PLAYER_RADIUS * 0.6) {
+        if (d <= blastRadius + pR * 0.6) {
           const angle = Math.atan2(player.y - current.item.y, player.x - current.item.x);
           const knockForce = 290;
           this.applyDamage(
@@ -5835,7 +5869,7 @@ export class ArenaEngine {
           if (prog.hearts <= 0) {
             prog.eliminated = true;
             player.respawnTimer = 0;
-            this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 28), 'NO HEARTS LEFT!', '#FB7185', player.floor ?? 0);
+            this.addFloatingText(player.x, player.y - (this.getPlayerRadius() + 28), 'NO HEARTS LEFT!', '#FB7185', player.floor ?? 0);
             return;
           }
         }
@@ -5866,7 +5900,7 @@ export class ArenaEngine {
     this.emitEvent('knockout', player.x, player.y);
     this.spawnParticles(player.x, player.y, '#BAE6FD', 18, 190);
     this.spawnParticles(player.x, player.y, '#38BDF8', 16, 150);
-    this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 10), 'SPLASH KO!', '#7DD3FC');
+    this.addFloatingText(player.x, player.y - (this.getPlayerRadius() + 10), 'SPLASH KO!', '#7DD3FC');
   }
 
   private recordKillStreak(attacker: Player, x: number, y: number) {
@@ -5929,6 +5963,7 @@ export class ArenaEngine {
       if (attacker) attacker.damageDealt += amount;
     }
 
+    const pR = this.getPlayerRadius();
     if (player.hp > 0) {
       const mods = this.getModifiers();
       player.stunTimer = STUN_TIME_VALUES[mods.stunTime] ?? STUN_DURATION;
@@ -5936,9 +5971,9 @@ export class ArenaEngine {
         player.ammo = 0;
       }
       this.emitEvent('hit', player.x, player.y, 3);
-      this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 10), `-${amount}`, '#FDA4AF');
+      this.addFloatingText(player.x, player.y - (pR + 10), `-${amount}`, '#FDA4AF');
       if (player.hp === 1) {
-        this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 28), '1 HP CLUTCH!', '#FACC15');
+        this.addFloatingText(player.x, player.y - (pR + 28), '1 HP CLUTCH!', '#FACC15');
       }
     } else {
       this.applyDeathPenalty(player);
@@ -5951,16 +5986,16 @@ export class ArenaEngine {
         }
       } else if (attackerId === player.id) {
         if (byBullet) {
-          this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 28), 'OWN SHOT!', '#F472B6');
+          this.addFloatingText(player.x, player.y - (pR + 28), 'OWN SHOT!', '#F472B6');
           this.emitEvent('self_kill', player.x, player.y, 1, player.id);
         } else {
-          this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 28), 'SELF KO', '#F87171');
+          this.addFloatingText(player.x, player.y - (pR + 28), 'SELF KO', '#F87171');
         }
       }
 
       this.emitEvent('knockout', player.x, player.y);
       this.spawnParticles(player.x, player.y, player.color, 24, 210);
-      this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 10), 'KO!', '#F43F5E');
+      this.addFloatingText(player.x, player.y - (pR + 10), 'KO!', '#F43F5E');
     }
   }
 
@@ -5994,7 +6029,7 @@ export class ArenaEngine {
     player.spawnInvulnTimer = this.getSpawnProtectionDuration();
     player.angle = Math.atan2(this.map.height / 2 - bestSpawn.y, this.map.width / 2 - bestSpawn.x);
     this.spawnParticles(player.x, player.y, player.color, 14, 120, player.floor);
-    this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 10), 'SPAWN!', player.accentColor, player.floor);
+    this.addFloatingText(player.x, player.y - (this.getPlayerRadius() + 10), 'SPAWN!', player.accentColor, player.floor);
   }
 
   public finishSoloLibrary() {
@@ -6391,10 +6426,11 @@ export class ArenaEngine {
     }
     this.navNodes = cachedMonster;
 
-    const botKey = `${this.map.id}:bot32`;
+    const pR = this.getPlayerRadius();
+    const botKey = `${this.map.id}:bot32:r${pR}`;
     let cachedBots = ArenaEngine.arenaBotGraphCache.get(botKey);
     if (!cachedBots) {
-      cachedBots = this.buildGridNavGraph(32, PLAYER_RADIUS + 2);
+      cachedBots = this.buildGridNavGraph(32, pR + 2);
       ArenaEngine.arenaBotGraphCache.set(botKey, cachedBots);
     }
     this.botNavNodes = cachedBots;
@@ -6403,7 +6439,7 @@ export class ArenaEngine {
     if (!cachedExplore) {
       const pts: Array<{ x: number; y: number; floor: FloorLevel }> = [];
       const addIfValid = (px: number, py: number, fl: FloorLevel, minSpacing: number) => {
-        if (!this.isPointWalkableOnFloor(px, py, PLAYER_RADIUS + 4, fl)) return;
+        if (!this.isPointWalkableOnFloor(px, py, pR + 4, fl)) return;
         if (
           (this.map.stairs ?? []).some(
             (s) =>
@@ -6569,6 +6605,7 @@ export class ArenaEngine {
     const avoidHazards = Boolean(opts?.avoidHazards);
     const avoidPt = opts?.avoidPoint;
     const avoidThreats = opts?.avoidThreats ?? [];
+    const pR = this.getPlayerRadius();
     const hazards = avoidHazards
       ? this.pickups
           .filter((p) => p.kind === 'nitro' || (p.kind === 'tnt' && p.armed))
@@ -6576,7 +6613,7 @@ export class ArenaEngine {
             x: p.kind === 'tnt' ? p.x + (p.vx ?? 0) * 0.42 : p.x,
             y: p.kind === 'tnt' ? p.y + (p.vy ?? 0) * 0.42 : p.y,
             floor: p.floor ?? 0,
-            radius: p.kind === 'nitro' ? NITRO_RADIUS + PLAYER_RADIUS + 48 : TNT_BLAST_RADIUS + 54,
+            radius: p.kind === 'nitro' ? NITRO_RADIUS + pR + 48 : TNT_BLAST_RADIUS + 54,
             penalty: p.kind === 'nitro' ? 850 : 1400,
           }))
       : [];
@@ -6665,8 +6702,8 @@ export class ArenaEngine {
           }
           for (const pit of brokenPits) {
             if (
-              isPointInIcePit(nb.x, nb.y, pit, PLAYER_RADIUS + 34) ||
-              isPointInIcePit(midX, midY, pit, PLAYER_RADIUS + 34)
+              isPointInIcePit(nb.x, nb.y, pit, pR + 34) ||
+              isPointInIcePit(midX, midY, pit, pR + 34)
             ) {
               stepCost += 950;
             }
@@ -6908,7 +6945,7 @@ export class ArenaEngine {
       prog.clues.push(clue);
       this.addFloatingText(
         player.x,
-        player.y - (PLAYER_RADIUS + 14),
+        player.y - (this.getPlayerRadius() + 14),
         `CLUE ${prog.collectedCount}/8: = ${clue.digit}`,
         '#FDE047',
         pFloor
@@ -6952,7 +6989,7 @@ export class ArenaEngine {
       this.emitEvent('lock_error', door.x, door.y, 1, playerId, 0);
       this.recentSoundCues.push({ x: door.x, y: door.y, floor: 0, ttl: 5.5, strength: 1.4 });
       if (this.recentSoundCues.length > 10) this.recentSoundCues.shift();
-      this.addFloatingText(player.x, player.y - (PLAYER_RADIUS + 14), 'WRONG CODE!', '#FB7185', 0);
+      this.addFloatingText(player.x, player.y - (this.getPlayerRadius() + 14), 'WRONG CODE!', '#FB7185', 0);
       return false;
     }
 
@@ -7044,7 +7081,7 @@ export class ArenaEngine {
         loudestSound = { x: p.x, y: p.y, floor: pFloor, playerId: p.id };
         break;
       } else if ((onSameFloor || hearThroughFloors) && speedRatio >= stealthThreshold && checkProbabilisticStealth) {
-        const closeDist = m.radius + PLAYER_RADIUS + 42;
+        const closeDist = m.radius + this.getPlayerRadius() + 42;
         const prox = clamp((hearRadius - d) / Math.max(1, hearRadius - closeDist), 0, 1);
         const speedWeight = clamp(
           (speedRatio - stealthThreshold) / Math.max(0.08, loudThreshold - stealthThreshold),
@@ -7260,28 +7297,10 @@ export class ArenaEngine {
 
         for (let pass = 0; pass < 2; pass++) {
           for (const wall of this.wallsByFloor[m.floor]) {
-            const cx = clamp(m.x, wall.x, wall.x + wall.w);
-            const cy = clamp(m.y, wall.y, wall.y + wall.h);
-            const wdx = m.x - cx;
-            const wdy = m.y - cy;
-            const d2 = wdx * wdx + wdy * wdy;
-            if (d2 < m.radius * m.radius) {
-              const d = Math.sqrt(d2);
-              if (d > 0.0001) {
-                const ov = m.radius - d;
-                m.x += (wdx / d) * ov;
-                m.y += (wdy / d) * ov;
-              } else {
-                const lp = m.x - wall.x;
-                const rp = wall.x + wall.w - m.x;
-                const tp = m.y - wall.y;
-                const bp = wall.y + wall.h - m.y;
-                const minP = Math.min(lp, rp, tp, bp);
-                if (minP === lp) m.x = wall.x - m.radius;
-                else if (minP === rp) m.x = wall.x + wall.w + m.radius;
-                else if (minP === tp) m.y = wall.y - m.radius;
-                else m.y = wall.y + wall.h + m.radius;
-              }
+            const hit = resolveCircleAgainstWall(m.x, m.y, m.radius, wall);
+            if (hit.hit) {
+              m.x += hit.nx * hit.overlap;
+              m.y += hit.ny * hit.overlap;
             }
           }
         }
@@ -7334,19 +7353,20 @@ export class ArenaEngine {
     }
 
     // Instakill any player on the same floor touched by The Figure!
+    const pR = this.getPlayerRadius();
     for (const p of this.players) {
       if (!p.alive || (p.floor ?? 0) !== m.floor) continue;
-      if (dist(p.x, p.y, m.x, m.y) <= m.radius + PLAYER_RADIUS - 6) {
+      if (dist(p.x, p.y, m.x, m.y) <= m.radius + pR - 6) {
         this.applyDeathPenalty(p);
         this.emitEvent('monster_kill', p.x, p.y, 1, p.id, m.floor);
         this.spawnParticles(p.x, p.y, '#EF4444', 24, 210, m.floor);
-        this.addFloatingText(p.x, p.y - (PLAYER_RADIUS + 12), 'CAUGHT BY FIGURE!', '#FB7185', m.floor);
+        this.addFloatingText(p.x, p.y - (pR + 12), 'CAUGHT BY FIGURE!', '#FB7185', m.floor);
       }
     }
   }
 
   private getBookApproachPoint(book: LibraryBookSpot): Vec2 {
-    const offset = 44;
+    const offset = 28;
     if (book.face === 'W') return { x: book.x - offset, y: book.y };
     if (book.face === 'E') return { x: book.x + offset, y: book.y };
     if (book.face === 'N') return { x: book.x, y: book.y - offset };
@@ -7375,7 +7395,8 @@ export class ArenaEngine {
   }
 
   private pickLibraryEscapeAngle(bot: Player, monster: LibraryMonsterState, floor: FloorLevel): number {
-    const clearR = PLAYER_RADIUS + 4;
+    const pR = this.getPlayerRadius();
+    const clearR = pR + 4;
     let bestAngle = Math.atan2(bot.y - monster.y, bot.x - monster.x);
     let bestScore = -Infinity;
     let bestShortAngle = bestAngle;
@@ -7437,7 +7458,7 @@ export class ArenaEngine {
         if (!sameFloor(p.floor, floor)) continue;
         if (p.kind === 'tnt' && p.armed && dist(px, py, p.x, p.y) < TNT_BLAST_RADIUS + 52) {
           score -= 900;
-        } else if (p.kind === 'nitro' && dist(px, py, p.x, p.y) < NITRO_RADIUS + PLAYER_RADIUS + 34) {
+        } else if (p.kind === 'nitro' && dist(px, py, p.x, p.y) < NITRO_RADIUS + pR + 34) {
           score -= 700;
         }
       }
@@ -7549,7 +7570,7 @@ export class ArenaEngine {
           hazardBad = true;
           break;
         }
-        if (p.kind === 'nitro' && dist(n.x, n.y, p.x, p.y) < NITRO_RADIUS + PLAYER_RADIUS + 38) {
+        if (p.kind === 'nitro' && dist(n.x, n.y, p.x, p.y) < NITRO_RADIUS + this.getPlayerRadius() + 38) {
           hazardBad = true;
           break;
         }
@@ -7943,7 +7964,7 @@ export class ArenaEngine {
         }
       } else if (p.kind === 'nitro' && diff !== 'CHILL') {
         const d = dist(bot.x, bot.y, p.x, p.y);
-        if (d < NITRO_RADIUS + PLAYER_RADIUS + 26) {
+        if (d < NITRO_RADIUS + this.getPlayerRadius() + 26) {
           const away = Math.atan2(bot.y - p.y, bot.x - p.x);
           evadeX += Math.cos(away) * 2.1;
           evadeY += Math.sin(away) * 2.1;
@@ -8271,7 +8292,7 @@ export class ArenaEngine {
           if (diff === 'CHILL' && dT > 360) continue;
 
           const bSpeed = this.getBulletSpeed();
-          const travelT = Math.max(0, (dT - PLAYER_RADIUS - BULLET_RADIUS) / bSpeed);
+          const travelT = Math.max(0, (dT - this.getPlayerRadius() - BULLET_RADIUS) / bSpeed);
           const shieldLeft = Math.max(target.spawnInvulnTimer, target.postStunGraceTimer ?? 0);
           const shieldGrace = isRuthless ? 0.88 : diff === 'VETERAN' ? 0.58 : 0;
           const canTimeShot =
@@ -8685,7 +8706,7 @@ export class ArenaEngine {
         const directClear =
           bFloor === goalFloor &&
           dist(bot.x, bot.y, goalX, goalY) < 220 &&
-          this.isSegmentClearOnFloor(bot.x, bot.y, goalX, goalY, PLAYER_RADIUS + 2, bFloor);
+          this.isSegmentClearOnFloor(bot.x, bot.y, goalX, goalY, this.getPlayerRadius() + 2, bFloor);
 
         let wpX = goalX;
         let wpY = goalY;

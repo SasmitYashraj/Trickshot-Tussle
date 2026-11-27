@@ -71,6 +71,12 @@ const LEVEL_ROWS: LevelRowDef[] = [
     hint: 'Respawn shield & speed boost',
     labels: { LOW: '0.9s +25%', MEDIUM: '1.5s +55%', HIGH: '2.2s +85%' },
   },
+  {
+    key: 'playerSize',
+    label: 'Player Size',
+    hint: 'Normal maps only (all fighters)',
+    labels: { LOW: 'Small', MEDIUM: 'Medium', HIGH: 'Large' },
+  },
 ];
 
 const LEVELS: ModifierLevel[] = ['LOW', 'MEDIUM', 'HIGH'];

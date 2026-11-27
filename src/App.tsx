@@ -23,6 +23,8 @@ import {
   type CameraState,
   type RenderableWorld,
   getArenaViewTransform,
+  preloadArenaTextures,
+  prewarmArenaCaches,
   renderArena,
 } from './game/renderer';
 import { sound } from './game/sound';
@@ -438,6 +440,7 @@ export default function App() {
   const lastHudSigRef = useRef<string>('');
   const immersiveSpectateRef = useRef<Array<{ id: number; name: string }>>([]);
   const jumpscareTimerRef = useRef<number | null>(null);
+  const prewarmStepRef = useRef<number>(0);
   const clientRef = useRef<MultiplayerClient | null>(null);
 
   const [viewportSize, setViewportSize] = useState<{
@@ -498,6 +501,10 @@ export default function App() {
     saveGeneralSettings(generalSettings);
     sound.setMusicEnabled(generalSettings.musicEnabled);
   }, [generalSettings]);
+
+  useEffect(() => {
+    preloadArenaTextures();
+  }, []);
 
   const requestLandscapeLock = useCallback((_allowFullscreen = false) => {
     if (typeof window === 'undefined') return;
@@ -623,6 +630,8 @@ export default function App() {
           renderedLibraryUiRef.current = null;
           setGameState('ONLINE_LOBBY');
         } else if (room.phase === 'PLAYING') {
+          preloadArenaTextures();
+          prewarmStepRef.current = 0;
           const roomMapDef = ARENA_MAPS[room.config.mapId];
           if (room.config.mapId === 'library') {
             sound.preloadLibraryAudio();
@@ -763,6 +772,8 @@ export default function App() {
       }
       setSoloRunConfig(isAnyPractice ? nextCfg : null);
       sound.unlock();
+      preloadArenaTextures();
+      prewarmStepRef.current = 0;
       requestLandscapeLock(true);
       if (!isAnyPractice && nextCfg.mapId === 'library') {
         sound.preloadLibraryAudio();
@@ -779,6 +790,29 @@ export default function App() {
       cameraRef.current.scale = undefined;
       engineRef.current.reset(nextCfg);
       engineRef.current.setControlScheme(controlSchemeRef.current);
+      if (nextCfg.mapId !== 'library') {
+        const engine = engineRef.current;
+        const warmWorld: RenderableWorld = {
+          mapId: engine.map.id,
+          immersive: engine.map.immersive,
+          extraDark: Boolean(engine.config.extraDark),
+          teamMode: engine.config.teamMode ?? 'FFA',
+          modifiers: engine.getModifiers(),
+          elapsedTime: engine.elapsedTime,
+          screenShake: engine.screenShake,
+          libraryState: engine.libraryState ?? undefined,
+          players: engine.players,
+          bullets: engine.bullets,
+          pickups: engine.pickups,
+          boxes: engine.boxes,
+          practiceTargets: engine.practiceTargets,
+          icePits: engine.icePits,
+          explosions: engine.explosions,
+          particles: engine.particles,
+          floatingTexts: engine.floatingTexts,
+        };
+        prewarmArenaCaches(nextCfg.mapId, Boolean(nextCfg.extraDark), warmWorld);
+      }
       const initialSnap = engineRef.current.getSnapshot(0);
       lastHudSigRef.current = getHudSnapshotSignature(initialSnap);
       setSnapshot(initialSnap);
@@ -1166,6 +1200,7 @@ export default function App() {
             immersive: serverWorld.immersive,
             extraDark: serverWorld.extraDark,
             teamMode: serverWorld.teamMode,
+            modifiers: serverWorld.modifiers ?? DEFAULT_MATCH_MODIFIERS,
             elapsedTime: serverWorld.elapsedTime + sinceSync,
             screenShake: serverWorld.screenShake,
             libraryState: serverWorld.libraryState,
@@ -1279,6 +1314,7 @@ export default function App() {
           immersive: engine.map.immersive,
           extraDark: Boolean(engine.config.extraDark),
           teamMode: engine.config.teamMode ?? 'FFA',
+          modifiers: engine.getModifiers(),
           elapsedTime: engine.elapsedTime,
           screenShake: engine.screenShake,
           libraryState: engine.libraryState ?? undefined,
@@ -1748,7 +1784,17 @@ export default function App() {
           (worldToRender.libraryState?.introTimer ?? 0) > 0
       );
       const canvas = canvasRef.current;
-      if (canvas && worldToRender && !hideBehindLibIntro) {
+      if (hideBehindLibIntro && worldToRender) {
+        if (prewarmStepRef.current <= 7) {
+          const done = prewarmArenaCaches(
+            'library',
+            Boolean(worldToRender.extraDark),
+            worldToRender,
+            prewarmStepRef.current
+          );
+          prewarmStepRef.current = done ? 8 : prewarmStepRef.current + 1;
+        }
+      } else if (canvas && worldToRender) {
         const ctx = canvas.getContext('2d');
         if (ctx) {
           const dpr = canvas.width / Math.max(1, width);

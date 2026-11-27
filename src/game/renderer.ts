@@ -1,4 +1,4 @@
-import { ARENA_MAPS } from './maps';
+import { ARENA_MAPS, getWallCircleHitbox } from './maps';
 import winterSnowTexUrl from '../assets/images/winter_snow_texture_1795248731633.jpg';
 import winterIceTexUrl from '../assets/images/winter_ice_texture_1795248731782.jpg';
 import meadowGrassTexUrl from '../assets/images/meadow_grass_texture_1795250465573.jpg';
@@ -24,6 +24,7 @@ import type {
   LibraryMonsterState,
   LibraryShape,
   MapId,
+  MatchModifiers,
   Particle,
   Pickup,
   PlayerSkinFinish,
@@ -40,6 +41,7 @@ import {
   MONSTER_RADIUS,
   NITRO_BLAST_RADIUS,
   PLAYER_RADIUS,
+  PLAYER_SIZE_MULTS,
   TNT_BLAST_RADIUS,
 } from './types';
 
@@ -74,6 +76,7 @@ export interface RenderableWorld {
   immersive: boolean;
   extraDark?: boolean;
   teamMode?: TeamMode;
+  modifiers?: MatchModifiers;
   elapsedTime: number;
   screenShake: number;
   libraryState?: LibraryMatchState;
@@ -199,6 +202,10 @@ export function getArenaViewTransform(
 const floorCache = new Map<string, HTMLCanvasElement>();
 const libraryMergedFloorCache = new Map<string, HTMLCanvasElement>();
 const intactIceCache = new Map<string, HTMLCanvasElement>();
+const intactIcePathCache = new Map<
+  string,
+  { path: Path2D; minX: number; minY: number; maxX: number; maxY: number }
+>();
 const staticObstaclesCache = new Map<string, HTMLCanvasElement>();
 const staticAmbientCache = new Map<string, HTMLCanvasElement>();
 const staticWallShadowsCache = new Map<string, HTMLCanvasElement>();
@@ -216,6 +223,7 @@ let sharedBeamScratchCanvas: HTMLCanvasElement | null = null;
 let sharedFogCanvas: HTMLCanvasElement | null = null;
 let sharedWispCanvas: HTMLCanvasElement | null = null;
 let sharedWaterCanvas: HTMLCanvasElement | null = null;
+let sharedIceLightCanvas: HTMLCanvasElement | null = null;
 let sharedCarbonCanvas: HTMLCanvasElement | null = null;
 let sharedWoodCrateCanvas: HTMLCanvasElement | null = null;
 let sharedTntCrateCanvas: HTMLCanvasElement | null = null;
@@ -311,6 +319,135 @@ function getLibraryCarpetTexture(): HTMLImageElement | null {
 
 function getPersianWoolTexture(): HTMLImageElement | null {
   return getLazyTexture('persian_wool', persianWoolWeaveTexUrl);
+}
+
+export function preloadArenaTextures(): void {
+  if (typeof Image === 'undefined') return;
+  getWinterSnowTexture();
+  getWinterIceTexture();
+  getLibraryFloorTexture();
+  getLibraryCarpetTexture();
+  getPersianWoolTexture();
+}
+
+export function prewarmArenaCaches(
+  mapId: MapId,
+  extraDark: boolean,
+  world: RenderableWorld,
+  step?: number
+): boolean {
+  if (typeof document === 'undefined') return true;
+  const map = ARENA_MAPS[mapId];
+  if (!map) return true;
+  const isWinter = map.floorTheme === 'winter_snow';
+
+  const warmCones = (floorFilter?: FloorLevel) => {
+    if (extraDark) return;
+    const lights = getConeLightSources(map);
+    lights.forEach((l, idx) => {
+      getBakedConeBeamSprite(map, l, idx, isWinter, floorFilter);
+    });
+  };
+
+  if (mapId === 'library') {
+    if (step === undefined || step === 0) {
+      getFloorCanvas(map);
+      getLibraryUpperFloorCanvas(map);
+      if (step === 0) return false;
+    }
+    if (step === undefined || step === 1) {
+      getStaticAmbientCanvas(map, 0);
+      getStaticAmbientCanvas(map, 1);
+      getStaticWallShadowsCanvas(map, 0);
+      getStaticWallShadowsCanvas(map, 1);
+      if (step === 1) return false;
+    }
+    if (step === undefined || step === 2) {
+      getLibraryMergedBaseCanvas(map, 0, !extraDark);
+      if (step === 2) return false;
+    }
+    if (step === undefined || step === 3) {
+      getLibraryMergedBaseCanvas(map, 1, !extraDark);
+      if (step === 3) return false;
+    }
+    if (step === undefined || step === 4) {
+      getStaticObstaclesCanvas(map, world, 0);
+      if (step === 4) return false;
+    }
+    if (step === undefined || step === 5) {
+      getStaticObstaclesCanvas(map, world, 1);
+      if (step === 5) return false;
+    }
+    if (step === undefined || step === 6) {
+      const libImg = getLibraryFloorTexture();
+      for (const st of map.stairs ?? []) {
+        getStaticStairCanvas(map, st, true, libImg);
+        getStaticStairCanvas(map, st, false, libImg);
+      }
+      if (step === 6) return false;
+    }
+    if (step === undefined || step === 7) {
+      warmCones(0);
+      getGlowSprite('stair_player_shadow_36', 36, (gc, r) => {
+        const sg = gc.createRadialGradient(0, 0, 4, 0, 0, r);
+        sg.addColorStop(0, 'rgba(0, 0, 0, 0.48)');
+        sg.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        gc.fillStyle = sg;
+        gc.beginPath();
+        gc.arc(0, 0, r, 0, Math.PI * 2);
+        gc.fill();
+      });
+      getGlowSprite('bullet_muzzle_95', 95, (gc, r) => {
+        const mg = gc.createRadialGradient(0, 0, 4, 0, 0, r);
+        mg.addColorStop(0, 'rgba(255, 255, 255, 1)');
+        mg.addColorStop(0.45, 'rgba(253, 224, 71, 0.65)');
+        mg.addColorStop(1, 'rgba(253, 224, 71, 0)');
+        gc.fillStyle = mg;
+        gc.beginPath();
+        gc.arc(0, 0, r, 0, Math.PI * 2);
+        gc.fill();
+      });
+      getGlowSprite('tnt_armed_aura_82', 82, (gc, r) => {
+        const g = gc.createRadialGradient(0, 0, 4, 0, 0, r);
+        g.addColorStop(0, 'rgba(239, 68, 68, 1)');
+        g.addColorStop(1, 'rgba(239, 68, 68, 0)');
+        gc.fillStyle = g;
+        gc.beginPath();
+        gc.arc(0, 0, r, 0, Math.PI * 2);
+        gc.fill();
+      });
+    }
+    return true;
+  }
+
+  getFloorCanvas(map);
+  getStaticAmbientCanvas(map);
+  getStaticWallShadowsCanvas(map);
+  getStaticObstaclesCanvas(map, world);
+  warmCones();
+  if (isWinter) {
+    getWinterWaterCanvas();
+    getWinterIceLightCanvas();
+    getWinterFogCanvas();
+    getWinterWispCanvas();
+    const pits: IcePit[] =
+      world.icePits && world.icePits.length > 0
+        ? world.icePits
+        : (map.icePits ?? []).map((p, idx) => ({
+            id: idx + 1,
+            x: p.x,
+            y: p.y,
+            rx: p.rx,
+            ry: p.ry,
+            points: p.points,
+            broken: false,
+          }));
+    if (pits.length > 0) {
+      const mask = pits.map((p) => (p.broken ? '1' : '0')).join('');
+      getBakedIntactIceCanvas(pits, map, mask, getWinterIceTexture());
+    }
+  }
+  return true;
 }
 
 function getCarbonWeaveCanvas(): HTMLCanvasElement {
@@ -1117,6 +1254,48 @@ function getWinterWaterCanvas(): HTMLCanvasElement {
     ctx.putImageData(img, 0, 0);
   }
   sharedWaterCanvas = off;
+  return off;
+}
+
+/** Seamless tileable 256x256 pre-baked subsurface ice-caustic shimmer ribbons (CuSO4 light play) */
+function getWinterIceLightCanvas(): HTMLCanvasElement {
+  if (sharedIceLightCanvas) return sharedIceLightCanvas;
+  const size = 256;
+  const off = document.createElement('canvas');
+  off.width = size;
+  off.height = size;
+  const ctx = off.getContext('2d');
+  if (ctx) {
+    const img = ctx.createImageData(size, size);
+    const data = img.data;
+    for (let y = 0; y < size; y++) {
+      const v = y / size;
+      for (let x = 0; x < size; x++) {
+        const u = x / size;
+        const qx = periodicFbm(u, v, 3, 2.3);
+        const qy = periodicFbm(u + 0.41, v + 0.29, 3, 5.9);
+        const f = periodicFbm(u + 0.24 * qx, v + 0.24 * qy, 4, 9.7);
+        const band = Math.sin((u * 2 + v + qx * 0.45) * Math.PI * 2);
+        const ribbon = Math.pow(Math.max(0, band), 2.4);
+        const ridge = Math.pow(Math.max(0, 1 - Math.abs(f * 2 - 1)), 2.2);
+        const spec = Math.min(1, ribbon * 0.58 + ridge * 0.62);
+
+        // Luminous sky-cyan light shimmer for additive blending over deep CuSO4 ice
+        const r = Math.min(255, Math.round(40 + spec * 150));
+        const g = Math.min(255, Math.round(165 + spec * 85));
+        const b = Math.min(255, Math.round(230 + spec * 25));
+        const a = Math.min(255, Math.round(spec * 185));
+
+        const idx = (y * size + x) * 4;
+        data[idx] = r;
+        data[idx + 1] = g;
+        data[idx + 2] = b;
+        data[idx + 3] = a;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+  sharedIceLightCanvas = off;
   return off;
 }
 
@@ -2310,16 +2489,35 @@ function drawObstacle(ctx: CanvasRenderingContext2D, wall: WallRect, world?: Ren
     return;
   }
 
-  // Soft realistic cast ambient shadow onto floor
-  ctx.fillStyle = kind === 'pine_tree' ? 'rgba(8, 28, 66, 0.36)' : isDarkMood ? 'rgba(3, 2, 5, 0.62)' : 'rgba(4, 3, 8, 0.48)';
+  // Soft realistic cast ambient shadow onto floor (circular/organic for trees & rocks)
+  const circShadow = getWallCircleHitbox(wall);
+  ctx.fillStyle =
+    kind === 'pine_tree'
+      ? 'rgba(8, 28, 66, 0.34)'
+      : isDarkMood
+        ? 'rgba(3, 2, 5, 0.62)'
+        : 'rgba(4, 3, 8, 0.48)';
   ctx.beginPath();
-  ctx.roundRect(
-    wall.x + 9,
-    wall.y + 13,
-    wall.w,
-    wall.h,
-    kind === 'tree' || kind === 'rock' || kind === 'pine_tree' ? 24 : 7
-  );
+  if (circShadow) {
+    if (kind === 'pine_tree') {
+      const sr = circShadow.r * 1.04;
+      const sx0 = circShadow.cx + 9;
+      const sy0 = circShadow.cy + 13;
+      for (let si = 0; si < 24; si++) {
+        const sa = (si / 24) * Math.PI * 2;
+        const lobe = 0.84 + seededRand(wall.x * 0.41 + wall.y * 0.83 + si * 7.3) * 0.28;
+        const px = sx0 + Math.cos(sa) * sr * lobe;
+        const py = sy0 + Math.sin(sa) * sr * lobe;
+        if (si === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+    } else {
+      ctx.arc(circShadow.cx + 8, circShadow.cy + 12, circShadow.r * 1.02, 0, Math.PI * 2);
+    }
+  } else {
+    ctx.roundRect(wall.x + 9, wall.y + 13, wall.w, wall.h, 7);
+  }
   ctx.fill();
 
   if (kind === 'sofa') {
@@ -2965,22 +3163,47 @@ function drawObstacle(ctx: CanvasRenderingContext2D, wall: WallRect, world?: Ren
 
   if (kind === 'pine_tree') {
     ctx.save();
-    const cx = wall.x + wall.w / 2;
-    const cy = wall.y + wall.h / 2;
-    const r = Math.min(wall.w, wall.h) * 0.5;
+    const cx = wall.x + wall.w * 0.5;
+    const cy = wall.y + wall.h * 0.5;
+    const r = Math.min(wall.w, wall.h) * 0.49;
+    const seedBase = wall.x * 0.37 + wall.y * 0.73;
 
-    // Bark trunk under boughs
-    ctx.fillStyle = '#3B2010';
+    // 1. Weathered cedar-spruce trunk collar & basal frost occlusion peeking beneath lowest boughs
+    const rootOccl = ctx.createRadialGradient(cx + 3, cy + 5, r * 0.14, cx, cy, r * 0.62);
+    rootOccl.addColorStop(0, 'rgba(6, 18, 14, 0.75)');
+    rootOccl.addColorStop(1, 'rgba(6, 18, 14, 0)');
+    ctx.fillStyle = rootOccl;
     ctx.beginPath();
-    ctx.arc(cx, cy + 4, r * 0.28, 0, Math.PI * 2);
+    ctx.arc(cx + 3, cy + 5, r * 0.62, 0, Math.PI * 2);
     ctx.fill();
 
-    // Tier 1 outermost deep alpine evergreen needles
-    const drawStarBoughs = (branches: number, outerR: number, innerR: number, rotOff: number, ox = 0, oy = 0) => {
+    ctx.fillStyle = '#331D11';
+    ctx.beginPath();
+    ctx.arc(cx + 2, cy + 4, r * 0.22, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#1E1008';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Helper: organic ragged alpine conifer tier silhouette (multi-lobe serrated frond clusters)
+    const traceBoughTier = (
+      branches: number,
+      outerR: number,
+      innerR: number,
+      rotOff: number,
+      ox: number,
+      oy: number,
+      tierSeed: number
+    ) => {
+      const steps = branches * 2;
       ctx.beginPath();
-      for (let i = 0; i < branches; i++) {
-        const a = (i / branches) * Math.PI * 2 + rotOff;
-        const rad = i % 2 === 0 ? outerR : innerR;
+      for (let i = 0; i < steps; i++) {
+        const a = (i / steps) * Math.PI * 2 + rotOff + (seededRand(tierSeed + i * 3.1) - 0.5) * 0.09;
+        const isTip = i % 2 === 0;
+        const jitter = isTip
+          ? 0.88 + seededRand(tierSeed + i * 7.7) * 0.2
+          : 0.9 + seededRand(tierSeed + i * 11.3) * 0.16;
+        const rad = (isTip ? outerR : innerR) * jitter;
         const px = cx + ox + Math.cos(a) * rad;
         const py = cy + oy + Math.sin(a) * rad;
         if (i === 0) ctx.moveTo(px, py);
@@ -2989,51 +3212,191 @@ function drawObstacle(ctx: CanvasRenderingContext2D, wall: WallRect, world?: Ren
       ctx.closePath();
     };
 
-    drawStarBoughs(20, r * 1.03, r * 0.74, 0);
-    const pG1 = ctx.createRadialGradient(cx - 4, cy - 4, 4, cx, cy, r);
-    pG1.addColorStop(0, '#0F6B4E');
-    pG1.addColorStop(1, '#043829');
-    ctx.fillStyle = pG1;
-    ctx.fill();
+    const drawNeedleFronds = (
+      count: number,
+      minR: number,
+      maxR: number,
+      ox: number,
+      oy: number,
+      tierSeed: number,
+      litColor: string,
+      shadeColor: string
+    ) => {
+      ctx.save();
+      ctx.lineCap = 'round';
+      for (let i = 0; i < count; i++) {
+        const a = (i / count) * Math.PI * 2 + seededRand(tierSeed + i * 5.9) * 0.18;
+        const rStart = minR * (0.88 + seededRand(tierSeed + i * 2.3) * 0.24);
+        const rEnd = maxR * (0.86 + seededRand(tierSeed + i * 4.7) * 0.2);
+        const sunDot = -(Math.cos(a) * 0.65 + Math.sin(a) * 0.76);
+        ctx.strokeStyle = sunDot > 0 ? litColor : shadeColor;
+        ctx.lineWidth = sunDot > 0.25 ? 1.55 : 1.25;
+        ctx.beginPath();
+        ctx.moveTo(cx + ox + Math.cos(a) * rStart, cy + oy + Math.sin(a) * rStart);
+        ctx.lineTo(cx + ox + Math.cos(a) * rEnd, cy + oy + Math.sin(a) * rEnd);
+        ctx.stroke();
+      }
+      ctx.restore();
+    };
 
-    // Tier 2 layered mid pine boughs
-    drawStarBoughs(18, r * 0.80, r * 0.54, 0.19, -2, -2);
-    const pG2 = ctx.createRadialGradient(cx - 5, cy - 5, 3, cx, cy, r * 0.8);
-    pG2.addColorStop(0, '#10B981');
-    pG2.addColorStop(1, '#065F46');
-    ctx.fillStyle = pG2;
-    ctx.fill();
+    const tiers: Array<{
+      branches: number;
+      outer: number;
+      inner: number;
+      rot: number;
+      ox: number;
+      oy: number;
+      cInner: string;
+      cMid: string;
+      cOuter: string;
+      litNeedle: string;
+      shadeNeedle: string;
+      snowCount: number;
+    }> = [
+      {
+        branches: 13,
+        outer: r * 1.0,
+        inner: r * 0.74,
+        rot: 0.05,
+        ox: 1.5,
+        oy: 2,
+        cInner: '#0A3E2C',
+        cMid: '#062C1E',
+        cOuter: '#031911',
+        litNeedle: 'rgba(29, 108, 76, 0.56)',
+        shadeNeedle: 'rgba(2, 22, 15, 0.62)',
+        snowCount: 5,
+      },
+      {
+        branches: 11,
+        outer: r * 0.82,
+        inner: r * 0.57,
+        rot: 0.29,
+        ox: -0.5,
+        oy: -0.5,
+        cInner: '#13573E',
+        cMid: '#0B3E2B',
+        cOuter: '#052418',
+        litNeedle: 'rgba(42, 138, 97, 0.62)',
+        shadeNeedle: 'rgba(4, 30, 20, 0.64)',
+        snowCount: 5,
+      },
+      {
+        branches: 9,
+        outer: r * 0.61,
+        inner: r * 0.41,
+        rot: 0.54,
+        ox: -2,
+        oy: -2,
+        cInner: '#1D7452',
+        cMid: '#12533A',
+        cOuter: '#073322',
+        litNeedle: 'rgba(62, 166, 118, 0.66)',
+        shadeNeedle: 'rgba(7, 41, 27, 0.62)',
+        snowCount: 4,
+      },
+      {
+        branches: 7,
+        outer: r * 0.39,
+        inner: r * 0.25,
+        rot: 0.82,
+        ox: -3.2,
+        oy: -3.4,
+        cInner: '#2B8E66',
+        cMid: '#196848',
+        cOuter: '#0B422D',
+        litNeedle: 'rgba(96, 196, 146, 0.68)',
+        shadeNeedle: 'rgba(11, 52, 35, 0.56)',
+        snowCount: 0,
+      },
+    ];
 
-    // Organic sculpted glacier snow patches draped across upper boughs
-    ctx.fillStyle = 'rgba(186, 230, 253, 0.92)';
-    for (let i = 0; i < 6; i++) {
-      const a = -Math.PI * 0.92 + i * 0.44;
-      ctx.beginPath();
-      ctx.ellipse(
-        cx + Math.cos(a) * r * 0.56,
-        cy + Math.sin(a) * r * 0.56,
-        r * 0.22,
-        r * 0.12,
-        a + Math.PI / 2,
-        0,
-        Math.PI * 2
+    tiers.forEach((tier, tIdx) => {
+      const tierSeed = seedBase + tIdx * 97.1;
+
+      // Inter-tier drop shadow cast onto lower conifer whorls
+      if (tIdx > 0) {
+        ctx.save();
+        traceBoughTier(tier.branches, tier.outer * 1.03, tier.inner * 0.98, tier.rot, tier.ox + 3.5, tier.oy + 4.5, tierSeed);
+        ctx.fillStyle = 'rgba(2, 14, 10, 0.48)';
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // Rich radial conifer bough shading (sunlit upper-left -> shadowed lower-right)
+      traceBoughTier(tier.branches, tier.outer, tier.inner, tier.rot, tier.ox, tier.oy, tierSeed);
+      const grad = ctx.createRadialGradient(
+        cx + tier.ox - tier.outer * 0.28,
+        cy + tier.oy - tier.outer * 0.28,
+        tier.outer * 0.08,
+        cx + tier.ox,
+        cy + tier.oy,
+        tier.outer * 1.04
       );
+      grad.addColorStop(0, tier.cInner);
+      grad.addColorStop(0.62, tier.cMid);
+      grad.addColorStop(1, tier.cOuter);
+      ctx.fillStyle = grad;
       ctx.fill();
-    }
 
-    // Tier 3 crisp spruce crown + frosted white snow crest
-    drawStarBoughs(14, r * 0.48, r * 0.34, 0.35, -3, -3);
-    ctx.fillStyle = '#10B981';
-    ctx.fill();
+      ctx.strokeStyle = 'rgba(2, 18, 12, 0.55)';
+      ctx.lineWidth = 1.1;
+      ctx.stroke();
 
-    const capG = ctx.createRadialGradient(cx - 6, cy - 6, 2, cx - 3, cy - 3, r * 0.28);
+      // Fine pine needle texture strokes radiating out toward bough tips
+      drawNeedleFronds(
+        tier.branches * 3,
+        tier.inner * 0.42,
+        tier.outer * 0.96,
+        tier.ox,
+        tier.oy,
+        tierSeed + 19,
+        tier.litNeedle,
+        tier.shadeNeedle
+      );
+
+      // Sculpted alpine glacier snow shelves clinging mostly to sunlit windward boughs
+      if (tier.snowCount > 0) {
+        for (let si = 0; si < tier.snowCount; si++) {
+          const sa = -Math.PI * 0.96 + (si / Math.max(1, tier.snowCount - 1)) * Math.PI * 0.95 + (seededRand(tierSeed + si * 13.7) - 0.5) * 0.22;
+          const distR = tier.outer * (0.64 + seededRand(tierSeed + si * 17.3) * 0.14);
+          const sx = cx + tier.ox + Math.cos(sa) * distR;
+          const sy = cy + tier.oy + Math.sin(sa) * distR;
+          const sLen = tier.outer * (0.16 + seededRand(tierSeed + si * 23.1) * 0.08);
+          const sWid = tier.outer * (0.085 + seededRand(tierSeed + si * 29.7) * 0.04);
+
+          // Cool blue snow underside rim
+          ctx.fillStyle = 'rgba(125, 211, 252, 0.85)';
+          ctx.beginPath();
+          ctx.ellipse(sx + 1, sy + 1.6, sLen * 1.04, sWid * 1.04, sa + Math.PI * 0.5, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Crisp sunlit snow drift pocket
+          const snowG = ctx.createRadialGradient(sx - 1.5, sy - 1.5, 1, sx, sy, sLen);
+          snowG.addColorStop(0, '#FFFFFF');
+          snowG.addColorStop(0.65, '#E0F2FE');
+          snowG.addColorStop(1, '#BAE6FD');
+          ctx.fillStyle = snowG;
+          ctx.beginPath();
+          ctx.ellipse(sx, sy, sLen, sWid, sa + Math.PI * 0.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    });
+
+    // 4. Sculpted asymmetrical alpine frost cap on the top spruce spire
+    ctx.save();
+    traceBoughTier(6, r * 0.23, r * 0.16, 0.42, -3.5, -3.6, seedBase + 401);
+    const capG = ctx.createRadialGradient(cx - 5.5, cy - 5.5, 1.5, cx - 3, cy - 3, r * 0.25);
     capG.addColorStop(0, '#FFFFFF');
-    capG.addColorStop(0.65, '#E0F2FE');
+    capG.addColorStop(0.58, '#E0F2FE');
     capG.addColorStop(1, '#7DD3FC');
     ctx.fillStyle = capG;
-    ctx.beginPath();
-    ctx.arc(cx - 4, cy - 4, r * 0.27, 0, Math.PI * 2);
     ctx.fill();
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
+    ctx.lineWidth = 0.9;
+    ctx.stroke();
+    ctx.restore();
 
     ctx.restore();
     return;
@@ -3337,8 +3700,25 @@ function computeFlashlightPolygon(
     const dy = Math.sin(a);
     let bestT = range;
     for (const w of nearby) {
-      const t = intersectRayAABB(ox, oy, dx, dy, w, bestT);
-      if (t < bestT) bestT = t;
+      const circ = getWallCircleHitbox(w);
+      if (circ) {
+        const fx = ox - circ.cx;
+        const fy = oy - circ.cy;
+        const b = fx * dx + fy * dy;
+        const c = fx * fx + fy * fy - circ.r * circ.r;
+        if (c <= 0) {
+          bestT = 0;
+          break;
+        }
+        const disc = b * b - c;
+        if (disc >= 0) {
+          const tHit = -b - Math.sqrt(disc);
+          if (tHit >= 0 && tHit < bestT) bestT = tHit;
+        }
+      } else {
+        const t = intersectRayAABB(ox, oy, dx, dy, w, bestT);
+        if (t < bestT) bestT = t;
+      }
     }
     points.push({ x: ox + dx * bestT, y: oy + dy * bestT });
   }
@@ -4001,16 +4381,19 @@ function drawLibraryStairs(
 
     const vertical = st.upDir === 'up' || st.upDir === 'down';
     if (vertical) {
+      const stairShadowSprite = getGlowSprite('stair_player_shadow_36', 36, (gc, r) => {
+        const sg = gc.createRadialGradient(0, 0, 4, 0, 0, r);
+        sg.addColorStop(0, 'rgba(0, 0, 0, 0.48)');
+        sg.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        gc.fillStyle = sg;
+        gc.beginPath();
+        gc.arc(0, 0, r, 0, Math.PI * 2);
+        gc.fill();
+      });
       for (const p of world.players) {
         if (!p.alive) continue;
         if (p.x >= st.x - 16 && p.x <= st.x + st.w + 16 && p.y >= st.y - 24 && p.y <= st.y + st.h + 24) {
-          const sg = ctx.createRadialGradient(p.x, p.y + 6, 4, p.x, p.y + 6, 36);
-          sg.addColorStop(0, 'rgba(0, 0, 0, 0.48)');
-          sg.addColorStop(1, 'rgba(0, 0, 0, 0)');
-          ctx.fillStyle = sg;
-          ctx.beginPath();
-          ctx.arc(p.x, p.y + 6, 36, 0, Math.PI * 2);
-          ctx.fill();
+          ctx.drawImage(stairShadowSprite, p.x - 36, p.y + 6 - 36, 72, 72);
         }
       }
 
@@ -4683,6 +5066,11 @@ export function renderArena(
   const isImmersive = world.immersive || map.immersive;
   const isExtraDark = isImmersive && Boolean(world.extraDark);
   const isLibrary = map.id === 'library' && Boolean(world.libraryState);
+  const playerRadius =
+    !isImmersive && world.modifiers?.playerSize
+      ? Math.round(PLAYER_RADIUS * (PLAYER_SIZE_MULTS[world.modifiers.playerSize] ?? 1.0))
+      : PLAYER_RADIUS;
+  const pScale = playerRadius / PLAYER_RADIUS;
   const localIds =
     cursorOverlay?.localPlayerIds && cursorOverlay.localPlayerIds.length > 0
       ? cursorOverlay.localPlayerIds
@@ -4711,7 +5099,22 @@ export function renderArena(
   const isPlayerMidStair = (p: RenderPlayer): boolean => {
     if (!isLibrary) return false;
     const sb = p.stairBlend ?? (p.floor === 1 ? 1 : 0);
-    return sb > 0.02 && sb < 0.98;
+    return sb > 0.001 && sb < 0.999;
+  };
+  const isFloor0PlayerAtOpenStairMouth = (p: RenderPlayer): boolean => {
+    if (!isLibrary || (p.floor ?? 0) !== 0 || isPlayerMidStair(p)) return false;
+    for (const st of map.stairs ?? []) {
+      if (st.upDir === 'up' || st.upDir === 'down') {
+        if (p.x < st.x - playerRadius - 8 || p.x > st.x + st.w + playerRadius + 8) continue;
+        const mouthY = st.upDir === 'up' ? st.y + st.h : st.y;
+        if (Math.abs(p.y - mouthY) <= playerRadius + 14) return true;
+      } else {
+        if (p.y < st.y - playerRadius - 8 || p.y > st.y + st.h + playerRadius + 8) continue;
+        const mouthX = st.upDir === 'left' ? st.x + st.w : st.x;
+        if (Math.abs(p.x - mouthX) <= playerRadius + 14) return true;
+      }
+    }
+    return false;
   };
   const isMonsterOnStair = (m: LibraryMonsterState): boolean => {
     for (const st of map.stairs ?? []) {
@@ -4796,6 +5199,7 @@ export function renderArena(
 
     ctx.save();
     ctx.translate(player.x, player.y);
+    if (pScale !== 1) ctx.scale(pScale, pScale);
 
     const isStunned = player.stunTimer > 0;
     const inPostStunGrace = !isStunned && (player.postStunGraceTimer ?? 0) > 0;
@@ -5545,11 +5949,15 @@ export function renderArena(
       ctx.restore();
     }
 
+    if (pScale !== 1) ctx.scale(1 / pScale, 1 / pScale);
+
     const hpRatio = player.hp / player.maxHp;
+    const barW = Math.round(56 * Math.max(0.84, Math.min(1.18, pScale)));
+    const barHalf = barW * 0.5;
     ctx.fillStyle = 'rgba(9, 13, 22, 0.88)';
-    ctx.fillRect(-28, PLAYER_RADIUS + 10, 56, 6);
+    ctx.fillRect(-barHalf, playerRadius + 10, barW, 6);
     ctx.fillStyle = hpRatio > 0.5 ? '#22C55E' : hpRatio > 0.25 ? '#FACC15' : '#EF4444';
-    ctx.fillRect(-26.5, PLAYER_RADIUS + 11.5, 53 * hpRatio, 3);
+    ctx.fillRect(-barHalf + 1.5, playerRadius + 11.5, Math.max(0, (barW - 3) * hpRatio), 3);
 
     const labelText =
       world.teamMode === '2V2' && player.team !== undefined
@@ -5565,8 +5973,8 @@ export function renderArena(
     ctx.lineWidth = 3;
     ctx.font = '700 13px "Plus Jakarta Sans", sans-serif';
     ctx.textAlign = 'center';
-    ctx.strokeText(labelText, 0, -PLAYER_RADIUS - 16);
-    ctx.fillText(labelText, 0, -PLAYER_RADIUS - 16);
+    ctx.strokeText(labelText, 0, -playerRadius - 16);
+    ctx.fillText(labelText, 0, -playerRadius - 16);
 
     ctx.restore();
   };
@@ -5796,7 +6204,12 @@ export function renderArena(
         drawLibraryBooks(ctx, localProg.books, 0, world.elapsedTime);
       }
       for (const player of world.players) {
-        if ((player.floor ?? 0) === 0 && !isPlayerMidStair(player) && inViewCircle(player.x, player.y, 90)) {
+        if (
+          (player.floor ?? 0) === 0 &&
+          !isPlayerMidStair(player) &&
+          !isFloor0PlayerAtOpenStairMouth(player) &&
+          inViewCircle(player.x, player.y, 90)
+        ) {
           drawSinglePlayer(player);
         }
       }
@@ -5813,6 +6226,26 @@ export function renderArena(
 
     // 1C. Staircases (viewport-culled + statically cached)
     drawLibraryStairs(ctx, map, world, libraryBlend, viewBounds);
+
+    // Draw Ground-Floor players standing at open stair mouths ABOVE the stairs (and faded cleanly as floor shifts upward)
+    // while keeping players behind the closed upper rear wall of a staircase naturally occluded.
+    if (libraryBlend < 0.99) {
+      const gAlpha = libraryBlend > 0.01 ? Math.max(0, 1 - libraryBlend * 1.05) : 1;
+      if (gAlpha > 0.01) {
+        for (const player of world.players) {
+          if (isFloor0PlayerAtOpenStairMouth(player) && inViewCircle(player.x, player.y, 90)) {
+            if (gAlpha < 0.999) {
+              ctx.save();
+              ctx.globalAlpha *= gAlpha;
+              drawSinglePlayer(player);
+              ctx.restore();
+            } else {
+              drawSinglePlayer(player);
+            }
+          }
+        }
+      }
+    }
 
     // 1D. Upper Mezzanine Floor (revealed cleanly; bypass offscreen globalAlpha layer when fully on Upper Floor!)
     if (libraryBlend > 0.01) {
@@ -5958,7 +6391,7 @@ export function renderArena(
           range,
           other.x,
           other.y,
-          PLAYER_RADIUS * 0.86
+          playerRadius * 0.86
         );
         if (w) entityShadows.push(w);
       }
@@ -6180,11 +6613,22 @@ export function renderArena(
         const d = Math.hypot(b.x - cx, b.y - cy);
         if (d < 88) {
           const intensity = (1 - d / 88) * (isExtraDark ? 0.56 : 0.32);
-          const rimGrad = ctx.createRadialGradient(cx, cy, 2, cx, cy, 66);
-          rimGrad.addColorStop(0, hexWithAlpha(b.color, intensity));
-          rimGrad.addColorStop(1, hexWithAlpha(b.color, 0));
-          ctx.fillStyle = rimGrad;
-          ctx.fillRect(wall.x, wall.y, wall.w, wall.h);
+          const rimSprite = getGlowSprite(`wall_rim_${b.color}_66`, 66, (gc, r) => {
+            const g = gc.createRadialGradient(0, 0, 2, 0, 0, r);
+            g.addColorStop(0, hexWithAlpha(b.color, 1));
+            g.addColorStop(1, hexWithAlpha(b.color, 0));
+            gc.fillStyle = g;
+            gc.beginPath();
+            gc.arc(0, 0, r, 0, Math.PI * 2);
+            gc.fill();
+          });
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(wall.x, wall.y, wall.w, wall.h);
+          ctx.clip();
+          ctx.globalAlpha = intensity;
+          ctx.drawImage(rimSprite, cx - 66, cy - 66, 132, 132);
+          ctx.restore();
         }
       }
     }
@@ -6277,12 +6721,12 @@ export function renderArena(
         const dist = Math.hypot(pl.x - ex.x, pl.y - ex.y);
         if (dist < lightR) {
           const bounce = (1 - dist / lightR) * flash * 0.58;
-          const pg = ctx.createRadialGradient(pl.x, pl.y, 4, pl.x, pl.y, PLAYER_RADIUS * 1.15);
+          const pg = ctx.createRadialGradient(pl.x, pl.y, 4, pl.x, pl.y, playerRadius * 1.15);
           pg.addColorStop(0, `rgba(254, 249, 195, ${bounce})`);
           pg.addColorStop(1, 'rgba(250, 204, 21, 0)');
           ctx.fillStyle = pg;
           ctx.beginPath();
-          ctx.arc(pl.x, pl.y, PLAYER_RADIUS * 1.15, 0, Math.PI * 2);
+          ctx.arc(pl.x, pl.y, playerRadius * 1.15, 0, Math.PI * 2);
           ctx.fill();
         }
       }
@@ -6473,7 +6917,7 @@ export function renderArena(
       ctx.strokeStyle = player.color;
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(0, 0, PLAYER_RADIUS, 0, Math.PI * 2);
+      ctx.arc(0, 0, playerRadius, 0, Math.PI * 2);
       ctx.stroke();
 
       ctx.rotate(player.angle);
@@ -7282,18 +7726,31 @@ function getStaticWallShadowPolys(
   for (const wall of map.walls) {
     if (wall.kind?.startsWith('perimeter')) continue;
     if (floorFilter !== undefined && (wall.floor ?? 0) !== floorFilter) continue;
-    const poly = buildRectShadowFromPoint(
-      light.x,
-      light.y,
-      wall.x,
-      wall.y,
-      wall.w,
-      wall.h,
-      light.range,
-      shadowLen,
-      light.dirY,
-      light.coneMaxHalfAngle
-    );
+    const circ = getWallCircleHitbox(wall);
+    const poly = circ
+      ? buildCircleShadowFromPoint(
+          light.x,
+          light.y,
+          circ.cx,
+          circ.cy,
+          circ.r,
+          light.range,
+          shadowLen,
+          light.dirY,
+          light.coneMaxHalfAngle
+        )
+      : buildRectShadowFromPoint(
+          light.x,
+          light.y,
+          wall.x,
+          wall.y,
+          wall.w,
+          wall.h,
+          light.range,
+          shadowLen,
+          light.dirY,
+          light.coneMaxHalfAngle
+        );
     if (poly) polys.push(poly);
   }
   setBoundedCache(staticWallShadowPolyCache, key, polys, 96);
@@ -7310,6 +7767,13 @@ function collectLightShadowPolys(
 ): ShadowPolygon[] {
   const out: ShadowPolygon[] = [];
 
+  const isImmersive = Boolean(world.immersive || map.immersive);
+  const pScale =
+    !isImmersive && world.modifiers?.playerSize
+      ? (PLAYER_SIZE_MULTS[world.modifiers.playerSize] ?? 1.0)
+      : 1.0;
+  const playerShadowR = 33 * pScale;
+
   for (const p of world.players) {
     if (!p.alive) continue;
     if (floorFilter !== undefined && (p.floor ?? 0) !== floorFilter) continue;
@@ -7318,7 +7782,7 @@ function collectLightShadowPolys(
       light.y,
       p.x,
       p.y,
-      33,
+      playerShadowR,
       light.range,
       shadowLen,
       light.dirY,
@@ -8146,13 +8610,80 @@ function traceSmoothClosedPoly(
   ctx.closePath();
 }
 
+function addSmoothClosedPolyToPath(
+  path: Path2D,
+  pts: Array<{ x: number; y: number }>,
+  offsetX: number,
+  offsetY: number
+) {
+  const n = pts.length;
+  if (n < 3) return;
+  const firstMidX = offsetX + (pts[n - 1].x + pts[0].x) * 0.5;
+  const firstMidY = offsetY + (pts[n - 1].y + pts[0].y) * 0.5;
+  path.moveTo(firstMidX, firstMidY);
+  for (let i = 0; i < n; i++) {
+    const curr = pts[i];
+    const next = pts[(i + 1) % n];
+    const mx = offsetX + (curr.x + next.x) * 0.5;
+    const my = offsetY + (curr.y + next.y) * 0.5;
+    path.quadraticCurveTo(offsetX + curr.x, offsetY + curr.y, mx, my);
+  }
+  path.closePath();
+}
+
+function getIntactIcePathEntry(
+  pits: IcePit[],
+  map: ArenaMap,
+  brokenMask: string
+): { path: Path2D; minX: number; minY: number; maxX: number; maxY: number } {
+  const key = `${map.id}_${brokenMask}`;
+  const cached = intactIcePathCache.get(key);
+  if (cached) return cached;
+
+  const path = new Path2D();
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const pit of pits) {
+    if (pit.broken) continue;
+    const pts = pit.points ?? map.icePits?.[pit.id - 1]?.points;
+    if (pts && pts.length >= 3) {
+      addSmoothClosedPolyToPath(path, pts, pit.x, pit.y);
+      for (const pt of pts) {
+        minX = Math.min(minX, pit.x + pt.x);
+        maxX = Math.max(maxX, pit.x + pt.x);
+        minY = Math.min(minY, pit.y + pt.y);
+        maxY = Math.max(maxY, pit.y + pt.y);
+      }
+    } else {
+      path.ellipse(pit.x, pit.y, pit.rx, pit.ry, 0, 0, Math.PI * 2);
+      minX = Math.min(minX, pit.x - pit.rx);
+      maxX = Math.max(maxX, pit.x + pit.rx);
+      minY = Math.min(minY, pit.y - pit.ry);
+      maxY = Math.max(maxY, pit.y + pit.ry);
+    }
+  }
+
+  if (!Number.isFinite(minX)) {
+    minX = 0;
+    minY = 0;
+    maxX = map.width;
+    maxY = map.height;
+  }
+  const entry = { path, minX: minX - 4, minY: minY - 4, maxX: maxX + 4, maxY: maxY + 4 };
+  setBoundedCache(intactIcePathCache, key, entry, 12);
+  return entry;
+}
+
 function getBakedIntactIceCanvas(
   pits: IcePit[],
   map: ArenaMap,
   brokenMask: string,
   iceImg: HTMLImageElement | null
 ): HTMLCanvasElement {
-  const key = `${map.id}_${map.width}x${map.height}_${brokenMask}${iceImg ? '_itex' : ''}`;
+  const key = `${map.id}_${map.width}x${map.height}_${brokenMask}${iceImg ? '_cuso4' : ''}`;
   const cached = intactIceCache.get(key);
   if (cached) return cached;
 
@@ -8180,8 +8711,8 @@ function getBakedIntactIceCanvas(
     ictx.save();
     ictx.translate(pit.x, pit.y);
 
-    // Outer frosted snow rim
-    ictx.fillStyle = 'rgba(56, 189, 248, 0.45)';
+    // Vivid CuSO4 turquoise-azure frosted shoreline glow
+    ictx.fillStyle = 'rgba(0, 149, 232, 0.42)';
     ictx.save();
     ictx.translate(0, 3);
     trace(1.07);
@@ -8192,25 +8723,36 @@ function getBakedIntactIceCanvas(
     trace(1);
     ictx.clip();
 
-    const iceGrad = ictx.createRadialGradient(-pit.rx * 0.15, -pit.ry * 0.18, 8, 0, 0, Math.max(pit.rx, pit.ry) * 1.15);
-    iceGrad.addColorStop(0, '#38BDF8');
-    iceGrad.addColorStop(0.45, '#0284C7');
-    iceGrad.addColorStop(0.82, '#0369A1');
-    iceGrad.addColorStop(1, '#074B83');
+    // Hydrated Copper(II) Sulfate (CuSO4·5H2O) crystalline blue gradient
+    const iceGrad = ictx.createRadialGradient(-pit.rx * 0.16, -pit.ry * 0.2, 8, 0, 0, Math.max(pit.rx, pit.ry) * 1.15);
+    iceGrad.addColorStop(0, '#22D3EE');
+    iceGrad.addColorStop(0.32, '#0095E8');
+    iceGrad.addColorStop(0.72, '#0066CC');
+    iceGrad.addColorStop(1, '#003E8A');
     ictx.fillStyle = iceGrad;
     ictx.fillRect(-pit.rx * 1.4, -pit.ry * 1.4, pit.rx * 2.8, pit.ry * 2.8);
 
+    // Blend crystal ice texture softly without washing out CuSO4 saturation
     if (icePat) {
       ictx.save();
-      ictx.globalAlpha = 0.78;
+      ictx.globalCompositeOperation = 'soft-light';
+      ictx.globalAlpha = 0.64;
+      ictx.translate(pit.id * 41, pit.id * 29);
+      ictx.fillStyle = icePat;
+      ictx.fillRect(-pit.rx * 1.6 - pit.id * 41, -pit.ry * 1.6 - pit.id * 29, pit.rx * 3.2, pit.ry * 3.2);
+      ictx.restore();
+
+      ictx.save();
+      ictx.globalCompositeOperation = 'overlay';
+      ictx.globalAlpha = 0.24;
       ictx.translate(pit.id * 41, pit.id * 29);
       ictx.fillStyle = icePat;
       ictx.fillRect(-pit.rx * 1.6 - pit.id * 41, -pit.ry * 1.6 - pit.id * 29, pit.rx * 3.2, pit.ry * 3.2);
       ictx.restore();
     }
 
-    // Crisp static glacier prism highlight bands
-    ictx.fillStyle = 'rgba(224, 242, 254, 0.14)';
+    // Subsurface turquoise crystalline refraction highlight & fractured veins
+    ictx.fillStyle = 'rgba(125, 211, 252, 0.14)';
     ictx.beginPath();
     ictx.moveTo(-pit.rx * 0.72, -pit.ry * 1.2);
     ictx.lineTo(-pit.rx * 0.42, -pit.ry * 1.2);
@@ -8219,9 +8761,8 @@ function getBakedIntactIceCanvas(
     ictx.closePath();
     ictx.fill();
 
-    // Subtle frosted crystalline ice fracture veins
-    ictx.strokeStyle = 'rgba(224, 242, 254, 0.52)';
-    ictx.lineWidth = 1.5;
+    ictx.strokeStyle = 'rgba(186, 230, 253, 0.56)';
+    ictx.lineWidth = 1.6;
     ictx.beginPath();
     ictx.moveTo(-pit.rx * 0.38, -pit.ry * 0.28);
     ictx.lineTo(0, 4);
@@ -8229,10 +8770,16 @@ function getBakedIntactIceCanvas(
     ictx.moveTo(0, 4);
     ictx.lineTo(-pit.rx * 0.14, pit.ry * 0.46);
     ictx.stroke();
+
+    // Inner depth rim bevel
+    ictx.strokeStyle = 'rgba(2, 46, 102, 0.42)';
+    ictx.lineWidth = 7;
+    trace(0.99);
+    ictx.stroke();
     ictx.restore();
 
     // Crisp frosted ice shoreline lip
-    ictx.strokeStyle = '#F0F9FF';
+    ictx.strokeStyle = '#E0F7FF';
     ictx.lineWidth = 2.6;
     trace(1);
     ictx.stroke();
@@ -8269,10 +8816,41 @@ function drawIcePits(ctx: CanvasRenderingContext2D, world: RenderableWorld, map:
     else hasIntact = true;
   }
 
-  // Blit all unbroken glacier ponds in one cached drawImage call (zero per-frame gradient/pattern rebuild)
+  // Blit baked CuSO4 ice ponds + silky-smooth sub-pixel DOMMatrix panning over cached Path2D clip
   if (hasIntact) {
     const baked = getBakedIntactIceCanvas(pits, map, brokenMask, iceImg);
     ctx.drawImage(baked, 0, 0);
+
+    const iceLightPat = getCachedPattern(ctx, getWinterIceLightCanvas());
+    if (iceLightPat && typeof DOMMatrix !== 'undefined') {
+      const intactEntry = getIntactIcePathEntry(pits, map, brokenMask);
+      const t = world.elapsedTime;
+      const bw = intactEntry.maxX - intactEntry.minX;
+      const bh = intactEntry.maxY - intactEntry.minY;
+
+      ctx.save();
+      ctx.clip(intactEntry.path);
+      ctx.globalCompositeOperation = 'lighter';
+
+      iceLightPat.setTransform(
+        new DOMMatrix().translate((t * 28) % 256, (t * 14) % 256).rotate(-14)
+      );
+      ctx.globalAlpha = 0.42;
+      ctx.fillStyle = iceLightPat;
+      ctx.fillRect(intactEntry.minX, intactEntry.minY, bw, bh);
+
+      iceLightPat.setTransform(
+        new DOMMatrix()
+          .translate((((-(t * 18)) % 256) + 256) % 256, (t * 22) % 256)
+          .scale(1.32, 1.32)
+          .rotate(20)
+      );
+      ctx.globalAlpha = 0.28;
+      ctx.fillStyle = iceLightPat;
+      ctx.fillRect(intactEntry.minX, intactEntry.minY, bw, bh);
+
+      ctx.restore();
+    }
   }
   if (!hasBroken) return;
 

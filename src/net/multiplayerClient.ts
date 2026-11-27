@@ -114,6 +114,7 @@ function sanitizeModifiers(raw: Partial<MatchModifiers> | undefined): MatchModif
       DEFAULT_MATCH_MODIFIERS.bulletBounces
     ),
     playerSpeed: sanitizeModifierLevel(raw.playerSpeed, DEFAULT_MATCH_MODIFIERS.playerSpeed),
+    playerSize: sanitizeModifierLevel(raw.playerSize, DEFAULT_MATCH_MODIFIERS.playerSize),
     turnSpeed: sanitizeModifierLevel(raw.turnSpeed, DEFAULT_MATCH_MODIFIERS.turnSpeed),
     bulletSpeed: sanitizeModifierLevel(raw.bulletSpeed, DEFAULT_MATCH_MODIFIERS.bulletSpeed),
     bulletCapacity: sanitizeModifierLevel(raw.bulletCapacity, DEFAULT_MATCH_MODIFIERS.bulletCapacity),

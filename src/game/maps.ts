@@ -443,3 +443,23 @@ export const IMMERSIVE_DARK_PREVIEW_URLS: Partial<Record<MapId, string>> = {
   library: '/assets/maps/library_dark.jpg',
 };
 
+export function getWallCircleHitbox(
+  wall: WallRect
+): { cx: number; cy: number; r: number } | null {
+  if (wall.kind === 'pine_tree') {
+    return {
+      cx: wall.x + wall.w * 0.5,
+      cy: wall.y + wall.h * 0.5,
+      r: Math.min(wall.w, wall.h) * 0.43,
+    };
+  }
+  if (wall.kind === 'tree' || wall.kind === 'rock') {
+    return {
+      cx: wall.x + wall.w * 0.5,
+      cy: wall.y + wall.h * 0.5,
+      r: Math.min(wall.w, wall.h) * 0.46,
+    };
+  }
+  return null;
+}
+

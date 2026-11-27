@@ -204,6 +204,7 @@ export interface MatchModifiers {
   bulletCapacity: ModifierLevel;
   stunTime: ModifierLevel;
   spawnProtection: ModifierLevel;
+  playerSize: ModifierLevel;
   figureDifficulty: FigureDifficulty;
   keepBulletsOnStun: boolean;
   postStunGrace: ModifierLevel;
@@ -221,6 +222,7 @@ export const DEFAULT_MATCH_MODIFIERS: MatchModifiers = {
   bulletCapacity: 'MEDIUM',
   stunTime: 'MEDIUM',
   spawnProtection: 'MEDIUM',
+  playerSize: 'MEDIUM',
   figureDifficulty: 'STANDARD',
   keepBulletsOnStun: true,
   postStunGrace: 'MEDIUM',
@@ -725,6 +727,11 @@ export const IMMERSIVE_VIEW_WIDTH = 1060;
 export const IMMERSIVE_VIEW_HEIGHT = 740;
 
 export const PLAYER_RADIUS = 42;
+export const PLAYER_SIZE_MULTS: Record<ModifierLevel, number> = {
+  LOW: 0.72,
+  MEDIUM: 1.0,
+  HIGH: 1.32,
+};
 export const PLAYER_MAX_SPEED = 245;
 export const PLAYER_SPEED_MULTS: Record<ModifierLevel, number> = {
   LOW: 0.78,

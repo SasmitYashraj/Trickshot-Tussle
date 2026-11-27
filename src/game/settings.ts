@@ -106,6 +106,9 @@ export function sanitizeModifiers(raw: unknown): MatchModifiers {
     spawnProtection: isModifierLevel(obj.spawnProtection)
       ? obj.spawnProtection
       : DEFAULT_MATCH_MODIFIERS.spawnProtection,
+    playerSize: isModifierLevel(obj.playerSize)
+      ? obj.playerSize
+      : DEFAULT_MATCH_MODIFIERS.playerSize,
     figureDifficulty: isFigureDifficulty(obj.figureDifficulty)
       ? obj.figureDifficulty
       : DEFAULT_MATCH_MODIFIERS.figureDifficulty,
