@@ -5,8 +5,8 @@ export type MatchMode = 'ELIMINATION' | 'BRAWL';
 export type TeamMode = 'FFA' | '2V2';
 
 export type BotDifficulty = 'CHILL' | 'TACTICAL' | 'VETERAN' | 'RUTHLESS';
-export type PracticeTargetMode = 'STATIC' | 'MOVING' | 'BOTH';
-export type DodgeWaveMode = 'ONE' | 'TWO' | 'THREE';
+export type PracticeTargetMode = 'EVASIVE' | 'STATIC' | 'MOVING' | 'BOTH';
+export type DodgeWaveMode = 'RANDOM' | 'ONE' | 'TWO' | 'THREE';
 
 export type ControlScheme = 'CURSOR_SPACE' | 'DRAG_STICK';
 
@@ -731,8 +731,8 @@ export const PLAYER_SPEED_MULTS: Record<ModifierLevel, number> = {
   MEDIUM: 1.0,
   HIGH: 1.26,
 };
-export const PLAYER_MAX_ACCEL = 1950;
-export const PLAYER_TURN_SPEED = 10.0;
+export const PLAYER_MAX_ACCEL = 2150;
+export const PLAYER_TURN_SPEED = 13.5;
 export const PLAYER_MAX_HP = 100;
 export const PLAYER_MAX_AMMO = 5;
 

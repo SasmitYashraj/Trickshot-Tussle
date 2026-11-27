@@ -566,7 +566,9 @@ export class MultiplayerClient {
       } else if (type === 'joystick_release') {
         const room = this.hostRoom;
         if (!room.engine || room.phase !== 'PLAYING') return;
-        room.engine.releaseRemoteJoystick(currentSlot);
+        const angle =
+          typeof msg.angle === 'number' && Number.isFinite(msg.angle) ? msg.angle : undefined;
+        room.engine.releaseRemoteJoystick(currentSlot, angle);
       } else if (type === 'shoot_action') {
         const room = this.hostRoom;
         if (!room.engine || room.phase !== 'PLAYING') return;
@@ -1030,7 +1032,7 @@ export class MultiplayerClient {
     }
   }
 
-  public sendJoystickRelease() {
+  public sendJoystickRelease(stabilizedAngle?: number) {
     this.pendingInput = null;
     if (this.pendingInputTimer) {
       clearTimeout(this.pendingInputTimer);
@@ -1042,13 +1044,13 @@ export class MultiplayerClient {
     if (this.role === 'host') {
       const room = this.hostRoom;
       if (!room?.engine || room.phase !== 'PLAYING') return;
-      room.engine.releaseRemoteJoystick(room.hostSlot);
+      room.engine.releaseRemoteJoystick(room.hostSlot, stabilizedAngle);
       return;
     }
 
     if (this.role !== 'guest' || !this.guestConn?.open) return;
     try {
-      this.guestConn.send({ type: 'joystick_release' });
+      this.guestConn.send({ type: 'joystick_release', angle: stabilizedAngle });
     } catch {
       // Ignore
     }

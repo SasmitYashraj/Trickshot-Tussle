@@ -4,6 +4,7 @@ import {
   DEFAULT_GENERAL_SETTINGS,
   type GeneralSettings,
   type JoystickPosition,
+  type JoystickSize,
 } from '../game/settings';
 import { DEFAULT_MATCH_MODIFIERS, type MatchModifiers } from '../game/types';
 import { ModifiersContent } from './ModifiersScreen';
@@ -40,6 +41,8 @@ export function SettingsModal({
   const isGeneralDefault =
     general.musicEnabled === DEFAULT_GENERAL_SETTINGS.musicEnabled &&
     general.joystickPosition === DEFAULT_GENERAL_SETTINGS.joystickPosition &&
+    general.joystickSize === DEFAULT_GENERAL_SETTINGS.joystickSize &&
+    general.releaseJitterProtection === DEFAULT_GENERAL_SETTINGS.releaseJitterProtection &&
     general.playerName === DEFAULT_GENERAL_SETTINGS.playerName;
 
   const setMusic = (musicEnabled: boolean) => {
@@ -48,6 +51,14 @@ export function SettingsModal({
 
   const setJoystickPosition = (joystickPosition: JoystickPosition) => {
     onChangeGeneral({ ...general, joystickPosition });
+  };
+
+  const setJoystickSize = (joystickSize: JoystickSize) => {
+    onChangeGeneral({ ...general, joystickSize });
+  };
+
+  const setReleaseJitterProtection = (releaseJitterProtection: boolean) => {
+    onChangeGeneral({ ...general, releaseJitterProtection });
   };
 
   const setPlayerName = (playerName: string) => {
@@ -220,6 +231,76 @@ export function SettingsModal({
                       }`}
                     >
                       Right
+                    </button>
+                  </div>
+                </div>
+
+                {/* Joystick Size Small / Medium / Large */}
+                <div className="rounded-xl border border-slate-800 bg-slate-900/65 p-3.5 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                    <Gamepad2 className="w-4 h-4 text-sky-400 mt-0.5 shrink-0" />
+                    <div>
+                      <div className="text-xs font-bold text-slate-100">Joystick Size</div>
+                      <div className="text-[11px] text-slate-400 mt-0.5">
+                        {general.joystickSize === 'LARGE'
+                          ? 'Large pad for widest speed & aim modulation'
+                          : general.joystickSize === 'SMALL'
+                            ? 'Small compact pad (classic size)'
+                            : 'Medium pad (default) for smooth speed & aim control'}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1 p-1 rounded-lg bg-slate-950/90 border border-slate-800 shrink-0 w-44">
+                    {(['SMALL', 'MEDIUM', 'LARGE'] as JoystickSize[]).map((sz) => (
+                      <button
+                        key={sz}
+                        type="button"
+                        onClick={() => setJoystickSize(sz)}
+                        className={`px-2 py-1.5 text-[11px] font-bold rounded-md transition-colors cursor-pointer ${
+                          general.joystickSize === sz
+                            ? 'bg-sky-500 text-slate-950'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        {sz === 'SMALL' ? 'Small' : sz === 'LARGE' ? 'Large' : 'Medium'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Release-to-Shoot Jitter Protection On / Off */}
+                <div className="rounded-xl border border-slate-800 bg-slate-900/65 p-3.5 flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                    <Gamepad2 className="w-4 h-4 text-sky-400 mt-0.5 shrink-0" />
+                    <div>
+                      <div className="text-xs font-bold text-slate-100">Release Aim Stabilizer</div>
+                      <div className="text-[11px] text-slate-400 mt-0.5">
+                        Prevents tiny thumb-liftoff jitter from shifting your shot aim on release
+                      </div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1 p-1 rounded-lg bg-slate-950/90 border border-slate-800 shrink-0 w-36">
+                    <button
+                      type="button"
+                      onClick={() => setReleaseJitterProtection(true)}
+                      className={`px-2.5 py-1.5 text-[11px] font-bold rounded-md transition-colors cursor-pointer ${
+                        general.releaseJitterProtection
+                          ? 'bg-emerald-500 text-slate-950'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      On
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setReleaseJitterProtection(false)}
+                      className={`px-2.5 py-1.5 text-[11px] font-bold rounded-md transition-colors cursor-pointer ${
+                        !general.releaseJitterProtection
+                          ? 'bg-rose-500 text-white'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      Off
                     </button>
                   </div>
                 </div>

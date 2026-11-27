@@ -28,7 +28,7 @@ export function LibraryLoadingScreen({
       : `${profile.stairClimbTime}s`;
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col justify-between bg-black text-slate-100 px-4 py-3 sm:p-6 md:p-10 select-none overflow-hidden h-dvh">
+    <div className="fixed inset-0 z-50 flex flex-col justify-between bg-black text-slate-100 px-4 py-3 sm:p-6 md:p-10 select-none overflow-hidden">
       {/* Top-Left Title & Inspired By Subtext */}
       <div className="relative z-10 flex items-start justify-between shrink-0">
         <div>

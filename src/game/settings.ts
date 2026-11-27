@@ -19,16 +19,21 @@ import {
 } from './types';
 
 export type JoystickPosition = 'LEFT' | 'RIGHT';
+export type JoystickSize = 'SMALL' | 'MEDIUM' | 'LARGE';
 
 export interface GeneralSettings {
   musicEnabled: boolean;
   joystickPosition: JoystickPosition;
+  joystickSize: JoystickSize;
+  releaseJitterProtection: boolean;
   playerName: string;
 }
 
 export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   musicEnabled: true,
   joystickPosition: 'LEFT',
+  joystickSize: 'MEDIUM',
+  releaseJitterProtection: true,
   playerName: 'Player',
 };
 
@@ -134,6 +139,16 @@ export function loadGeneralSettings(): GeneralSettings {
         parsed.joystickPosition === 'RIGHT' || parsed.joystickPosition === 'LEFT'
           ? parsed.joystickPosition
           : DEFAULT_GENERAL_SETTINGS.joystickPosition,
+      joystickSize:
+        parsed.joystickSize === 'SMALL' ||
+        parsed.joystickSize === 'MEDIUM' ||
+        parsed.joystickSize === 'LARGE'
+          ? parsed.joystickSize
+          : DEFAULT_GENERAL_SETTINGS.joystickSize,
+      releaseJitterProtection:
+        typeof parsed.releaseJitterProtection === 'boolean'
+          ? parsed.releaseJitterProtection
+          : DEFAULT_GENERAL_SETTINGS.releaseJitterProtection,
       playerName:
         typeof parsed.playerName === 'string' && parsed.playerName.trim().length > 0
           ? parsed.playerName.slice(0, 14)
@@ -152,6 +167,8 @@ export function saveGeneralSettings(settings: GeneralSettings): void {
       JSON.stringify({
         musicEnabled: settings.musicEnabled,
         joystickPosition: settings.joystickPosition,
+        joystickSize: settings.joystickSize,
+        releaseJitterProtection: settings.releaseJitterProtection,
         playerName: settings.playerName.slice(0, 14),
       })
     );
@@ -195,17 +212,19 @@ export function loadSavedMatchConfig(fallback: MatchConfig): MatchConfig {
         ? parsed.local2PIncludeBots
         : fallback.local2PIncludeBots ?? true;
     const practiceTargetMode: PracticeTargetMode =
+      parsed.practiceTargetMode === 'EVASIVE' ||
       parsed.practiceTargetMode === 'STATIC' ||
       parsed.practiceTargetMode === 'MOVING' ||
       parsed.practiceTargetMode === 'BOTH'
         ? parsed.practiceTargetMode
         : fallback.practiceTargetMode ?? 'BOTH';
     const dodgeWaveMode: DodgeWaveMode =
+      parsed.dodgeWaveMode === 'RANDOM' ||
       parsed.dodgeWaveMode === 'ONE' ||
       parsed.dodgeWaveMode === 'TWO' ||
       parsed.dodgeWaveMode === 'THREE'
         ? parsed.dodgeWaveMode
-        : fallback.dodgeWaveMode ?? 'ONE';
+        : fallback.dodgeWaveMode ?? 'RANDOM';
 
     const effectiveMap = local2P && validMap.immersive ? SOLO_MAP_LIST[0] : validMap;
 

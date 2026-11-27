@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import type { JoystickSize } from '../game/settings';
 import type { PlayerSkinFinish } from '../game/types';
 import { PlayerAvatar } from './PlayerAvatar';
 
@@ -10,10 +11,19 @@ interface TouchControlsProps {
   playerAccentColor?: string;
   playerFinish?: PlayerSkinFinish;
   position?: 'bottom-left' | 'bottom-right' | 'top-left' | 'top-right';
+  size?: JoystickSize;
+  releaseJitterProtection?: boolean;
+  rotatedLandscape?: boolean;
   playerLabel?: string;
   onStickChange: (active: boolean, angle: number, magnitude: number) => void;
-  onStickRelease: () => void;
+  onStickRelease: (stabilizedAngle?: number) => void;
 }
+
+const JOYSTICK_SIZE_CLAMP: Record<JoystickSize, string> = {
+  SMALL: 'clamp(108px, 28vmin, 140px)',
+  MEDIUM: 'clamp(138px, 35vmin, 176px)',
+  LARGE: 'clamp(164px, 42vmin, 212px)',
+};
 
 function hexToRgba(hex: string, alpha: number): string {
   const clean = hex.replace('#', '');
@@ -27,6 +37,10 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+function shortestAngleDiff(a: number, b: number): number {
+  return Math.atan2(Math.sin(a - b), Math.cos(a - b));
+}
+
 export function TouchControls({
   ammo,
   stunned,
@@ -35,6 +49,9 @@ export function TouchControls({
   playerAccentColor = '#7DD3FC',
   playerFinish = 'solid',
   position = 'bottom-left',
+  size = 'MEDIUM',
+  releaseJitterProtection = true,
+  rotatedLandscape = false,
   playerLabel,
   onStickChange,
   onStickRelease,
@@ -42,6 +59,7 @@ export function TouchControls({
   const baseRef = useRef<HTMLDivElement | null>(null);
   const pointerIdRef = useRef<number | null>(null);
   const lastAngleRef = useRef<number>(0);
+  const angleHistoryRef = useRef<Array<{ t: number; angle: number }>>([]);
 
   const [knobOffset, setKnobOffset] = useState<{ x: number; y: number; active: boolean }>({
     x: 0,
@@ -55,23 +73,71 @@ export function TouchControls({
     const el = baseRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
-    const maxRadius = Math.max(36, rect.width * 0.4);
+    const layoutW = el.clientWidth || rect.width;
+    const maxRadius = Math.max(36, layoutW * 0.42);
+    const minAngleDist = Math.max(8, maxRadius * 0.14);
     const cx = rect.left + rect.width * 0.5;
     const cy = rect.top + rect.height * 0.5;
-    const dx = clientX - cx;
-    const dy = clientY - cy;
+    const rawDx = clientX - cx;
+    const rawDy = clientY - cy;
+    // When parent arena is rotated +90deg clockwise (portrait phone in auto-landscape mode),
+    // screen +Y maps to landscape +X and screen -X maps to landscape +Y.
+    const dx = rotatedLandscape ? rawDy : rawDx;
+    const dy = rotatedLandscape ? -rawDx : rawDy;
     const dist = Math.hypot(dx, dy);
     const clamped = Math.min(dist, maxRadius);
-    const angle = dist > 0.5 ? Math.atan2(dy, dx) : lastAngleRef.current;
-    lastAngleRef.current = angle;
+
+    let angle = lastAngleRef.current;
+    if (dist >= minAngleDist) {
+      angle = Math.atan2(dy, dx);
+      lastAngleRef.current = angle;
+      const now = performance.now();
+      const hist = angleHistoryRef.current;
+      hist.push({ t: now, angle });
+      while (hist.length > 0 && now - hist[0].t > 160) {
+        hist.shift();
+      }
+    }
+
+    const visX = dist > 0.001 ? (dx / dist) * clamped : 0;
+    const visY = dist > 0.001 ? (dy / dist) * clamped : 0;
     const magnitude = clamped / maxRadius;
 
     setKnobOffset({
-      x: Math.cos(angle) * clamped,
-      y: Math.sin(angle) * clamped,
+      x: visX,
+      y: visY,
       active: true,
     });
     onStickChange(true, angle, magnitude);
+  };
+
+  const resolveReleaseAngle = (): number => {
+    const rawAngle = lastAngleRef.current;
+    if (!releaseJitterProtection) return rawAngle;
+    const now = performance.now();
+    const hist = angleHistoryRef.current;
+    let candidate: { t: number; angle: number } | undefined;
+    for (let i = hist.length - 1; i >= 0; i--) {
+      const age = now - hist[i].t;
+      if (age >= 28 && age <= 105) {
+        candidate = hist[i];
+        break;
+      }
+    }
+    if (!candidate) {
+      for (let i = hist.length - 1; i >= 0; i--) {
+        const age = now - hist[i].t;
+        if (age >= 20 && age <= 125) {
+          candidate = hist[i];
+          break;
+        }
+      }
+    }
+    if (!candidate) return rawAngle;
+    if (Math.abs(shortestAngleDiff(rawAngle, candidate.angle)) <= 0.42) {
+      return candidate.angle;
+    }
+    return rawAngle;
   };
 
   const handlePadPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -83,6 +149,7 @@ export function TouchControls({
       // Ignore synthetic pointer capture failure
     }
     pointerIdRef.current = e.pointerId;
+    angleHistoryRef.current = [];
     updateFromClientPos(e.clientX, e.clientY);
   };
 
@@ -104,20 +171,20 @@ export function TouchControls({
     } catch {
       // Ignore synthetic pointer release failure
     }
+    const releaseAngle = shouldShoot ? resolveReleaseAngle() : lastAngleRef.current;
+    lastAngleRef.current = releaseAngle;
+    angleHistoryRef.current = [];
     pointerIdRef.current = null;
     setKnobOffset({ x: 0, y: 0, active: false });
-    onStickChange(false, lastAngleRef.current, 0);
+    onStickChange(false, releaseAngle, 0);
     if (shouldShoot) {
-      onStickRelease();
+      onStickRelease(releaseAngle);
     }
   };
 
   const baseBorderColor = knobOffset.active
-    ? hexToRgba(playerColor, 0.85)
-    : hexToRgba(playerColor, 0.48);
-  const baseGlowColor = hexToRgba(playerColor, knobOffset.active ? 0.28 : 0.12);
-  const guideColor = hexToRgba(playerAccentColor, 0.24);
-  const deadzoneColor = armed ? 'rgba(250, 204, 21, 0.5)' : hexToRgba(playerAccentColor, 0.35);
+    ? hexToRgba(playerColor, 0.88)
+    : hexToRgba(playerColor, 0.52);
 
   const posStyle: React.CSSProperties =
     position === 'top-right'
@@ -153,6 +220,8 @@ export function TouchControls({
           ? 'top-1.5 left-1.5'
           : 'top-1.5 right-1.5';
 
+  const padDimension = JOYSTICK_SIZE_CLAMP[size] ?? JOYSTICK_SIZE_CLAMP.MEDIUM;
+
   return (
     <div
       onPointerDown={handlePadPointerDown}
@@ -166,30 +235,13 @@ export function TouchControls({
       <div
         ref={baseRef}
         style={{
-          width: 'clamp(108px, 28dvh, 140px)',
-          height: 'clamp(108px, 28dvh, 140px)',
+          width: padDimension,
+          height: padDimension,
           borderColor: baseBorderColor,
-          backgroundColor: knobOffset.active ? 'rgba(2, 6, 23, 0.46)' : 'rgba(2, 6, 23, 0.26)',
-          boxShadow: `0 0 24px ${baseGlowColor}, inset 0 0 18px ${hexToRgba(playerColor, 0.08)}`,
+          backgroundColor: 'transparent',
         }}
         className="relative rounded-full border-2 flex items-center justify-center transition-colors"
       >
-        {/* Subtle cardinal direction guides */}
-        <div
-          style={{ backgroundColor: guideColor }}
-          className="pointer-events-none absolute inset-x-4 top-1/2 h-px -translate-y-1/2"
-        />
-        <div
-          style={{ backgroundColor: guideColor }}
-          className="pointer-events-none absolute inset-y-4 left-1/2 w-px -translate-x-1/2"
-        />
-
-        {/* Inner Deadzone Guide */}
-        <div
-          style={{ borderColor: deadzoneColor }}
-          className="h-5 w-5 rounded-full border border-dashed pointer-events-none"
-        />
-
         {playerLabel && (
           <span
             className={`pointer-events-none absolute font-mono-tabular text-[10px] font-black tracking-wider px-1.5 py-0.5 rounded bg-slate-950/75 text-slate-100 border border-white/15 ${labelPosClass}`}
@@ -198,16 +250,13 @@ export function TouchControls({
           </span>
         )}
 
-        {/* Movable Tactile Thumb Knob matching player color & finish texture */}
+        {/* Solid Tactile Thumb Knob */}
         <div
           style={{
             transform: `translate(${knobOffset.x}px, ${knobOffset.y}px)`,
-            boxShadow: armed
-              ? `0 0 18px rgba(250, 204, 21, 0.55), 0 4px 12px rgba(0, 0, 0, 0.55)`
-              : `0 0 14px ${hexToRgba(playerColor, knobOffset.active ? 0.48 : 0.26)}, 0 4px 12px rgba(0, 0, 0, 0.55)`,
           }}
-          className={`pointer-events-none absolute h-[44%] w-[44%] rounded-full flex items-center justify-center ${
-            armed ? 'ring-2 ring-amber-300/80' : ''
+          className={`pointer-events-none absolute h-[38%] w-[38%] rounded-full flex items-center justify-center ${
+            armed ? 'ring-2 ring-amber-300/85' : ''
           }`}
         >
           <PlayerAvatar
@@ -217,7 +266,6 @@ export function TouchControls({
             showVisor={false}
             className="!h-full !w-full"
           />
-          <span className="pointer-events-none absolute h-[28%] w-[28%] rounded-full bg-slate-950/35 border border-white/25" />
         </div>
       </div>
     </div>

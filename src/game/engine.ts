@@ -134,9 +134,9 @@ const BULLET_SPAWN_RATE_MULTS: Record<BulletSpawnLevel, number> = {
 };
 
 const TURN_SPEED_MULTS: Record<ModifierLevel, number> = {
-  LOW: 0.72,
+  LOW: 0.74,
   MEDIUM: 1.0,
-  HIGH: 1.35,
+  HIGH: 1.33,
 };
 
 const BULLET_SPEED_MULTS: Record<ModifierLevel, number> = {
@@ -515,6 +515,11 @@ export class ArenaEngine {
   private dodgeWaveHitPlayer = false;
   private dodgeWaveMinDist = Infinity;
   private dodgeCornerAnchors = new Map<number, Vec2>();
+  private dodgeNoShotTimer = 0;
+  private dodgeRandomBotTimers = new Map<number, number>();
+  private dodgeBulletTrack = new Map<number, { hitPlayer: boolean; minDist: number }>();
+  private practiceStrafeDir = 1;
+  private practiceStrafeTimer = 0.8;
   private rapidStreaks = new Map<number, { count: number; lastKillAt: number }>();
 
   private static arenaBotGraphCache = new Map<string, NavNode[]>();
@@ -645,7 +650,7 @@ export class ArenaEngine {
             difficulty: 'RUTHLESS',
             targetPractice: false,
             dodgePractice: true,
-            dodgeWaveMode: config.dodgeWaveMode ?? 'ONE',
+            dodgeWaveMode: config.dodgeWaveMode ?? 'RANDOM',
           }
         : !slots && config.local2P && requestedMap?.immersive
           ? { ...config, mapId: 'crossroads', immersive: false, extraDark: false }
@@ -666,6 +671,8 @@ export class ArenaEngine {
     this.practiceTargetSpawnedAt = 0;
     this.practiceShotRecordedForTarget = false;
     this.practicePrevReactionMs = null;
+    this.practiceStrafeDir = Math.random() < 0.5 ? 1 : -1;
+    this.practiceStrafeTimer = 0.8;
     this.dodgeCount = 0;
     this.dodgeHits = 0;
     this.dodgeStreak = 0;
@@ -676,6 +683,9 @@ export class ArenaEngine {
     this.dodgeWaveHitPlayer = false;
     this.dodgeWaveMinDist = Infinity;
     this.dodgeCornerAnchors.clear();
+    this.dodgeNoShotTimer = 0;
+    this.dodgeRandomBotTimers.clear();
+    this.dodgeBulletTrack.clear();
     this.icePits = (this.map.icePits ?? []).map((pit, idx) => ({
       id: idx + 1,
       x: pit.x,
@@ -1045,9 +1055,15 @@ export class ArenaEngine {
     this.cursorInput2.magnitude = clamp(Number.isFinite(magnitude) ? magnitude : 0, 0, 1);
   }
 
-  public firePlayerShot(slot: number) {
+  public firePlayerShot(slot: number, stabilizedAngle?: number) {
     const player = this.players.find((p) => p.id === slot);
     if (player && player.alive && player.stunTimer <= 0 && player.ammo > 0 && this.winnerId === null) {
+      if (typeof stabilizedAngle === 'number' && Number.isFinite(stabilizedAngle)) {
+        const diff = normalizeAngle(stabilizedAngle - player.angle);
+        if (Math.abs(diff) <= 0.36) {
+          player.angle = normalizeAngle(stabilizedAngle);
+        }
+      }
       this.fireBullet(player);
     }
   }
@@ -1099,12 +1115,12 @@ export class ArenaEngine {
     player.remoteMagnitude = clamp(Number.isFinite(magnitude) ? magnitude : 0, 0, 1);
   }
 
-  public releaseRemoteJoystick(slot: number) {
+  public releaseRemoteJoystick(slot: number, stabilizedAngle?: number) {
     const player = this.players.find((p) => p.id === slot);
     if (!player) return;
     player.remoteActive = false;
     player.remoteMagnitude = 0;
-    this.firePlayerShot(slot);
+    this.firePlayerShot(slot, stabilizedAngle);
   }
 
   public drainEvents(): EngineEvent[] {
@@ -1198,14 +1214,16 @@ export class ArenaEngine {
 
   private spawnPracticeTarget() {
     const mode = this.config.practiceTargetMode ?? 'BOTH';
-    const moving = mode === 'MOVING' ? true : mode === 'STATIC' ? false : Math.random() < 0.5;
+    const evasive = mode === 'EVASIVE';
+    const moving = evasive ? true : mode === 'MOVING' ? true : mode === 'STATIC' ? false : Math.random() < 0.5;
     const margin = ARENA_WALL_THICKNESS + PLAYER_RADIUS + 8;
     const player = this.players[0];
     let spawnX = this.map.width * 0.5;
     let spawnY = this.map.height * 0.5;
     let placed = false;
 
-    for (const minPlayerDist of [220, 130, 60]) {
+    const minDistTiers = evasive ? [360, 240, 140, 70] : [220, 130, 60];
+    for (const minPlayerDist of minDistTiers) {
       for (let tries = 0; tries < 140; tries++) {
         const px = margin + Math.random() * (this.map.width - margin * 2);
         const py = margin + Math.random() * (this.map.height - margin * 2);
@@ -1230,7 +1248,10 @@ export class ArenaEngine {
     }
 
     const speed = moving ? this.getPlayerMaxSpeed() : 0;
-    const ang = Math.random() * Math.PI * 2;
+    const ang =
+      evasive && player
+        ? Math.atan2(spawnY - player.y, spawnX - player.x)
+        : Math.random() * Math.PI * 2;
     this.practiceTargetSpawnedAt = this.elapsedTime;
     this.practiceShotRecordedForTarget = false;
     this.practiceTargets.push({
@@ -1249,32 +1270,152 @@ export class ArenaEngine {
   private updatePracticeTargets(dt: number) {
     const targetSpeed = this.getPlayerMaxSpeed();
     const walls = this.wallsByFloor[0];
+    const mode = this.config.practiceTargetMode ?? 'BOTH';
+    const isEvasive = mode === 'EVASIVE';
+    const player = this.players[0];
+
+    if (isEvasive) {
+      this.practiceStrafeTimer -= dt;
+      if (this.practiceStrafeTimer <= 0) {
+        this.practiceStrafeDir = Math.random() < 0.5 ? -1 : 1;
+        this.practiceStrafeTimer = 0.65 + Math.random() * 0.75;
+      }
+    }
 
     for (const t of this.practiceTargets) {
       t.age += dt;
       if (!t.moving) continue;
 
-      const curMag = Math.hypot(t.vx, t.vy);
-      if (curMag > 0.001) {
-        t.vx = (t.vx / curMag) * targetSpeed;
-        t.vy = (t.vy / curMag) * targetSpeed;
-      } else {
-        const a = Math.random() * Math.PI * 2;
-        t.vx = Math.cos(a) * targetSpeed;
-        t.vy = Math.sin(a) * targetSpeed;
-      }
+      if (isEvasive) {
+        const probe: Player = {
+          id: -999,
+          name: 'Target',
+          isHuman: false,
+          color: '#EF4444',
+          accentColor: '#FFFFFF',
+          x: t.x,
+          y: t.y,
+          vx: t.vx,
+          vy: t.vy,
+          angle: Math.atan2(t.vy, t.vx) || 0,
+          floor: 0,
+          hp: 100,
+          maxHp: 100,
+          ammo: 0,
+          maxAmmo: 1,
+          stunTimer: 0,
+          hurtFlashTimer: 0,
+          respawnTimer: 0,
+          spawnInvulnTimer: 0,
+          alive: true,
+          kills: 0,
+          deaths: 0,
+          damageDealt: 0,
+          shotsFired: 0,
+          shotsHit: 0,
+          lastHitBy: null,
+          remoteActive: false,
+          remoteAngle: 0,
+          remoteMoveAngle: 0,
+          remoteMagnitude: 0,
+          aiStrafeDir: this.practiceStrafeDir,
+          aiThinkTimer: 0,
+          aiTargetAngle: 0,
+          aiMoveRatio: 1,
+          aiHoldShotTimer: 0,
+        };
 
-      t.moveTimer -= dt;
-      if (t.moveTimer <= 0) {
-        t.moveTimer = 1.2 + Math.random() * 1.5;
-        const curA = Math.atan2(t.vy, t.vx);
-        const turnOffset = (Math.random() - 0.5) * 1.35;
-        const probeA = curA + turnOffset;
-        const probeX = t.x + Math.cos(probeA) * (t.radius + 36);
-        const probeY = t.y + Math.sin(probeA) * (t.radius + 36);
-        if (this.isPointWalkableOnFloor(probeX, probeY, t.radius + 2, 0)) {
-          t.vx = Math.cos(probeA) * targetSpeed;
-          t.vy = Math.sin(probeA) * targetSpeed;
+        const bulletEvade = this.getIncomingBulletEvade(probe, 0, 'RUTHLESS');
+        const aimDodge = player ? this.getAimThreatDodge(probe, [player], 0) : { x: 0, y: 0 };
+
+        let desireX = bulletEvade.x * 2.25 + aimDodge.x * 1.75;
+        let desireY = bulletEvade.y * 2.25 + aimDodge.y * 1.75;
+
+        if (player) {
+          const dxP = t.x - player.x;
+          const dyP = t.y - player.y;
+          const dP = Math.hypot(dxP, dyP) || 1;
+          const uxP = dxP / dP;
+          const uyP = dyP / dP;
+          const perpX = -uyP * this.practiceStrafeDir;
+          const perpY = uxP * this.practiceStrafeDir;
+
+          if (dP < 560) {
+            const awayW = clamp((560 - dP) / 420, 0.35, 1.55) * 1.55;
+            desireX += uxP * awayW + perpX * 0.85;
+            desireY += uyP * awayW + perpY * 0.85;
+          } else {
+            desireX += perpX * 1.05 + uxP * 0.25;
+            desireY += perpY * 1.05 + uyP * 0.25;
+          }
+        } else {
+          const curA = Math.atan2(t.vy, t.vx) || 0;
+          desireX += Math.cos(curA);
+          desireY += Math.sin(curA);
+        }
+
+        // Anti-cornering bias so evasive target loops around cover/arena instead of trapping itself in corners
+        const edgeDist = Math.min(
+          t.x - ARENA_WALL_THICKNESS,
+          this.map.width - ARENA_WALL_THICKNESS - t.x,
+          t.y - ARENA_WALL_THICKNESS,
+          this.map.height - ARENA_WALL_THICKNESS - t.y
+        );
+        if (edgeDist < 155) {
+          const cx = this.map.width * 0.5 - t.x;
+          const cy = this.map.height * 0.5 - t.y;
+          const cd = Math.hypot(cx, cy) || 1;
+          const pull = ((155 - edgeDist) / 155) * 1.45;
+          desireX += (cx / cd) * pull;
+          desireY += (cy / cd) * pull;
+        }
+
+        const rawAngle = Math.atan2(desireY, desireX);
+        const safeAngle = this.pickClearMoveAngle(
+          probe,
+          Number.isFinite(rawAngle) ? rawAngle : Math.atan2(t.vy, t.vx) || 0,
+          78,
+          this.practiceStrafeDir,
+          false,
+          false
+        );
+
+        const desiredVx = Math.cos(safeAngle) * targetSpeed;
+        const desiredVy = Math.sin(safeAngle) * targetSpeed;
+        const dvx = desiredVx - t.vx;
+        const dvy = desiredVy - t.vy;
+        const dv = Math.hypot(dvx, dvy);
+        const maxStep = PLAYER_MAX_ACCEL * 1.15 * dt;
+        if (dv <= maxStep) {
+          t.vx = desiredVx;
+          t.vy = desiredVy;
+        } else {
+          t.vx += (dvx / dv) * maxStep;
+          t.vy += (dvy / dv) * maxStep;
+        }
+      } else {
+        const curMag = Math.hypot(t.vx, t.vy);
+        if (curMag > 0.001) {
+          t.vx = (t.vx / curMag) * targetSpeed;
+          t.vy = (t.vy / curMag) * targetSpeed;
+        } else {
+          const a = Math.random() * Math.PI * 2;
+          t.vx = Math.cos(a) * targetSpeed;
+          t.vy = Math.sin(a) * targetSpeed;
+        }
+
+        t.moveTimer -= dt;
+        if (t.moveTimer <= 0) {
+          t.moveTimer = 1.2 + Math.random() * 1.5;
+          const curA = Math.atan2(t.vy, t.vx);
+          const turnOffset = (Math.random() - 0.5) * 1.35;
+          const probeA = curA + turnOffset;
+          const probeX = t.x + Math.cos(probeA) * (t.radius + 36);
+          const probeY = t.y + Math.sin(probeA) * (t.radius + 36);
+          if (this.isPointWalkableOnFloor(probeX, probeY, t.radius + 2, 0)) {
+            t.vx = Math.cos(probeA) * targetSpeed;
+            t.vy = Math.sin(probeA) * targetSpeed;
+          }
         }
       }
 
@@ -1561,11 +1702,50 @@ export class ArenaEngine {
     return bestPressure;
   }
 
+  private awardDodgePoint(minDist: number) {
+    const player = this.players.find((p) => p.id === 0);
+    if (!player) return;
+    this.dodgeCount += 1;
+    this.dodgeStreak += 1;
+    if (this.dodgeStreak > this.dodgeBestStreak) {
+      this.dodgeBestStreak = this.dodgeStreak;
+    }
+    player.kills = this.dodgeCount;
+    const closeDodge = minDist <= 42;
+    this.events.push({
+      type: 'killstreak',
+      x: player.x,
+      y: player.y,
+      value: this.dodgeStreak,
+      playerId: 0,
+      floor: 0,
+      streakKind: 'DODGE_PRACTICE',
+      closeDodge,
+    });
+    const label = closeDodge
+      ? 'CLOSE DODGE!'
+      : this.dodgeStreak >= 7
+        ? "HE CAN'T DIE!"
+        : this.dodgeStreak >= 5
+          ? 'DODGE MASTER!'
+          : this.dodgeStreak > 1
+            ? `${this.dodgeStreak}x DODGED!`
+            : 'DODGED!';
+    this.addFloatingText(
+      player.x,
+      player.y - (PLAYER_RADIUS + 14),
+      label,
+      closeDodge ? '#38BDF8' : this.dodgeStreak >= 5 ? '#FDE047' : '#34D399',
+      0
+    );
+  }
+
   private updateDodgePractice(dt: number) {
     const player = this.players.find((p) => p.id === 0);
     const bots = this.players.filter((p) => !p.isHuman && p.alive);
     const centerX = this.map.width * 0.5;
     const centerY = this.map.height * 0.5;
+    const mode = this.config.dodgeWaveMode ?? 'RANDOM';
     const shooterSet = new Set(this.dodgeWaveShooters.map((s) => s.botId));
 
     // Continuously rotate idle corner bots randomly facing into the arena
@@ -1579,11 +1759,139 @@ export class ArenaEngine {
       }
     }
 
+    if (mode === 'RANDOM') {
+      // Update min clearance for every tracked bot bullet flying in the arena
+      if (player) {
+        for (const b of this.bullets) {
+          const tr = this.dodgeBulletTrack.get(b.id);
+          if (!tr) continue;
+          const clearance = dist(b.x, b.y, player.x, player.y) - b.radius - PLAYER_RADIUS;
+          if (clearance < tr.minDist) tr.minDist = clearance;
+        }
+      }
+
+      this.dodgeNoShotTimer += dt;
+
+      // Advance bots currently aiming their shot, firing independently whenever ready (capped <= 3 live threats)
+      const activeAngles = this.dodgeWaveShooters.map((s) => s.targetAngle);
+      for (let i = this.dodgeWaveShooters.length - 1; i >= 0; i--) {
+        const s = this.dodgeWaveShooters[i];
+        const bot = bots.find((b) => b.id === s.botId);
+        if (!bot) {
+          this.dodgeWaveShooters.splice(i, 1);
+          continue;
+        }
+        s.fireDelay -= dt;
+        s.reaimTimer -= dt;
+        if (
+          s.reaimTimer <= 0 &&
+          (s.fireDelay > 0.06 || Math.abs(normalizeAngle(s.targetAngle - bot.angle)) > 0.16)
+        ) {
+          const otherAngles = activeAngles.filter((a) => a !== s.targetAngle);
+          s.targetAngle = this.pickDodgeCornerShotAngle(
+            bot,
+            player,
+            s.aimLeadScale,
+            s.preferTrick,
+            otherAngles
+          );
+          s.reaimTimer = 0.11;
+        }
+
+        bot.aiTargetAngle = s.targetAngle;
+        const aligned = Math.abs(normalizeAngle(s.targetAngle - bot.angle)) <= 0.065;
+        if (s.fireDelay <= 0 && (aligned || s.fireDelay <= -0.85)) {
+          // Enforce <= 3 live player-targeting bullets unless a 3s dry-spell override forces a shot when < 3
+          if (this.bullets.length < 3) {
+            bot.ammo = 1;
+            if (aligned) bot.angle = s.targetAngle;
+            this.fireBullet(bot);
+            this.dodgeNoShotTimer = 0;
+          }
+          this.dodgeRandomBotTimers.set(bot.id, 0.75 + Math.random() * 1.95);
+          this.dodgeWaveShooters.splice(i, 1);
+        }
+      }
+
+      // Schedule random corner bots independently (no waves), never > 3-4s dry spell and never > 2-3 live bullets targeting player
+      const currentShooterSet = new Set(this.dodgeWaveShooters.map((s) => s.botId));
+      const livePlusAiming = () => this.bullets.length + this.dodgeWaveShooters.length;
+
+      // Guarantee a shot before 3-4s passes without any bullet shot
+      if (this.dodgeNoShotTimer >= 2.85 && livePlusAiming() < 3 && bots.length > 0) {
+        const idleBots = bots.filter((b) => !currentShooterSet.has(b.id));
+        if (idleBots.length > 0) {
+          const pick = idleBots[Math.floor(Math.random() * idleBots.length)];
+          const aimLeadScale = 0.78 + Math.random() * 0.24;
+          const preferTrick = Math.random() < 0.44;
+          const targetAngle = this.pickDodgeCornerShotAngle(
+            pick,
+            player,
+            aimLeadScale,
+            preferTrick,
+            this.dodgeWaveShooters.map((w) => w.targetAngle)
+          );
+          pick.aiTargetAngle = targetAngle;
+          pick.ammo = 1;
+          this.dodgeWaveShooters.push({
+            botId: pick.id,
+            targetAngle,
+            fireDelay: 0.08 + Math.random() * 0.14,
+            reaimTimer: 0.08,
+            aimLeadScale,
+            preferTrick,
+            fired: false,
+          });
+          currentShooterSet.add(pick.id);
+        }
+      }
+
+      for (const bot of bots) {
+        if (currentShooterSet.has(bot.id)) continue;
+        let t = this.dodgeRandomBotTimers.get(bot.id);
+        if (t === undefined) {
+          t = 0.22 + Math.random() * 1.55;
+          this.dodgeRandomBotTimers.set(bot.id, t);
+        }
+        t -= dt;
+        this.dodgeRandomBotTimers.set(bot.id, t);
+        if (t <= 0) {
+          const load = livePlusAiming();
+          const allowSpawn = load < 2 || (load === 2 && Math.random() < 0.48);
+          if (allowSpawn && load < 3) {
+            const aimLeadScale = 0.72 + Math.random() * 0.3;
+            const preferTrick = Math.random() < 0.48;
+            const targetAngle = this.pickDodgeCornerShotAngle(
+              bot,
+              player,
+              aimLeadScale,
+              preferTrick,
+              this.dodgeWaveShooters.map((w) => w.targetAngle)
+            );
+            bot.aiTargetAngle = targetAngle;
+            bot.ammo = 1;
+            this.dodgeWaveShooters.push({
+              botId: bot.id,
+              targetAngle,
+              fireDelay: 0.12 + Math.random() * 0.36,
+              reaimTimer: 0.09,
+              aimLeadScale,
+              preferTrick,
+              fired: false,
+            });
+            currentShooterSet.add(bot.id);
+          } else {
+            this.dodgeRandomBotTimers.set(bot.id, 0.25 + Math.random() * 0.55);
+          }
+        }
+      }
+      return;
+    }
+
     if (this.dodgeWaveState === 'COOLDOWN') {
       if (this.bullets.length > 0) return;
       this.dodgeWaveTimer -= dt;
       if (this.dodgeWaveTimer <= 0 && bots.length > 0) {
-        const mode = this.config.dodgeWaveMode ?? 'ONE';
         const wanted = mode === 'THREE' ? 3 : mode === 'TWO' ? 2 : 1;
         const pool = [...bots];
         for (let i = pool.length - 1; i > 0; i--) {
@@ -1679,40 +1987,8 @@ export class ArenaEngine {
 
     const allFired = this.dodgeWaveShooters.every((s) => s.fired);
     if (allFired && this.bullets.length === 0) {
-      if (!this.dodgeWaveHitPlayer && player) {
-        this.dodgeCount += 1;
-        this.dodgeStreak += 1;
-        if (this.dodgeStreak > this.dodgeBestStreak) {
-          this.dodgeBestStreak = this.dodgeStreak;
-        }
-        player.kills = this.dodgeCount;
-        const closeDodge = this.dodgeWaveMinDist <= 42;
-        this.events.push({
-          type: 'killstreak',
-          x: player.x,
-          y: player.y,
-          value: this.dodgeStreak,
-          playerId: 0,
-          floor: 0,
-          streakKind: 'DODGE_PRACTICE',
-          closeDodge,
-        });
-        const label = closeDodge
-          ? 'CLOSE DODGE!'
-          : this.dodgeStreak >= 7
-            ? "HE CAN'T DIE!"
-            : this.dodgeStreak >= 5
-              ? 'DODGE MASTER!'
-              : this.dodgeStreak > 1
-                ? `${this.dodgeStreak}x DODGED!`
-                : 'DODGED!';
-        this.addFloatingText(
-          player.x,
-          player.y - (PLAYER_RADIUS + 14),
-          label,
-          closeDodge ? '#38BDF8' : this.dodgeStreak >= 5 ? '#FDE047' : '#34D399',
-          0
-        );
+      if (!this.dodgeWaveHitPlayer) {
+        this.awardDodgePoint(this.dodgeWaveMinDist);
       }
       this.dodgeWaveShooters = [];
       this.dodgeWaveState = 'COOLDOWN';
@@ -2731,8 +3007,9 @@ export class ArenaEngine {
 
     if (active) {
       const deadzone = 0.08;
-      const normalizedRatio =
+      const linearRatio =
         magnitude <= deadzone ? 0 : (magnitude - deadzone) / (1 - deadzone);
+      const normalizedRatio = Math.pow(linearRatio, 1.32);
 
       const boost = this.getSpawnBoostMultiplier(player);
       const targetSpeed = this.getPlayerMaxSpeed() * boost * normalizedRatio;
@@ -5060,6 +5337,12 @@ export class ArenaEngine {
     };
 
     this.bullets.push(bullet);
+    if (this.config.dodgePractice && !player.isHuman) {
+      const p0 = this.players.find((pl) => pl.id === 0);
+      const initClear = p0 ? dist(bx, by, p0.x, p0.y) - bullet.radius - PLAYER_RADIUS : Infinity;
+      this.dodgeBulletTrack.set(bullet.id, { hitPlayer: false, minDist: initClear });
+      this.dodgeNoShotTimer = 0;
+    }
     if (!this.config.dodgePractice || player.isHuman) {
       player.vx -= Math.cos(player.angle) * 35;
       player.vy -= Math.sin(player.angle) * 35;
@@ -5077,6 +5360,17 @@ export class ArenaEngine {
       if (!b) continue;
       b.age += dt;
       if (b.age >= b.maxAge) {
+        const track = this.dodgeBulletTrack.get(b.id);
+        if (track) {
+          this.dodgeBulletTrack.delete(b.id);
+          if (
+            !track.hitPlayer &&
+            this.config.dodgePractice &&
+            (this.config.dodgeWaveMode ?? 'RANDOM') === 'RANDOM'
+          ) {
+            this.awardDodgePoint(track.minDist);
+          }
+        }
         this.spawnParticles(b.x, b.y, b.color, 5, 70);
         this.bullets.splice(i, 1);
         continue;
@@ -5333,6 +5627,8 @@ export class ArenaEngine {
 
               if (this.config.dodgePractice) {
                 this.dodgeWaveHitPlayer = true;
+                const track = this.dodgeBulletTrack.get(b.id);
+                if (track) track.hitPlayer = true;
                 this.dodgeHits += 1;
                 this.dodgeStreak = 0;
                 player.hurtFlashTimer = 0.28;
@@ -5362,6 +5658,17 @@ export class ArenaEngine {
       }
 
       if (destroyed) {
+        const track = this.dodgeBulletTrack.get(b.id);
+        if (track) {
+          this.dodgeBulletTrack.delete(b.id);
+          if (
+            !track.hitPlayer &&
+            this.config.dodgePractice &&
+            (this.config.dodgeWaveMode ?? 'RANDOM') === 'RANDOM'
+          ) {
+            this.awardDodgePoint(track.minDist);
+          }
+        }
         this.bullets.splice(i, 1);
       } else {
         b.trail.push({ x: b.x, y: b.y });
@@ -8749,7 +9056,7 @@ export class ArenaEngine {
         : undefined,
       practicePrevReactionMs: this.config.targetPractice ? this.practicePrevReactionMs : undefined,
       dodgePractice: Boolean(this.config.dodgePractice),
-      dodgeWaveMode: this.config.dodgePractice ? (this.config.dodgeWaveMode ?? 'ONE') : undefined,
+      dodgeWaveMode: this.config.dodgePractice ? (this.config.dodgeWaveMode ?? 'RANDOM') : undefined,
       dodgeCount: this.config.dodgePractice ? this.dodgeCount : undefined,
       dodgeHits: this.config.dodgePractice ? this.dodgeHits : undefined,
       dodgeStreak: this.config.dodgePractice ? this.dodgeStreak : undefined,

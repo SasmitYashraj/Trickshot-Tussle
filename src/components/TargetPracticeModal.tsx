@@ -13,12 +13,14 @@ interface TargetPracticeModalProps {
 }
 
 const TARGET_MODE_OPTIONS: Array<{ id: PracticeTargetMode; label: string; note: string }> = [
+  { id: 'BOTH', label: 'Both', note: 'Random static or moving' },
   { id: 'STATIC', label: 'Static', note: 'Stationary boards' },
   { id: 'MOVING', label: 'Moving', note: 'Glides at player speed' },
-  { id: 'BOTH', label: 'Both', note: 'Random static or moving' },
+  { id: 'EVASIVE', label: 'Hit Me If You Can', note: 'Ruthless dodging AI' },
 ];
 
 const DODGE_MODE_OPTIONS: Array<{ id: DodgeWaveMode; label: string; note: string }> = [
+  { id: 'RANDOM', label: 'Random', note: 'Continuous random corner fire' },
   { id: 'ONE', label: '1 at a Time', note: '1 corner bot fires per wave' },
   { id: 'TWO', label: '2 at a Time', note: '2 corner bots fire together' },
   { id: 'THREE', label: '3 at a Time', note: '3 corner bots fire together' },
@@ -86,7 +88,9 @@ export function TargetPracticeModal({
                 </h2>
                 <p className="text-[11px] text-slate-400 truncate">
                   {isDodge
-                    ? '4 Ruthless corner bots · Survive all bounces per wave · Uses active modifiers'
+                    ? dodgeMode === 'RANDOM'
+                      ? '4 Ruthless corner bots · Continuous random fire · Uses active modifiers'
+                      : '4 Ruthless corner bots · Survive all bounces per wave · Uses active modifiers'
                     : '1 bullet (0.5s refill) · No pickups · Uses your active modifiers'}
                 </p>
               </div>
@@ -132,7 +136,7 @@ export function TargetPracticeModal({
               {isDodge ? 'Corner Bot Wave Intensity' : 'Target Movement'}
             </div>
             {isDodge ? (
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 {DODGE_MODE_OPTIONS.map((opt) => {
                   const selected = dodgeMode === opt.id;
                   return (
@@ -157,7 +161,7 @@ export function TargetPracticeModal({
                 })}
               </div>
             ) : (
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 {TARGET_MODE_OPTIONS.map((opt) => {
                   const selected = targetMode === opt.id;
                   return (
@@ -171,7 +175,7 @@ export function TargetPracticeModal({
                           : 'border-slate-800 bg-slate-900/80 text-slate-300 hover:border-slate-700 hover:text-white'
                       }`}
                     >
-                      <div className="font-display text-xs sm:text-sm font-bold whitespace-nowrap">
+                      <div className="font-display text-xs sm:text-sm font-bold leading-tight">
                         {opt.label}
                       </div>
                       <div className="text-[10px] text-slate-400 mt-0.5 leading-tight">

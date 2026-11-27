@@ -675,7 +675,7 @@ export function TitleScreen({
       {practiceOpen && (
         <TargetPracticeModal
           initialMode={config.practiceTargetMode ?? 'BOTH'}
-          initialDodgeMode={config.dodgeWaveMode ?? 'ONE'}
+          initialDodgeMode={config.dodgeWaveMode ?? 'RANDOM'}
           initialMapId={config.mapId}
           onStartTarget={(mode, mapId) => {
             setPracticeOpen(false);

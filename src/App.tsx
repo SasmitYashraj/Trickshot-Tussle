@@ -72,6 +72,8 @@ const DEFAULT_SOLO_CONFIG: MatchConfig = {
   immersive: false,
   local2P: false,
   local2PIncludeBots: true,
+  practiceTargetMode: 'BOTH',
+  dodgeWaveMode: 'RANDOM',
   playerColorId: 'cobalt',
   player2ColorId: 'crimson',
   modifiers: { ...DEFAULT_MATCH_MODIFIERS },
@@ -438,6 +440,44 @@ export default function App() {
   const jumpscareTimerRef = useRef<number | null>(null);
   const clientRef = useRef<MultiplayerClient | null>(null);
 
+  const [viewportSize, setViewportSize] = useState<{
+    width: number;
+    height: number;
+    isCoarse: boolean;
+  }>(() => ({
+    width: typeof window !== 'undefined' ? window.innerWidth : 1024,
+    height: typeof window !== 'undefined' ? window.innerHeight : 768,
+    isCoarse:
+      typeof window !== 'undefined'
+        ? Boolean(window.matchMedia?.('(pointer: coarse)').matches)
+        : false,
+  }));
+  const forceLandscapeRotateRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const syncViewport = () => {
+      const vv = window.visualViewport;
+      const w = Math.round(vv?.width ?? window.innerWidth);
+      const h = Math.round(vv?.height ?? window.innerHeight);
+      const coarse = Boolean(window.matchMedia?.('(pointer: coarse)').matches);
+      setViewportSize((prev) =>
+        prev.width === w && prev.height === h && prev.isCoarse === coarse
+          ? prev
+          : { width: w, height: h, isCoarse: coarse }
+      );
+    };
+    syncViewport();
+    window.addEventListener('resize', syncViewport);
+    window.addEventListener('orientationchange', syncViewport);
+    window.visualViewport?.addEventListener('resize', syncViewport);
+    return () => {
+      window.removeEventListener('resize', syncViewport);
+      window.removeEventListener('orientationchange', syncViewport);
+      window.visualViewport?.removeEventListener('resize', syncViewport);
+    };
+  }, []);
+
   const triggerJumpscareFlash = useCallback(() => {
     setJumpscareFlash(true);
     if (jumpscareTimerRef.current !== null) {
@@ -459,24 +499,21 @@ export default function App() {
     sound.setMusicEnabled(generalSettings.musicEnabled);
   }, [generalSettings]);
 
-  const requestLandscapeLock = useCallback((allowFullscreen = false) => {
+  const requestLandscapeLock = useCallback((_allowFullscreen = false) => {
     if (typeof window === 'undefined') return;
-    if (allowFullscreen) {
-      const docEl = document.documentElement as HTMLElement & {
-        requestFullscreen?: () => Promise<void>;
-      };
-      if (
-        typeof document.fullscreenElement !== 'undefined' &&
-        !document.fullscreenElement &&
-        window.matchMedia?.('(pointer: coarse)').matches
-      ) {
-        docEl.requestFullscreen?.().catch(() => {});
-      }
-    }
+    // Lock orientation silently where permitted (installed PWA / standalone) without calling
+    // requestFullscreen(), which forces Android's distracting system exit-fullscreen banner.
     const orient = window.screen?.orientation as
       | (ScreenOrientation & { lock?: (o: string) => Promise<void> })
       | undefined;
     orient?.lock?.('landscape').catch(() => {});
+    if (window.matchMedia?.('(pointer: coarse)').matches) {
+      try {
+        window.scrollTo(0, 1);
+      } catch {
+        // Ignore scroll nudge failure
+      }
+    }
   }, []);
 
   useEffect(() => {
@@ -1067,6 +1104,12 @@ export default function App() {
     };
   }, [togglePause, togglePcStealth, openHostLobbyMenu]);
 
+  const isInMatchScreen =
+    gameState === 'PLAYING' || gameState === 'PAUSED' || gameState === 'GAME_OVER';
+  const forceLandscapeRotate =
+    isInMatchScreen && viewportSize.isCoarse && viewportSize.height > viewportSize.width;
+  forceLandscapeRotateRef.current = forceLandscapeRotate;
+
   // High-DPI Canvas ResizeObserver
   useEffect(() => {
     const stage = stageRef.current;
@@ -1074,9 +1117,8 @@ export default function App() {
     if (!stage || !canvas) return;
 
     const updateSize = () => {
-      const rect = stage.getBoundingClientRect();
-      const width = Math.max(100, Math.floor(rect.width));
-      const height = Math.max(100, Math.floor(rect.height));
+      const width = Math.max(100, Math.floor(stage.clientWidth));
+      const height = Math.max(100, Math.floor(stage.clientHeight));
       const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
 
       canvas.width = Math.floor(width * dpr);
@@ -1090,7 +1132,7 @@ export default function App() {
     const observer = new ResizeObserver(updateSize);
     observer.observe(stage);
     return () => observer.disconnect();
-  }, [gameState]);
+  }, [gameState, forceLandscapeRotate, viewportSize.width, viewportSize.height]);
 
   // Main simulation / render loop
   useEffect(() => {
@@ -1650,9 +1692,11 @@ export default function App() {
             const waveModeBoost =
               activeCfg.dodgeWaveMode === 'THREE'
                 ? 0.22
-                : activeCfg.dodgeWaveMode === 'TWO'
-                  ? 0.14
-                  : 0.06;
+                : activeCfg.dodgeWaveMode === 'RANDOM'
+                  ? 0.16
+                  : activeCfg.dodgeWaveMode === 'TWO'
+                    ? 0.14
+                    : 0.06;
             const liveBulletBoost = worldToRender.bullets.length > 0 ? 0.16 : 0;
             normalTension = Math.min(
               1,
@@ -1748,6 +1792,12 @@ export default function App() {
 
   const getCanvasPoint = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
+    if (forceLandscapeRotateRef.current) {
+      return {
+        x: e.clientY - rect.top,
+        y: rect.right - e.clientX,
+      };
+    }
     return {
       x: e.clientX - rect.left,
       y: e.clientY - rect.top,
@@ -1881,17 +1931,21 @@ export default function App() {
   const isDodgePractice = !isOnline && !isTargetPractice && Boolean(activeConfig.dodgePractice);
   const isAnyPractice = isTargetPractice || isDodgePractice;
   const practiceModeLabel =
-    activeConfig.practiceTargetMode === 'STATIC'
-      ? 'Static Targets'
-      : activeConfig.practiceTargetMode === 'MOVING'
-        ? 'Moving Targets'
-        : 'Static & Moving';
+    activeConfig.practiceTargetMode === 'EVASIVE'
+      ? 'Hit Me If You Can'
+      : activeConfig.practiceTargetMode === 'STATIC'
+        ? 'Static Targets'
+        : activeConfig.practiceTargetMode === 'MOVING'
+          ? 'Moving Targets'
+          : 'Static & Moving';
   const dodgeModeLabel =
-    activeConfig.dodgeWaveMode === 'THREE'
-      ? '3 at a Time'
-      : activeConfig.dodgeWaveMode === 'TWO'
-        ? '2 at a Time'
-        : '1 at a Time';
+    activeConfig.dodgeWaveMode === 'RANDOM'
+      ? 'Random'
+      : activeConfig.dodgeWaveMode === 'THREE'
+        ? '3 at a Time'
+        : activeConfig.dodgeWaveMode === 'TWO'
+          ? '2 at a Time'
+          : '1 at a Time';
   const isRightStick = generalSettings.joystickPosition === 'RIGHT';
   const isLocal2P = !isOnline && !isAnyPractice && Boolean(activeConfig.local2P);
   const local2PBots = !isLocal2P || activeConfig.local2PIncludeBots !== false;
@@ -1915,7 +1969,22 @@ export default function App() {
   const teamBKills = team1List.reduce((sum, p) => sum + p.kills, 0);
 
   return (
-    <div className="h-dvh w-screen flex flex-col bg-[#0B1120] overflow-hidden">
+    <div
+      style={
+        forceLandscapeRotate
+          ? {
+              width: `${viewportSize.height}px`,
+              height: `${viewportSize.width}px`,
+              transform: 'translate(-50%, -50%) rotate(90deg)',
+            }
+          : undefined
+      }
+      className={
+        forceLandscapeRotate
+          ? 'fixed top-1/2 left-1/2 flex flex-col bg-[#0B1120] overflow-hidden'
+          : 'h-dvh w-screen flex flex-col bg-[#0B1120] overflow-hidden'
+      }
+    >
       {/* Desktop Top Bar (hidden on phone/tablet for full-screen landscape play) */}
       <header className="hidden lg:flex h-14 shrink-0 border-b border-slate-800/90 bg-[#0F172A] px-6 items-center justify-between gap-3">
         <span className="font-display text-lg font-extrabold tracking-tight text-slate-50 whitespace-nowrap shrink-0">
@@ -2123,7 +2192,9 @@ export default function App() {
                   <p className="leading-relaxed">
                     {isDodgePractice ? (
                       <>
-                        Dodge incoming waves cleanly until every bullet finishes bouncing.
+                        {activeConfig.dodgeWaveMode === 'RANDOM'
+                          ? 'Dodge incoming corner shots cleanly until every bullet finishes bouncing.'
+                          : 'Dodge incoming waves cleanly until every bullet finishes bouncing.'}
                       </>
                     ) : (
                       <>
@@ -2346,41 +2417,41 @@ export default function App() {
           ) : isTargetPractice ? (
             <div
               style={{
-                top: 'max(0.375rem, env(safe-area-inset-top))',
-                left: 'max(0.75rem, env(safe-area-inset-left))',
-                right: 'max(0.75rem, env(safe-area-inset-right))',
+                top: 'max(0.25rem, env(safe-area-inset-top))',
+                left: 'max(0.65rem, env(safe-area-inset-left))',
+                right: 'max(0.65rem, env(safe-area-inset-right))',
               }}
-              className="pointer-events-none absolute flex items-start justify-between gap-2 lg:hidden z-10"
+              className="pointer-events-none select-none absolute flex items-start justify-between gap-2 lg:hidden z-10 drop-shadow-[0_1.5px_4px_rgba(0,0,0,0.95)]"
             >
-              <div className="rounded-lg border border-slate-700/75 bg-slate-950/75 px-2.5 py-1.5 text-[11px] backdrop-blur-sm space-y-0.5">
-                <div className="flex items-center gap-2">
-                  <Crosshair className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-                  <span className="font-display font-bold text-slate-100">
+              <div className="text-[10px] leading-tight space-y-0.5">
+                <div className="flex items-center gap-1.5">
+                  <Crosshair className="w-3 h-3 text-rose-400 shrink-0" />
+                  <span className="font-display font-extrabold text-slate-100">
                     {p0?.kills ?? 0} Kills
                   </span>
-                  <span className="text-slate-500">·</span>
+                  <span className="text-slate-400">·</span>
                   <span className="font-mono-tabular font-bold text-amber-300">
                     {(p0?.ammo ?? 0) > 0
-                      ? 'Ready (1/1)'
-                      : `Reload ${(snapshot.practiceReloadTimer ?? 0).toFixed(1)}s`}
+                      ? '1/1'
+                      : `${(snapshot.practiceReloadTimer ?? 0).toFixed(1)}s`}
                   </span>
                 </div>
-                <div className="text-[10px] font-medium text-slate-400">
+                <div className="text-[9.5px] font-semibold text-slate-300/90">
                   {practiceModeLabel}
                 </div>
               </div>
-              <div className="rounded-lg border border-slate-700/75 bg-slate-950/75 px-2.5 py-1.5 text-[10px] backdrop-blur-sm text-right space-y-0.5">
-                <div className="flex items-center justify-end gap-2 font-mono-tabular">
-                  <span className="text-slate-400">
+              <div className="text-[9.5px] leading-tight text-right space-y-0.5 font-mono-tabular">
+                <div className="flex items-center justify-end gap-1.5 text-slate-300/90">
+                  <span>
                     Last <strong className="text-sky-300">{snapshot.practiceLastSplitMs != null ? `${snapshot.practiceLastSplitMs}ms` : '--'}</strong>
                   </span>
-                  <span className="text-slate-600">·</span>
-                  <span className="text-slate-400">
+                  <span className="text-slate-500">·</span>
+                  <span>
                     Avg <strong className="text-emerald-300">{snapshot.practiceAvgSplitMs != null ? `${snapshot.practiceAvgSplitMs}ms` : '--'}</strong>
                   </span>
                 </div>
-                <div className="font-mono-tabular text-slate-400">
-                  Prev Reaction{' '}
+                <div className="text-slate-300/90">
+                  React{' '}
                   <strong className="text-violet-300">
                     {snapshot.practicePrevReactionMs != null ? `${snapshot.practicePrevReactionMs}ms` : '--'}
                   </strong>
@@ -2390,38 +2461,40 @@ export default function App() {
           ) : isDodgePractice ? (
             <div
               style={{
-                top: 'max(0.375rem, env(safe-area-inset-top))',
-                left: 'max(0.75rem, env(safe-area-inset-left))',
-                right: 'max(0.75rem, env(safe-area-inset-right))',
+                top: 'max(0.25rem, env(safe-area-inset-top))',
+                left: 'max(0.65rem, env(safe-area-inset-left))',
+                right: 'max(0.65rem, env(safe-area-inset-right))',
               }}
-              className="pointer-events-none absolute flex items-start justify-between gap-2 lg:hidden z-10"
+              className="pointer-events-none select-none absolute flex items-start justify-between gap-2 lg:hidden z-10 drop-shadow-[0_1.5px_4px_rgba(0,0,0,0.95)]"
             >
-              <div className="rounded-lg border border-slate-700/75 bg-slate-950/75 px-2.5 py-1.5 text-[11px] backdrop-blur-sm space-y-0.5">
-                <div className="flex items-center gap-2">
-                  <ShieldAlert className="w-3.5 h-3.5 text-sky-400 shrink-0" />
-                  <span className="font-display font-bold text-emerald-300">
+              <div className="text-[10px] leading-tight space-y-0.5">
+                <div className="flex items-center gap-1.5">
+                  <ShieldAlert className="w-3 h-3 text-sky-400 shrink-0" />
+                  <span className="font-display font-extrabold text-emerald-300">
                     {snapshot.dodgeCount ?? 0} Dodges
                   </span>
-                  <span className="text-slate-500">·</span>
+                  <span className="text-slate-400">·</span>
                   <span className="font-mono-tabular font-bold text-rose-300">
                     {snapshot.dodgeHits ?? 0} Hits
                   </span>
                 </div>
-                <div className="text-[10px] font-medium text-slate-400">
+                <div className="text-[9.5px] font-semibold text-slate-300/90">
                   {dodgeModeLabel}
                 </div>
               </div>
-              <div className="rounded-lg border border-slate-700/75 bg-slate-950/75 px-2.5 py-1.5 text-[10px] backdrop-blur-sm text-right space-y-0.5">
-                <div className="font-mono-tabular text-slate-300">
+              <div className="text-[9.5px] leading-tight text-right space-y-0.5 font-mono-tabular">
+                <div className="text-slate-200/95">
                   Streak <strong className="text-amber-300">{snapshot.dodgeStreak ?? 0}x</strong>{' '}
-                  <span className="text-slate-600">·</span> Best{' '}
+                  <span className="text-slate-500">·</span> Best{' '}
                   <strong className="text-violet-300">{snapshot.dodgeBestStreak ?? 0}x</strong>
                 </div>
-                <div className="font-mono-tabular text-slate-400">
+                <div className="text-slate-300/90">
                   {snapshot.activeBullets > 0 ? (
-                    <span className="text-rose-300 font-bold">{snapshot.activeBullets} Live Bullets</span>
+                    <span className="text-rose-300 font-bold">{snapshot.activeBullets} Live</span>
+                  ) : activeConfig.dodgeWaveMode === 'RANDOM' ? (
+                    <span className="text-sky-300/90">Random Fire</span>
                   ) : (
-                    <span className="text-sky-300">Next Wave Ready</span>
+                    <span className="text-sky-300/90">Next Wave</span>
                   )}
                 </div>
               </div>
@@ -2622,7 +2695,9 @@ export default function App() {
                   className={
                     isLocal2P
                       ? 'pointer-events-none select-none absolute top-11 left-1/2 -translate-x-1/2 lg:left-auto lg:translate-x-0 lg:right-4 lg:top-4 z-40 flex flex-col items-center text-center lg:items-end lg:text-right'
-                      : 'pointer-events-none select-none absolute top-[4.65rem] sm:top-[5.15rem] lg:top-4 lg:right-4 z-40 flex flex-col items-end text-right'
+                      : `pointer-events-none select-none absolute ${
+                          isAnyPractice ? 'top-10 sm:top-11' : 'top-[4.65rem] sm:top-[5.15rem]'
+                        } lg:top-4 lg:right-4 z-40 flex flex-col items-end text-right`
                   }
                 >
                   <div className="flex items-baseline gap-1.5 drop-shadow-[0_2px_6px_rgba(0,0,0,0.95)]">
@@ -2687,6 +2762,9 @@ export default function App() {
             <>
               <TouchControls
                 position={isRightStick ? 'bottom-right' : 'bottom-left'}
+                size={generalSettings.joystickSize}
+                releaseJitterProtection={generalSettings.releaseJitterProtection}
+                rotatedLandscape={forceLandscapeRotate}
                 playerLabel={isLocal2P ? 'P1' : undefined}
                 ammo={localSnap?.ammo ?? 0}
                 stunned={(localSnap?.stunTimer ?? 0) > 0}
@@ -2706,19 +2784,25 @@ export default function App() {
                     engineRef.current.setJoystickVector(active, angle, magnitude);
                   }
                 }}
-                onStickRelease={() => {
+                onStickRelease={(stabilizedAngle) => {
                   sound.unlock();
                   if (!hasUsedJoystick) setHasUsedJoystick(true);
+                  if (libraryUiRef.current?.canCollectBook) {
+                    return;
+                  }
                   if (isOnlineRef.current) {
-                    clientRef.current?.sendJoystickRelease();
+                    clientRef.current?.sendJoystickRelease(stabilizedAngle);
                   } else {
-                    engineRef.current.firePlayerShot(0);
+                    engineRef.current.firePlayerShot(0, stabilizedAngle);
                   }
                 }}
               />
               {isLocal2P && p2HumanSnap && (
                 <TouchControls
                   position={isRightStick ? 'top-left' : 'top-right'}
+                  size={generalSettings.joystickSize}
+                  releaseJitterProtection={generalSettings.releaseJitterProtection}
+                  rotatedLandscape={forceLandscapeRotate}
                   playerLabel="P2"
                   ammo={p2HumanSnap.ammo}
                   stunned={p2HumanSnap.stunTimer > 0}
@@ -2731,10 +2815,13 @@ export default function App() {
                     if (!hasUsedJoystick) setHasUsedJoystick(true);
                     engineRef.current.setJoystick2Vector(active, angle, magnitude);
                   }}
-                  onStickRelease={() => {
+                  onStickRelease={(stabilizedAngle) => {
                     sound.unlock();
                     if (!hasUsedJoystick) setHasUsedJoystick(true);
-                    engineRef.current.firePlayerShot(1);
+                    if (libraryUiRef.current?.canCollectBookP2) {
+                      return;
+                    }
+                    engineRef.current.firePlayerShot(1, stabilizedAngle);
                   }}
                 />
               )}
@@ -2746,7 +2833,9 @@ export default function App() {
               {isLocal2P
                 ? 'P1: WASD + Space · P2: Arrows + Enter (or /)'
                 : isDodgePractice
-                  ? 'WASD to move (Shift to creep) · Dodge every wave until all bounces end!'
+                  ? activeConfig.dodgeWaveMode === 'RANDOM'
+                    ? 'WASD to move (Shift to creep) · Dodge incoming corner shots until all bounces end!'
+                    : 'WASD to move (Shift to creep) · Dodge every wave until all bounces end!'
                   : activeConfig.mapId === 'library'
                     ? 'WASD to move (Shift or <80% slider to sneak) · [E] Collect/Unlock · Spacebar to shoot'
                     : 'WASD to move (Shift to creep) · Cursor to aim · Spacebar to shoot'}
